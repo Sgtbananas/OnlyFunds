@@ -10,7 +10,6 @@ from core.backtester import run_backtest  # for adaptive thresholding
 load_dotenv()
 LOG_FILE = os.getenv("SIGNAL_LOG", "signals_log.json")
 
-
 def generate_signal(df: pd.DataFrame) -> pd.Series:
     """
     Composite signal: RSI, MACD diff, EMA diff, BB position.
@@ -29,26 +28,23 @@ def generate_signal(df: pd.DataFrame) -> pd.Series:
         logging.error(f"generate_signal error: {e}")
         return pd.Series(0, index=df.index)
 
-
 def smooth_signal(signal: pd.Series, window: int = 5) -> pd.Series:
     """Rolling mean to smooth noise."""
     return signal.rolling(window, min_periods=1).mean()
 
-
 def adaptive_threshold(df: pd.DataFrame, target_profit: float = 0.01) -> float:
     """
-    Grid-search threshold ∈ [0.1,0.95] maximizing avg return.
+    Grid-search threshold ∈ [0.1,0.55] maximizing avg return.
     """
     best_t, best_ret = 0.5, -np.inf
     sig = smooth_signal(generate_signal(df))
-    for t in np.arange(0.1, 1.0, 0.05):
+    for t in np.arange(0.1, 0.55, 0.05):  # Adjusted range for realistic thresholds
         result = run_backtest(sig, df["Close"], threshold=t)
         summary = result[0]  # Extract the summary DataFrame
         avg = summary.iloc[0]["avg_return"] if "avg_return" in summary.columns else -np.inf
         if avg > best_ret:
             best_ret, best_t = avg, t
     return round(best_t, 2)
-
 
 def track_trade_result(resp: dict, pair: str, action: str):
     """Append a JSON record to disk."""
