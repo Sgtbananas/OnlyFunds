@@ -139,32 +139,33 @@ def trade_logic(pair: str):
 def display_dashboard():
     st.subheader("📈 Live Dashboard")
 
-    # PnL metrics
+    # 1) Performance metrics
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
     st.metric("Total Return", f"{perf['total_return']:.2%}")
-    st.metric("Win Rate", f"{perf['win_rate']:.2%}")
+    st.metric("Win Rate",     f"{perf['win_rate']:.2%}")
 
-    # Tuning hints
-    for hint in suggest_tuning(perf):
-        st.info(f"🔧 {hint}")
+    # 2) Tuning suggestions
+    suggestions = suggest_tuning(perf)
+    for s in suggestions:
+        st.info(f"🔧 {s}")
 
-    # Open positions table
+    # 3) Open positions
     if open_positions:
-        df_open = pd.DataFrame(open_positions).T
         st.write("🟢 Open Positions")
-        st.dataframe(df_open[[
-            "amount", "entry_price", "trailing_stop"
-        ]])
+
+        # Build a DataFrame and pick only existing columns
+        df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
+        desired_cols = ["amount", "entry_price", "trailing_stop"]
+        cols = [c for c in desired_cols if c in df_open.columns]
+        st.dataframe(df_open[cols])
+
     else:
         st.info("No active trades.")
 
-    # History table
+    # 4) Trade History
     if trade_log:
-        df_hist = pd.DataFrame(trade_log)
         st.write("📘 Trade History")
-        st.dataframe(df_hist[[
-            "timestamp", "pair", "action", "amount", "entry_price", "exit_price"
-        ]])
+        st.dataframe(pd.DataFrame(trade_log))
     else:
         st.info("No trade history yet.")
 
