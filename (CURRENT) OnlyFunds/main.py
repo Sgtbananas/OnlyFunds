@@ -24,7 +24,7 @@ DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
 DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 1000))
 RISK_PER_TRADE  = float(os.getenv("RISK_PER_TRADE", 0.01))
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -85,8 +85,10 @@ def trade_logic(pair: str):
     # backtest view
     if backtest_mode:
         bt = run_backtest(smoothed, df["Close"], threshold)
+        summary_df, trades_df = bt  # Unpack the tuple
         st.subheader(f"📊 Backtest: {pair}")
-        st.dataframe(bt)
+        st.dataframe(summary_df, caption=f"{pair} Backtest Summary")
+        st.dataframe(trades_df, caption=f"{pair} Trade Details")
         return
 
     # decide action
