@@ -89,9 +89,14 @@ def trade_logic(pair: str):
 
     # Backtest mode override
     if backtest_mode:
-        bt = run_backtest(smoothed, df["Close"], threshold)
-        st.subheader(f"📊 Backtest: {pair}")
-        st.dataframe(bt)
+        # run_backtest returns (summary_df, trades_df)
+        summary_df, trades_df = run_backtest(smoothed, df["Close"], threshold)
+
+        st.subheader(f"📊 Backtest Summary: {pair}")
+        st.dataframe(summary_df)
+
+        st.subheader(f"📋 Backtest Trades: {pair}")
+        st.dataframe(trades_df)
         return
 
     action = None
