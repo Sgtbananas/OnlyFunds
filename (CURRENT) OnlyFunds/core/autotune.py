@@ -70,3 +70,24 @@ def suggest_tuning_parameters(metrics: Dict[str, float]) -> List[str]:
     if not suggestions:
         suggestions.append("Performance stable → maintain current settings.")
     return suggestions
+
+def adaptive_threshold(signals: pd.Series, prices: pd.Series) -> float:
+    """
+    Dynamically determines the optimal threshold for trading signals.
+    Uses backtesting results to iterate and find the threshold that maximizes performance.
+    """
+    from core.backtester import run_backtest
+
+    best_threshold = 0.5
+    best_sharpe = -float("inf")
+
+    # Test multiple thresholds
+    for threshold in np.arange(0.1, 1.1, 0.1):
+        summary, _ = run_backtest(signals, prices, threshold)  # Extract summary only
+        sharpe = summary.iloc[0]["sharpe"]
+        if sharpe > best_sharpe:
+            best_sharpe = sharpe
+            best_threshold = threshold
+
+    print(f"Optimal threshold: {best_threshold} with Sharpe Ratio: {best_sharpe}")
+    return best_threshold
