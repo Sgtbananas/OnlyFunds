@@ -3,59 +3,34 @@ import numpy as np
 
 def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) -> tuple:
     """
-    Backtests trading strategy based on signal crossing threshold.
-    Entry on signal > threshold (long), < -threshold (short).
-    Exit when signal crosses back to neutral zone.
+    Backtests trading strategy for SPOT market.
+    Entry on signal > threshold (buy).
+    Exit when signal crosses back to neutral zone (sell).
     """
-    position = 0
     entry_price = 0
     returns = []
     trade_log = []
+    position_open = False
 
     for i in range(1, len(signals)):
         signal = signals.iloc[i]
         price = prices.iloc[i]
 
-        print(f"Step {i}: Signal={signal}, Price={price}, Position={position}")
+        if not position_open and signal > threshold:  # Open a long position
+            entry_price = price
+            position_open = True
+        elif position_open and signal < 0:  # Close the long position
+            ret = (price - entry_price) / entry_price
+            returns.append(ret)
+            trade_log.append({
+                "entry": entry_price,
+                "exit": price,
+                "side": "LONG",
+                "return": round(ret, 5)
+            })
+            position_open = False
 
-        if position == 0:
-            if signal > threshold:
-                position = 1
-                entry_price = price
-                print(f"Opened LONG at {entry_price}")
-            elif signal < -threshold:
-                position = -1
-                entry_price = price
-                print(f"Opened SHORT at {entry_price}")
-
-        elif position == 1:
-            if signal < 0:
-                ret = (price - entry_price) / entry_price
-                returns.append(ret)
-                trade_log.append({
-                    "entry": entry_price,
-                    "exit": price,
-                    "side": "LONG",
-                    "return": round(ret, 5)
-                })
-                print(f"Closed LONG at {price}, Return: {ret}")
-                position = 0
-
-        elif position == -1:
-            if signal > 0:
-                ret = (entry_price - price) / entry_price
-                returns.append(ret)
-                trade_log.append({
-                    "entry": entry_price,
-                    "exit": price,
-                    "side": "SHORT",
-                    "return": round(ret, 5)
-                })
-                print(f"Closed SHORT at {price}, Return: {ret}")
-                position = 0
-
-    # Update warning to check both returns and trade_log
-    if not returns and not trade_log:
+    if not returns:
         print("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
         return pd.DataFrame([{
             "trades": 0,
