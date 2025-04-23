@@ -33,20 +33,28 @@ logger = logging.getLogger(__name__)
 
 # ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
-st.title("🧠 CryptoTrader AI Bot")
+st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
 st.sidebar.header("⚙️ Configuration")
 
 dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=DEFAULT_DRY_RUN)
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
 backtest_mode = st.sidebar.checkbox("Enable Backtesting", value=False)
-mode = st.sidebar.selectbox(
-    "Trading Mode", ["Conservative", "Normal", "Aggressive"], index=1
-)
-interval = st.sidebar.selectbox(
-    "Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"], index=0
-)
+mode = st.sidebar.selectbox("Trading Mode",
+                             ["Conservative", "Normal", "Aggressive"],
+                             index=1)
+interval = st.sidebar.selectbox("Candle Interval",
+                                 ["5m", "15m", "30m", "1h", "4h", "1d"],
+                                 index=0)
 lookback = st.sidebar.slider("Historical Lookback", 100, 1000, 300)
 max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
+
+# Rename the start button for clarity
+start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
+if start_btn:
+    st.success("Bot started! (Spot market only)")
+    main_loop()
+else:
+    st.info("Ready. Configure & click Start.")
 
 # ─── Strategy risk params ─────────────────────────────────────────────────────
 if mode == "Conservative":
@@ -68,55 +76,45 @@ def trade_logic(pair: str):
         logger.warning(f"⚠️ Invalid/empty data for {pair}")
         return
 
-    # Add indicators
     df = add_indicators(df)
 
-    # Pick a threshold
+    # Adaptive threshold or default
     threshold = 0.5
     if autotune:
         threshold = adaptive_threshold(df)
         logger.debug(f"Adaptive threshold for {pair}: {threshold}")
 
-    # Compute + smooth
-    raw = generate_signal(df)
-    smoothed = smooth_signal(raw)
-    latest = smoothed.iloc[-1]
+    raw_signal = generate_signal(df)
+    smoothed = smooth_signal(raw_signal)
+    latest_signal = smoothed.iloc[-1]
 
-    # Backtest view
+    # Backtest mode override
     if backtest_mode:
         bt = run_backtest(smoothed, df["Close"], threshold)
-        summary_df, trades_df = bt[:2]  # Unpack only the first two values
         st.subheader(f"📊 Backtest: {pair}")
-        st.write("Backtest Summary")
-        st.dataframe(summary_df)
-        st.write("Trade Details")
-        st.dataframe(trades_df)
+        st.dataframe(bt)
         return
 
-    # Decide action
     action = None
-    if latest > threshold:
+    # BUY only if signal strong positive AND you’re not already long
+    if latest_signal > threshold and pair not in open_positions:
         action = "buy"
-    elif latest < -threshold:
+    # SELL (exit) only if signal strong negative AND you’re currently long
+    elif latest_signal < -threshold and pair in open_positions:
         action = "sell"
-    if not action:
-        return
+    else:
+        return  # either flat no‐trade, or negative signal while flat
 
-    # Enforce limits
+    # Enforce position limits on BUY
     if action == "buy":
-        if pair in open_positions:
-            logger.info(f"⏸ Already long {pair} → skipping BUY")
-            return
         if len(open_positions) >= max_positions:
-            logger.info("🚫 Max positions reached → skipping BUY")
+            logger.info("🚫 Max open positions reached → skipping BUY")
             return
 
-    # Compute size + price
     price = df["Close"].iloc[-1]
-    amount = (DEFAULT_CAPITAL * risk_pct) if action == "buy" else open_positions[pair]["amount"]
+    amount = (DEFAULT_CAPITAL * risk_pct) / price if action == "buy" else open_positions[pair]["amount"]
 
-    # Place the order
-    response = place_order(
+    result = place_order(
         pair=pair,
         action=action,
         amount=amount,
@@ -124,33 +122,28 @@ def trade_logic(pair: str):
         is_dry_run=dry_run
     )
 
-    # Build unified record
+    # Record/exit position
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     record = {
         "timestamp": now,
         "pair": pair,
         "action": action.upper(),
-        "amount": amount,
+        "amount": amount
     }
+
     if action == "buy":
         record["entry_price"] = price
-        open_positions[pair] = {
-            "amount": amount,
-            "entry_price": price,
-            **response
-        }
-    else:  # sell
+        open_positions[pair] = {"amount": amount, "entry_price": price, **result}
+    else:  # sell/exit
         record["exit_price"] = price
-        # Drop from open positions
         open_positions.pop(pair, None)
 
-    # Log & persist
     trade_log.append(record)
-    track_trade_result(response, pair, action.upper())
+    track_trade_result(result, pair, action.upper())
 
-    # Attach trailing stop if API gave us an order_price
-    if "order_price" in response:
-        response["trailing_stop"] = response["order_price"] * (1 - trailing_stop_pct)
+    # Add trailing stop, if provided
+    if "order_price" in result:
+        result["trailing_stop"] = result["order_price"] * (1 - trailing_stop_pct)
 
 # ─── Dashboard & Metrics ─────────────────────────────────────────────────────
 def display_dashboard():
@@ -197,8 +190,5 @@ def main_loop():
         time.sleep(10)
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
-if st.sidebar.button("🚀 Start Trading Bot"):
-    st.success("Bot started! 🚀")
+if start_btn:
     main_loop()
-else:
-    st.info("Ready. Configure & click ‘Start Trading Bot’ to begin.")
