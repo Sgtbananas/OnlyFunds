@@ -1,11 +1,14 @@
 import pandas as pd
 import numpy as np
+import logging
 
-def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) -> tuple:
+logger = logging.getLogger(__name__)
+
+def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.2) -> tuple:
     """
     Backtests trading strategy for SPOT market.
     Entry on signal > threshold (buy).
-    Exit when signal crosses back to neutral zone (sell).
+    Exit when signal crosses back to neutral zone (close).
     """
     entry_price = 0
     returns = []
@@ -16,22 +19,25 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
         signal = signals.iloc[i]
         price = prices.iloc[i]
 
+        # Log signal and threshold comparison
+        logger.info(f"Signal={signal}, Threshold={threshold}, Position Open={position_open}")
+
         if not position_open and signal > threshold:  # Open a long position
             entry_price = price
             position_open = True
-        elif position_open and signal < 0:  # Close the long position
+        elif position_open and signal < threshold:  # Close the long position
             ret = (price - entry_price) / entry_price
             returns.append(ret)
             trade_log.append({
                 "entry": entry_price,
                 "exit": price,
-                "side": "LONG",
+                "side": "CLOSE",
                 "return": round(ret, 5)
             })
             position_open = False
 
     if not returns:
-        print("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
+        logger.warning("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
         return pd.DataFrame([{
             "trades": 0,
             "win_rate": 0.0,
@@ -59,6 +65,4 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
         "sharpe": round(sharpe_ratio, 2),
         "max_drawdown": round(max_dd * 100, 2)
     }])
-
-    # Include the detailed trade log in the return value
     return summary, pd.DataFrame(trade_log)
