@@ -18,7 +18,7 @@ from core.core_signals    import (
 )
 from core.trade_execution import place_order
 from core.backtester      import run_backtest
-from utils.helpers        import compute_trade_metrics, suggest_tuning_parameters
+from utils.helpers import compute_trade_metrics, suggest_tuning
 
 # ─── Load env & defaults ──────────────────────────────────────────────────────
 load_dotenv()
@@ -160,7 +160,7 @@ def display_dashboard():
     st.metric("Win Rate",     f"{perf['win_rate']:.2%}")
 
     # tuning hints
-    for hint in suggest_tuning_parameters(perf):
+    for hint in suggest_tuning(perf):
         st.info(f"🔧 {hint}")
 
     # open positions table
