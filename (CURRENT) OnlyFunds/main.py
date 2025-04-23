@@ -45,7 +45,7 @@ mode = st.sidebar.selectbox("Trading Mode",
 interval = st.sidebar.selectbox("Candle Interval",
                                  ["5m", "15m", "30m", "1h", "4h", "1d"],
                                  index=0)
-lookback = st.sidebar.slider("Historical Lookback", 100, 1000, 300)
+lookback = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)  # Increased default to 1000
 max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
 
 # Rename the start button for clarity
@@ -78,34 +78,21 @@ def trade_logic(pair: str):
     df = add_indicators(df)
 
     # Adaptive threshold or default
-    threshold = 0.5
+    threshold = 0.2  # Lowered from 0.5
     if autotune:
         threshold = adaptive_threshold(df)
-        logger.debug(f"Adaptive threshold for {pair}: {threshold}")
+    logger.debug(f"Adaptive threshold for {pair}: {threshold}")
 
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
     latest_signal = smoothed.iloc[-1]
 
-    # Backtest mode override
-    if backtest_mode:
-        # run_backtest returns (summary_df, trades_df)
-        summary_df, trades_df = run_backtest(smoothed, df["Close"], threshold)
-
-        st.subheader(f"📊 Backtest Summary: {pair}")
-        st.dataframe(summary_df)
-
-        st.subheader(f"📋 Backtest Trades: {pair}")
-        st.dataframe(trades_df)
-        return
-
+    # Decide BUY or CLOSE
     action = None
-    # BUY only if signal strong positive AND you’re not already long
     if latest_signal > threshold and pair not in open_positions:
         action = "buy"
-    # SELL (exit) only if signal strong negative AND you’re currently long
-    elif latest_signal < -threshold and pair in open_positions:
-        action = "sell"
+    elif latest_signal < threshold and pair in open_positions:
+        action = "close"
     else:
         return  # either flat no‐trade, or negative signal while flat
 
@@ -138,7 +125,7 @@ def trade_logic(pair: str):
     if action == "buy":
         record["entry_price"] = price
         open_positions[pair] = {"amount": amount, "entry_price": price, **result}
-    else:  # sell/exit
+    elif action == "close":
         record["exit_price"] = price
         open_positions.pop(pair, None)
 
