@@ -17,7 +17,7 @@ from core.core_signals   import (
 )
 from core.trade_execution import place_order
 from core.backtester     import run_backtest
-from utils.helpers       import compute_trade_metrics, suggest_tuning
+from utils import compute_trade_metrics, suggest_tuning
 
 # Load environment variables
 load_dotenv()
