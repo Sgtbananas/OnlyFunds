@@ -48,6 +48,14 @@ interval = st.sidebar.selectbox("Candle Interval",
 lookback = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)  # Increased default to 1000
 max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
 
+# Manual override for entry threshold
+threshold_slider = st.sidebar.slider(
+    "Entry Threshold", 
+    min_value=0.0, max_value=1.0, 
+    value=0.2, step=0.01,
+    help="How strong must the signal be before we BUY/SELL?"
+)
+
 # Rename the start button for clarity
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
 if start_btn:
@@ -77,11 +85,12 @@ def trade_logic(pair: str):
 
     df = add_indicators(df)
 
-    # Adaptive threshold or default
-    threshold = 0.2  # Lowered from 0.5
+    # Determine threshold (manual or AI-tuned)
     if autotune:
         threshold = adaptive_threshold(df)
-    logger.debug(f"Adaptive threshold for {pair}: {threshold}")
+        logger.debug(f"Adaptive threshold for {pair}: {threshold}")
+    else:
+        threshold = threshold_slider
 
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
@@ -125,6 +134,7 @@ def trade_logic(pair: str):
             "exit_price":  price,
         }
         trade_log.append(record)  # Only log on CLOSE
+        logging.info(f"Trade logged: {record}")
         open_positions.pop(pair, None)
     elif action == "buy":
         open_positions[pair] = {"amount": amount, "entry_price": price}
