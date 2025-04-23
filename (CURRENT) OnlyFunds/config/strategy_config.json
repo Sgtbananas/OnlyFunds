@@ -1,0 +1,37 @@
+{
+  "rsi_period": 14,
+  "macd_short_period": 12,
+  "macd_long_period": 26,
+  "macd_signal_period": 9,
+  "ema_short_period": 9,
+  "ema_long_period": 21,
+  "bollinger_window": 20,
+  "bollinger_std_dev": 2,
+  "adaptive_threshold": 0.5,
+  "target_profit": 0.01,
+  "max_drawdown": 0.02,
+  "max_positions": 2,
+  "stop_loss_pct": 0.03,
+  "take_profit_pct": 0.05,
+  "ai_tuning_enabled": true,
+  "dynamic_tuning": {
+    "enabled": true,
+    "tuning_period": 30,
+    "parameter_range": {
+      "rsi_period": [5, 30],
+      "macd_short_period": [5, 20],
+      "macd_long_period": [20, 50]
+    },
+    "optimization_goal": "max_return"
+  },
+  "trading_windows": {
+    "enabled": true,
+    "start_time": "09:00",
+    "end_time": "18:00",
+    "timezone": "UTC"
+  },
+  "risk_management": {
+    "max_drawdown": 0.02,
+    "risk_per_trade": 0.01
+  }
+}
