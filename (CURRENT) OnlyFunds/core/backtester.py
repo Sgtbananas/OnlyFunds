@@ -16,13 +16,17 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
         signal = signals.iloc[i]
         price = prices.iloc[i]
 
+        print(f"Step {i}: Signal={signal}, Price={price}, Position={position}")
+
         if position == 0:
             if signal > threshold:
                 position = 1
                 entry_price = price
+                print(f"Opened LONG at {entry_price}")
             elif signal < -threshold:
                 position = -1
                 entry_price = price
+                print(f"Opened SHORT at {entry_price}")
 
         elif position == 1:
             if signal < 0:
@@ -34,6 +38,7 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
                     "side": "LONG",
                     "return": round(ret, 5)
                 })
+                print(f"Closed LONG at {price}, Return: {ret}")
                 position = 0
 
         elif position == -1:
@@ -46,10 +51,11 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
                     "side": "SHORT",
                     "return": round(ret, 5)
                 })
+                print(f"Closed SHORT at {price}, Return: {ret}")
                 position = 0
 
-    if not returns:
-        # Log warning and return a placeholder DataFrame
+    # Update warning to check both returns and trade_log
+    if not returns and not trade_log:
         print("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
         return pd.DataFrame([{
             "trades": 0,
