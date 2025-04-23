@@ -52,7 +52,6 @@ max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
 if start_btn:
     st.success("Bot started! (Spot market only)")
-    main_loop()
 else:
     st.info("Ready. Configure & click Start.")
 
