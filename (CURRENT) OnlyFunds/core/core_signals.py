@@ -1,5 +1,3 @@
-# core/core_signals.py
-
 import os
 import json
 import logging
@@ -41,8 +39,8 @@ def adaptive_threshold(df: pd.DataFrame, target_profit: float = 0.01) -> float:
     best_t, best_ret = 0.5, -np.inf
     sig = smooth_signal(generate_signal(df))
     for t in np.arange(0.1, 1.0, 0.05):
-        bt = run_backtest(sig, df["Close"], threshold=t)
-        avg = bt["return"].mean() if "return" in bt.columns else -np.inf
+        summary, _ = run_backtest(sig, df["Close"], threshold=t)  # Extract the summary DataFrame
+        avg = summary.iloc[0]["avg_return"] if "avg_return" in summary.columns else -np.inf
         if avg > best_ret:
             best_ret, best_t = avg, t
     return round(best_t, 2)
