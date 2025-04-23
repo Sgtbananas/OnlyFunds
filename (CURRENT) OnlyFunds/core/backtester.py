@@ -1,5 +1,3 @@
-# core/backtester.py
-
 import pandas as pd
 import numpy as np
 
@@ -51,6 +49,8 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
                 position = 0
 
     if not returns:
+        # Log warning and return a placeholder DataFrame
+        print("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
         return pd.DataFrame([{
             "trades": 0,
             "win_rate": 0.0,
@@ -70,6 +70,7 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
     std_return = returns.std() if returns.std() > 0 else 1e-8
     sharpe_ratio = avg_return / std_return
 
+    # Summary metrics
     summary = pd.DataFrame([{
         "trades": len(returns),
         "win_rate": round(win_rate * 100, 2),
@@ -78,4 +79,5 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
         "max_drawdown": round(max_dd * 100, 2)
     }])
 
-    return summary
+    # Include the detailed trade log in the return value
+    return summary, pd.DataFrame(trade_log)
