@@ -1,4 +1,4 @@
-https://github.com/Sgtbananas/OnlyFunds/tree/Sgtbananas-patch-1/(CURRENT)%20OnlyFundsmain.py
+# main.py
 
 import os
 import logging
@@ -8,59 +8,61 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
-from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
-from core.core_signals import generate_signal, smooth_signal, track_trade_result
+from core.core_data      import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
+from core.core_signals   import (
+    generate_signal,
+    smooth_signal,
+    track_trade_result,
+    adaptive_threshold
+)
 from core.trade_execution import place_order
-from core.autotune import tune_threshold
-from core.backtester import run_backtest
-
-# ← updated imports here:
-from utils.helpers import calculate_performance, suggest_tuning_parameters
+from core.backtester     import run_backtest
+from utils.helpers       import compute_trade_metrics, suggest_tuning
 
 # Load environment variables
 load_dotenv()
 
-# Default settings from .env
+# Defaults from .env
 DEFAULT_DRY_RUN  = os.getenv("USE_DRY_RUN", "True").lower() == "true"
-DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 1000))
-RISK_PER_TRADE  = float(os.getenv("RISK_PER_TRADE", 0.01))
+DEFAULT_CAPITAL  = float(os.getenv("DEFAULT_CAPITAL", 1000))
+RISK_PER_TRADE   = float(os.getenv("RISK_PER_TRADE", 0.01))
 
-# Logging config
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# Streamlit UI setup
+# Streamlit setup
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 st.title("🧠 CryptoTrader AI Bot")
 st.sidebar.header("⚙️ Configuration")
 
-# UI Toggles and Inputs
-dry_run       = st.sidebar.checkbox("Dry Run Mode (Simulated Trades)", value=DEFAULT_DRY_RUN)
-autotune      = st.sidebar.checkbox("Enable AI Autotuning", value=False)
-backtest_mode = st.sidebar.checkbox("Enable Backtesting", value=False)
-mode          = st.sidebar.selectbox(
-    "Trading Mode", ["Conservative", "Normal", "Aggressive"], index=1
+# ─── Sidebar controls ─────────────────────────────────────────────────────────
+dry_run        = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=DEFAULT_DRY_RUN)
+autotune       = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
+backtest_mode  = st.sidebar.checkbox("Enable Backtesting", value=False)
+mode           = st.sidebar.selectbox(
+    "Trading Mode",
+    ["Conservative", "Normal", "Aggressive"],
+    index=1
 )
-interval      = st.sidebar.selectbox(
-    "Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"], index=0
+interval       = st.sidebar.selectbox(
+    "Candle Interval",
+    ["5m", "15m", "30m", "1h", "4h", "1d"],
+    index=0
 )
-lookback      = st.sidebar.slider("Historical Lookback", min_value=100, max_value=1000, value=300)
-max_positions = st.sidebar.number_input("Max Open Positions", min_value=1, max_value=5, value=2)
+lookback       = st.sidebar.slider("Historical Lookback", 100, 1000, 300)
+max_positions  = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
 
-# Runtime state
-open_positions = {}
-trade_log      = []
-
-# Strategy parameters based on mode
+# ─── Strategy parameters by mode ─────────────────────────────────────────────
 if mode == "Conservative":
     risk_pct          = RISK_PER_TRADE * 0.5
     trailing_stop_pct = 0.01
     scale_in          = False
 elif mode == "Aggressive":
-    risk_pct          = RISK_PER_TRADE * 2.0
+    risk_pct          = RISK_PER_TRADE * 1.5
     trailing_stop_pct = 0.05
     scale_in          = True
 else:  # Normal
@@ -68,6 +70,11 @@ else:  # Normal
     trailing_stop_pct = 0.03
     scale_in          = True
 
+# ─── Runtime state ───────────────────────────────────────────────────────────
+open_positions = {}   # pair → order info
+trade_log      = []   # list of dicts for compute_trade_metrics
+
+# ─── Core trade logic ────────────────────────────────────────────────────────
 def trade_logic(pair: str):
     logger.info(f"🔍 Analyzing {pair}")
     df = fetch_klines(pair=pair, interval=interval, limit=lookback)
@@ -75,19 +82,21 @@ def trade_logic(pair: str):
         logger.warning(f"⚠️ Invalid or empty data for {pair}")
         return
 
+    # Add indicators
     df = add_indicators(df)
 
-    # Determine threshold
+    # Decide threshold
     threshold = 0.5
     if autotune:
-        threshold = tune_threshold(df, pair)
+        threshold = adaptive_threshold(df)
+        logger.debug(f"Adaptive threshold for {pair}: {threshold}")
 
-    # Generate and smooth signal
+    # Compute and smooth signal
     raw_signal    = generate_signal(df)
     smoothed      = smooth_signal(raw_signal)
     latest_signal = smoothed.iloc[-1]
 
-    # Backtesting mode
+    # If backtesting, show results and skip live
     if backtest_mode:
         bt = run_backtest(smoothed, df["Close"], threshold)
         st.subheader(f"📊 Backtest: {pair}")
@@ -96,76 +105,81 @@ def trade_logic(pair: str):
 
     # Determine action
     action = None
-    if latest_signal > threshold:
+    if latest_signal >  threshold:
         action = "buy"
     elif latest_signal < -threshold:
         action = "sell"
 
-    # Execute trade if action identified
-    if action:
-        # Enforce position limits on BUY
-        if action == "buy":
-            if pair in open_positions:
-                logger.info(f"⏸ Already in {pair}, skipping buy")
-                return
-            if len(open_positions) >= max_positions:
-                logger.info("🚫 Max positions reached")
-                return
+    if not action:
+        return
 
-        # Calculate trade amount
-        if action == "buy":
-            trade_amount = DEFAULT_CAPITAL * risk_pct
-        else:
-            # for SELL, close using the same qty we bought
-            trade_amount = open_positions.get(pair, {}).get("amount", DEFAULT_CAPITAL * risk_pct)
+    # Skip buying if already in or at max positions
+    if action == "buy":
+        if pair in open_positions:
+            logger.info(f"⏸ Already in {pair} → skip buy")
+            return
+        if len(open_positions) >= max_positions:
+            logger.info("🚫 Max open positions reached → skip new buy")
+            return
 
-        # Place order
-        result = place_order(
-            pair=pair,
-            action=action,
-            amount=trade_amount,
-            price=df["Close"].iloc[-1],
-            is_dry_run=dry_run
-        )
+    # Compute trade amount
+    if action == "buy":
+        amount = DEFAULT_CAPITAL * risk_pct
+    else:  # selling
+        amount = open_positions.get(pair, {}).get("amount", DEFAULT_CAPITAL * risk_pct)
 
-        # Record position and log
-        if action == "buy":
-            open_positions[pair] = result
-        else:
-            open_positions.pop(pair, None)
+    price = df["Close"].iloc[-1]
+    result = place_order(
+        pair      = pair,
+        action    = action,
+        amount    = amount,
+        price     = price,
+        is_dry_run= dry_run
+    )
 
-        trade_log.append(result)
-        track_trade_result(result, pair, action.upper())
+    # Record position / close
+    if action == "buy":
+        open_positions[pair] = result
+    else:
+        open_positions.pop(pair, None)
 
-        # Attach trailing stop if returned
-        if "order_price" in result:
-            result["trailing_stop"] = result["order_price"] * (1 - trailing_stop_pct)
+    # Log and track
+    trade_log.append(result)
+    track_trade_result(result, pair, action.upper())
 
+    # Attach trailing-stop if available
+    if "order_price" in result:
+        result["trailing_stop"] = result["order_price"] * (1 - trailing_stop_pct)
+
+# ─── Dashboard / Metrics ────────────────────────────────────────────────────
 def display_dashboard():
     st.subheader("📈 Live Dashboard")
+
     # Performance metrics
-    perf = calculate_performance(trade_log, initial_capital=DEFAULT_CAPITAL)
+    perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
     st.metric("Total Return", f"{perf['total_return']:.2%}")
-    st.metric("Win Rate",    f"{perf['win_rate']:.2%}")
+    st.metric("Win Rate",     f"{perf['win_rate']:.2%}")
 
     # Tuning suggestions
-    suggestions = suggest_tuning_parameters(perf)
-    if suggestions:
-        st.info("🔧 " + "\n".join(suggestions))
+    suggestions = suggest_tuning(perf)
+    for s in suggestions:
+        st.info(f"🔧 {s}")
 
-    # Open positions & trade history
+    # Open Positions
     if open_positions:
         st.write("🟢 Open Positions")
         st.dataframe(pd.DataFrame(open_positions).T)
     else:
         st.info("No active trades.")
 
+    # Trade History
     if trade_log:
         st.write("📘 Trade History")
         st.dataframe(pd.DataFrame(trade_log))
     else:
         st.info("No trade history yet.")
 
+# ─── Main loop & entry point ────────────────────────────────────────────────
 def main_loop():
     while True:
         for pair in TRADING_PAIRS:
@@ -174,11 +188,10 @@ def main_loop():
             except Exception as e:
                 logger.exception(f"❌ Error in cycle for {pair}: {e}")
         display_dashboard()
-        time.sleep(10)
+        time.sleep(10)  # Polling delay
 
-# Entry point
 if st.sidebar.button("🚀 Start Trading Bot"):
-    st.success("Bot started!")
+    st.success("Bot started! 🚀")
     main_loop()
 else:
-    st.info("Ready to start. Configure and click launch.")
+    st.info("Ready. Configure settings & click ‘Start Trading Bot’ to begin.")
