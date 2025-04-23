@@ -113,23 +113,22 @@ def trade_logic(pair: str):
         is_dry_run=dry_run
     )
 
-    # Record/exit position
+    # Build metrics record
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    record = {
-        "timestamp": now,
-        "pair": pair,
-        "action": action.upper(),
-        "amount": amount
-    }
-
-    if action == "buy":
-        record["entry_price"] = price
-        open_positions[pair] = {"amount": amount, "entry_price": price, **result}
-    elif action == "close":
-        record["exit_price"] = price
+    if action == "close":
+        record = {
+            "timestamp":   now,
+            "pair":        pair,
+            "action":      "CLOSE",
+            "amount":      amount,
+            "entry_price": open_positions[pair]["entry_price"],
+            "exit_price":  price,
+        }
+        trade_log.append(record)  # Only log on CLOSE
         open_positions.pop(pair, None)
+    elif action == "buy":
+        open_positions[pair] = {"amount": amount, "entry_price": price}
 
-    trade_log.append(record)
     track_trade_result(result, pair, action.upper())
 
     # Add trailing stop, if provided
