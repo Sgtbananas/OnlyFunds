@@ -1,11 +1,17 @@
 # utils/__init__.py
 
-# Expose all helper functions as package-level imports
+"""
+Package‐wide convenience imports for OnlyFunds utilities.
+Exposes only the functions and decorators that exist in helpers.py and decorators.py.
+"""
 
-from .helpers import (
-    save_json, load_json,
-    validate_pair, check_rate_limit,
-    format_timestamp, generate_random_string,
-    calculate_performance, suggest_tuning_parameters
-)
-from .decorators import log_execution_time, log_api_call, retry_on_failure, cache_result
+from .helpers    import compute_trade_metrics, suggest_tuning
+from .decorators import log_execution_time, retry_on_failure, cache_result
+
+__all__ = [
+    "compute_trade_metrics",
+    "suggest_tuning",
+    "log_execution_time",
+    "retry_on_failure",
+    "cache_result",
+]
