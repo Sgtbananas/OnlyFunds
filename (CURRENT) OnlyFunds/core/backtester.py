@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) -> pd.DataFrame:
+def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) -> tuple:
     """
     Backtests trading strategy based on signal crossing threshold.
     Entry on signal > threshold (long), < -threshold (short).
@@ -57,7 +57,7 @@ def run_backtest(signals: pd.Series, prices: pd.Series, threshold: float = 0.5) 
             "avg_return": 0.0,
             "sharpe": 0.0,
             "max_drawdown": 0.0
-        }])
+        }]), pd.DataFrame()
 
     returns = np.array(returns)
     cum_returns = np.cumsum(returns)
