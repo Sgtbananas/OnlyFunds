@@ -12,7 +12,7 @@ def run_backtest(
     log_every_n: int = 50   # Only log every N steps if verbose is True
 ) -> pd.DataFrame:
     """
-    Backtest a signal with a given threshold and return trade results.
+    Backtest a signal with a given threshold and return a combined DataFrame.
 
     Parameters:
     - signal (pd.Series): The trading signal, smoothed and clipped to [-1, 1].
@@ -24,12 +24,9 @@ def run_backtest(
     - log_every_n (int): Log every N steps if verbose is enabled.
 
     Returns:
-    - pd.DataFrame: A DataFrame of trade results with columns:
-        - entry_price: The price at which the position was entered.
-        - exit_price: The price at which the position was exited.
-        - return: The percentage return for the trade.
-        - profit: The profit for the trade.
-        - capital: The capital after each trade.
+    - pd.DataFrame: A single DataFrame containing both summary metrics and trade details.
+      Summary metrics are included as the first row with the column "type" set to "summary".
+      Trade details follow with the column "type" set to "trade".
     """
     trades = []
     position = None  # Tracks the current position
@@ -65,9 +62,10 @@ def run_backtest(
             profit = position_size * (exit_price - entry_price)
             capital += position_size * exit_price  # Add position value back to capital
             trades.append({
+                "type": "trade",
                 "entry_price": entry_price,
                 "exit_price": exit_price,
-                "return": return_pct,  # Renamed from 'return_pct' for compatibility
+                "return": return_pct,
                 "profit": profit,
                 "capital": capital,
             })
@@ -75,12 +73,25 @@ def run_backtest(
             position = None  # Reset position
 
     # Convert trade results to a DataFrame
-    trade_results = pd.DataFrame(trades)
+    trades_df = pd.DataFrame(trades)
 
-    if trade_results.empty:
+    # Compute summary metrics
+    summary = {
+        "type": "summary",
+        "trades": len(trades_df),
+        "avg_return": trades_df["return"].mean() if not trades_df.empty else 0,
+        "win_rate": (trades_df["return"] > 0).mean() * 100 if not trades_df.empty else 0,
+        "capital": capital,
+    }
+    summary_df = pd.DataFrame([summary])
+
+    # Combine summary and trades into a single DataFrame
+    combined_df = pd.concat([summary_df, trades_df], ignore_index=True)
+
+    if trades_df.empty:
         logging.warning("No trades executed during backtest.")
     else:
-        avg_return = trade_results["return"].mean()  # Updated to use 'return'
-        logging.info(f"Backtest complete: {len(trade_results)} trades, Avg Return: {avg_return:.2%}")
+        avg_return = summary["avg_return"]
+        logging.info(f"Backtest complete: {summary['trades']} trades, Avg Return: {avg_return:.2%}")
 
-    return trade_results
+    return combined_df
