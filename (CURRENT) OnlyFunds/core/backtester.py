@@ -6,7 +6,9 @@ def run_backtest(
     signal: pd.Series,
     prices: pd.Series,
     threshold: float = 0.05,
-    initial_capital: float = 1000.0
+    initial_capital: float = 1000.0,
+    verbose: bool = False,  # Toggle for detailed logging
+    log_every_n: int = 50   # Only log every N steps if verbose is True
 ) -> pd.DataFrame:
     """
     Backtest a signal with a given threshold and return trade results.
@@ -16,6 +18,8 @@ def run_backtest(
     - prices (pd.Series): The corresponding prices to trade.
     - threshold (float): The signal strength threshold for entering trades.
     - initial_capital (float): Starting capital for the backtest.
+    - verbose (bool): Enable detailed step-by-step logging.
+    - log_every_n (int): Log every N steps if verbose is enabled.
 
     Returns:
     - pd.DataFrame: A DataFrame of trade results with columns:
@@ -30,6 +34,10 @@ def run_backtest(
     for i in range(len(signal)):
         sig = signal.iloc[i]
         price = prices.iloc[i]
+
+        # Optional verbose logging
+        if verbose and (i % log_every_n == 0):
+            logging.debug(f"Step {i}: Signal={sig:.4f}, Price={price:.2f}, Position={position}")
 
         # Handle LONG entry
         if sig > threshold and position is None:
