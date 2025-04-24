@@ -19,7 +19,6 @@ from core.backtester import run_backtest
 from utils.helpers import compute_trade_metrics, suggest_tuning
 
 # ─── Streamlit Configuration ──────────────────────────────────────────────────
-# This must be the first Streamlit command in the script
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 
 # ─── Load env & defaults ──────────────────────────────────────────────────────
@@ -110,12 +109,12 @@ def trade_logic(pair: str):
         st.dataframe(trades_df)
         return  # Exit after backtesting
 
-    # Decide BUY or EXIT
+    # Decide BUY or SELL
     action = None
-    if latest_signal > threshold and pair not in open_positions:
+    if latest_signal > threshold and pair not in open_positions:  # Buy signal
         action = "buy"
-    elif latest_signal < 0 and pair in open_positions:
-        action = "sell"  # Close existing long position
+    elif pair in open_positions:  # Sell signal if already long
+        action = "sell"
     else:
         return  # No action
 
