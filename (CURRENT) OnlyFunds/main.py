@@ -89,7 +89,7 @@ def trade_logic(pair: str):
 
     df = add_indicators(df)
     raw_signal = generate_signal(df)
-    df["signal"] = smooth_signal(raw_signal)  # Store smoothed signal for thresholding
+    smoothed = smooth_signal(raw_signal)  # Store smoothed signal for thresholding
 
     # Determine threshold (manual or AI-tuned)
     if autotune:
@@ -99,7 +99,16 @@ def trade_logic(pair: str):
 
     logger.debug(f"Threshold for {pair}: {threshold}")
 
-    latest_signal = df["signal"].iloc[-1]
+    latest_signal = smoothed.iloc[-1]
+
+    # Handle backtesting mode
+    if backtest_mode:
+        summary_df, trades_df = run_backtest(smoothed, df["Close"], threshold)
+        st.write("📊 Backtest Summary:")
+        st.dataframe(summary_df)
+        st.write("📘 Trade Details:")
+        st.dataframe(trades_df)
+        return  # Exit after backtesting
 
     # Decide BUY or EXIT
     action = None
