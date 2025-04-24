@@ -27,7 +27,7 @@ load_dotenv()
 DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
 DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 1000))
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))
-DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.05))  # Lower default threshold for better trading
+DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.1))  # Adjusted for spot scalping
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
