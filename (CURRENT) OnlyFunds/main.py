@@ -117,30 +117,47 @@ def trade_logic(pair: str):
             return
 
     price = df["Close"].iloc[-1]
-    # Dynamically calculate amount based on DEFAULT_CAPITAL and RISK_PER_TRADE
-    amount = (DEFAULT_CAPITAL * risk_pct) / price if action == "buy" else open_positions[pair]["amount"]
-    logger.debug(f"Calculated trade amount: {amount:.4f} for price: {price:.2f}")
-
-    if not backtest_mode:
-        result = place_order(pair=pair, action=action, amount=amount, price=price, is_dry_run=dry_run)
-        track_trade_result(result, pair, action.upper())
-
-    # Update open positions or trade log
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Handle BUY action
+    if action == "buy":
+        amount = (DEFAULT_CAPITAL * risk_pct) / price
+        open_positions[pair] = {
+            "timestamp": now,
+            "action": "BUY",
+            "entry_price": price,
+            "amount": amount,
+        }
+        logger.info(f"📥 BUY {pair} at {price:.2f}")
+        return
+
+    # Handle SELL action
     if action == "sell":
+        position = open_positions.pop(pair)
+        exit_price = price
+        return_pct = (exit_price - position["entry_price"]) / position["entry_price"]
+
         record = {
-            "timestamp":   now,
-            "pair":        pair,
-            "action":      "SELL",
-            "amount":      amount,
-            "entry_price": open_positions[pair]["entry_price"],
-            "exit_price":  price,
+            "timestamp": now,
+            "pair": pair,
+            "action": "SELL",
+            "entry_price": position["entry_price"],
+            "exit_price": exit_price,
+            "amount": position["amount"],
+            "return_pct": return_pct,
         }
         trade_log.append(record)
-        logging.info(f"Trade logged: {record}")
-        open_positions.pop(pair, None)
-    elif action == "buy":
-        open_positions[pair] = {"amount": amount, "entry_price": price}
+        logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}")
+
+        if not backtest_mode:
+            result = place_order(
+                pair=pair,
+                action=action,
+                amount=position["amount"],
+                price=exit_price,
+                is_dry_run=dry_run,
+            )
+            track_trade_result(result, pair, action.upper())
 
 # ─── Dashboard & Metrics ─────────────────────────────────────────────────────
 def display_dashboard():
