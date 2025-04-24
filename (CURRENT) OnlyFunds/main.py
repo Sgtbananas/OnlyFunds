@@ -27,6 +27,7 @@ load_dotenv()
 DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
 DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 1000))
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))
+DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.05))  # Lower default threshold for better trading
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -55,7 +56,7 @@ max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
 threshold_slider = st.sidebar.slider(
     "Entry Threshold", 
     min_value=0.0, max_value=1.0, 
-    value=0.2, step=0.01,
+    value=DEFAULT_THRESHOLD, step=0.01,
     help="How strong must the signal be before we BUY/SELL?"
 )
 
@@ -87,17 +88,18 @@ def trade_logic(pair: str):
         return
 
     df = add_indicators(df)
+    raw_signal = generate_signal(df)
+    df["signal"] = smooth_signal(raw_signal)  # Store smoothed signal for thresholding
 
     # Determine threshold (manual or AI-tuned)
     if autotune:
-        threshold = adaptive_threshold(df)
-        logger.debug(f"Adaptive threshold for {pair}: {threshold}")
+        threshold = adaptive_threshold(df, signal_col="signal")
     else:
-        threshold = threshold_slider
+        threshold = DEFAULT_THRESHOLD
 
-    raw_signal = generate_signal(df)
-    smoothed = smooth_signal(raw_signal)
-    latest_signal = smoothed.iloc[-1]
+    logger.debug(f"Threshold for {pair}: {threshold}")
+
+    latest_signal = df["signal"].iloc[-1]
 
     # Decide BUY or SELL
     action = None
@@ -116,18 +118,14 @@ def trade_logic(pair: str):
 
     price = df["Close"].iloc[-1]
     # Dynamically calculate amount based on DEFAULT_CAPITAL and RISK_PER_TRADE
-    amount = (DEFAULT_CAPITAL * RISK_PER_TRADE) / price if action == "buy" else open_positions[pair]["amount"]
+    amount = (DEFAULT_CAPITAL * risk_pct) / price if action == "buy" else open_positions[pair]["amount"]
     logger.debug(f"Calculated trade amount: {amount:.4f} for price: {price:.2f}")
 
-    result = place_order(
-        pair=pair,
-        action=action,
-        amount=amount,
-        price=price,
-        is_dry_run=dry_run
-    )
+    if not backtest_mode:
+        result = place_order(pair=pair, action=action, amount=amount, price=price, is_dry_run=dry_run)
+        track_trade_result(result, pair, action.upper())
 
-    # Build metrics record
+    # Update open positions or trade log
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     if action == "sell":
         record = {
@@ -138,42 +136,32 @@ def trade_logic(pair: str):
             "entry_price": open_positions[pair]["entry_price"],
             "exit_price":  price,
         }
-        trade_log.append(record)  # Only log on SELL
+        trade_log.append(record)
         logging.info(f"Trade logged: {record}")
         open_positions.pop(pair, None)
     elif action == "buy":
         open_positions[pair] = {"amount": amount, "entry_price": price}
 
-    track_trade_result(result, pair, action.upper())
-
 # ─── Dashboard & Metrics ─────────────────────────────────────────────────────
 def display_dashboard():
     st.subheader("📈 Live Dashboard")
 
-    # 1) Performance metrics
+    # Performance metrics
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
     st.metric("Total Return", f"{perf['total_return']:.2%}")
     st.metric("Win Rate",     f"{perf['win_rate']:.2%}")
 
-    # 2) Tuning suggestions
-    suggestions = suggest_tuning(perf)
-    for s in suggestions:
-        st.info(f"🔧 {s}")
-
-    # 3) Open positions
+    # Open positions
     if open_positions:
         st.write("🟢 Open Positions")
-
-        # Build a DataFrame and pick only existing columns
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
         desired_cols = ["amount", "entry_price"]
         cols = [c for c in desired_cols if c in df_open.columns]
         st.dataframe(df_open[cols])
-
     else:
         st.info("No active trades.")
 
-    # 4) Trade History
+    # Trade History
     if trade_log:
         st.write("📘 Trade History")
         st.dataframe(pd.DataFrame(trade_log))
