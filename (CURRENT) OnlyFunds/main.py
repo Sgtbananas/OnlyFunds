@@ -99,14 +99,14 @@ def trade_logic(pair: str):
     smoothed = smooth_signal(raw_signal)
     latest_signal = smoothed.iloc[-1]
 
-    # Decide BUY or CLOSE
+    # Decide BUY or SELL
     action = None
     if latest_signal > threshold and pair not in open_positions:
         action = "buy"
-    elif latest_signal < threshold and pair in open_positions:
-        action = "close"
+    elif latest_signal < 0 and pair in open_positions:
+        action = "sell"  # close existing long
     else:
-        return  # either flat no‐trade, or negative signal while flat
+        return  # No action
 
     # Enforce position limits on BUY
     if action == "buy":
@@ -127,26 +127,22 @@ def trade_logic(pair: str):
 
     # Build metrics record
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    if action == "close":
+    if action == "sell":
         record = {
             "timestamp":   now,
             "pair":        pair,
-            "action":      "CLOSE",
+            "action":      "SELL",
             "amount":      amount,
             "entry_price": open_positions[pair]["entry_price"],
             "exit_price":  price,
         }
-        trade_log.append(record)  # Only log on CLOSE
+        trade_log.append(record)  # Only log on SELL
         logging.info(f"Trade logged: {record}")
         open_positions.pop(pair, None)
     elif action == "buy":
         open_positions[pair] = {"amount": amount, "entry_price": price}
 
     track_trade_result(result, pair, action.upper())
-
-    # Add trailing stop, if provided
-    if "order_price" in result:
-        result["trailing_stop"] = result["order_price"] * (1 - trailing_stop_pct)
 
 # ─── Dashboard & Metrics ─────────────────────────────────────────────────────
 def display_dashboard():
@@ -168,7 +164,7 @@ def display_dashboard():
 
         # Build a DataFrame and pick only existing columns
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
-        desired_cols = ["amount", "entry_price", "trailing_stop"]
+        desired_cols = ["amount", "entry_price"]
         cols = [c for c in desired_cols if c in df_open.columns]
         st.dataframe(df_open[cols])
 
