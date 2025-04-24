@@ -1,55 +1,61 @@
-import logging
-import numpy as np
 import pandas as pd
-
-logger = logging.getLogger(__name__)
+import numpy as np
+import logging
 
 def run_backtest(
-    signals: pd.Series,
+    signal: pd.Series,
     prices: pd.Series,
-    threshold: float = 0.5
+    threshold: float = 0.05,
+    initial_capital: float = 1000.0
 ) -> pd.DataFrame:
     """
-    Simulates trades:
-      - Goes long when signal > threshold
-      - Exits long when signal < 0
-      - (No shorts in spot market)
-    Returns a DataFrame of individual trade returns.
+    Backtest a signal with a given threshold and return trade results.
+
+    Parameters:
+    - signal (pd.Series): The trading signal, smoothed and clipped to [-1, 1].
+    - prices (pd.Series): The corresponding prices to trade.
+    - threshold (float): The signal strength threshold for entering trades.
+    - initial_capital (float): Starting capital for the backtest.
+
+    Returns:
+    - pd.DataFrame: A DataFrame of trade results with columns:
+        - entry_price: The price at which the position was entered.
+        - exit_price: The price at which the position was exited.
+        - return_pct: The percentage return for the trade.
     """
-    position_open = False
-    entry_price   = 0.0
-    returns       = []
+    trades = []
+    position = None  # Tracks the current position
+    entry_price = None
 
-    for step, (sig, price) in enumerate(zip(signals, prices), start=1):
-        # Only debug‐level log so it won't spam by default
-        logger.debug(f"Step {step}: Signal={sig:.4f}, Price={price:.2f}, Position Open={position_open}")
+    for i in range(len(signal)):
+        sig = signal.iloc[i]
+        price = prices.iloc[i]
 
-        if not position_open and sig > threshold:
-            position_open = True
-            entry_price   = price
-            logger.debug(f"  → Entered LONG at {entry_price:.2f}")
+        # Handle BUY signal
+        if sig > threshold and position is None:
+            position = "long"
+            entry_price = price
+            logging.info(f"Entered LONG at {entry_price:.2f}")
 
-        elif position_open and sig < 0:
-            ret = (price - entry_price) / entry_price
-            returns.append(ret)
-            logger.debug(f"  → Closed LONG at {price:.2f}, Return={ret:.4%}")
-            position_open = False
+        # Handle SELL signal
+        elif sig < 0 and position == "long":
+            exit_price = price
+            return_pct = (exit_price - entry_price) / entry_price
+            trades.append({
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "return_pct": return_pct
+            })
+            logging.info(f"Exited LONG at {exit_price:.2f} → Return: {return_pct:.2%}")
+            position = None  # Reset position
 
-    # If nothing traded
-    if not returns:
-        logger.warning(
-            "⚠️ No trades executed during backtesting. Check your signals or thresholds. "
-            f"Threshold={threshold}, Signal range=({signals.min():.4f}, {signals.max():.4f})"
-        )
+    # Convert trade results to a DataFrame
+    trade_results = pd.DataFrame(trades)
 
-    # Log a one‐line summary at INFO level
+    if trade_results.empty:
+        logging.warning("No trades executed during backtest.")
     else:
-        avg_ret = np.mean(returns)
-        win_rate = np.mean([1 for r in returns if r > 0])
-        logger.info(
-            f"Backtest summary: {len(returns)} trades, "
-            f"avg return {avg_ret:.2%}, win_rate {win_rate:.2%}"
-        )
+        avg_return = trade_results["return_pct"].mean()
+        logging.info(f"Backtest complete: {len(trade_results)} trades, Avg Return: {avg_return:.2%}")
 
-    # Return a simple DataFrame
-    return pd.DataFrame({"return": returns})
+    return trade_results
