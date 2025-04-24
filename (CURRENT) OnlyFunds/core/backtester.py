@@ -27,7 +27,7 @@ def run_backtest(
     - pd.DataFrame: A DataFrame of trade results with columns:
         - entry_price: The price at which the position was entered.
         - exit_price: The price at which the position was exited.
-        - return_pct: The percentage return for the trade.
+        - return: The percentage return for the trade.
         - profit: The profit for the trade.
         - capital: The capital after each trade.
     """
@@ -67,7 +67,7 @@ def run_backtest(
             trades.append({
                 "entry_price": entry_price,
                 "exit_price": exit_price,
-                "return_pct": return_pct,
+                "return": return_pct,  # Renamed from 'return_pct' for compatibility
                 "profit": profit,
                 "capital": capital,
             })
@@ -80,7 +80,7 @@ def run_backtest(
     if trade_results.empty:
         logging.warning("No trades executed during backtest.")
     else:
-        avg_return = trade_results["return_pct"].mean()
+        avg_return = trade_results["return"].mean()  # Updated to use 'return'
         logging.info(f"Backtest complete: {len(trade_results)} trades, Avg Return: {avg_return:.2%}")
 
     return trade_results
