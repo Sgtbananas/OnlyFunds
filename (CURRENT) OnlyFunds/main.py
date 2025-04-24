@@ -101,12 +101,12 @@ def trade_logic(pair: str):
 
     latest_signal = df["signal"].iloc[-1]
 
-    # Decide BUY or SELL
+    # Decide BUY or EXIT
     action = None
     if latest_signal > threshold and pair not in open_positions:
         action = "buy"
     elif latest_signal < 0 and pair in open_positions:
-        action = "sell"  # close existing long
+        action = "sell"  # Close existing long position
     else:
         return  # No action
 
