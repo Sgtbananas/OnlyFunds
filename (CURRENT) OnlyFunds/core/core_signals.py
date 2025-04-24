@@ -32,31 +32,46 @@ def smooth_signal(signal: pd.Series, window: int = 5) -> pd.Series:
     """Rolling mean to smooth noise."""
     return signal.rolling(window, min_periods=1).mean()
 
-def adaptive_threshold(df: pd.DataFrame, target_profit: float = 0.01) -> float:
+def adaptive_threshold(
+    df: pd.DataFrame,
+    signal_col: str = "signal",      # You might generate_signal(df) into df["signal"]
+    target_profit: float = 0.0,      # We just look for any positive avg return
+    thresholds: np.ndarray = None   # Allow injecting a custom grid
+) -> float:
     """
-    Dynamically tune threshold by scanning from 0.1 to 0.9 in 0.05 steps
-    and choosing the threshold which gave the highest average backtest return.
+    Dynamically choose a threshold that:
+      - Actually produces trades in backtest
+      - Maximizes average return
     """
     try:
-        signal = smooth_signal(generate_signal(df))
-        prices = df["Close"]
+        if thresholds is None:
+            # Scan from very small up to the max absolute signal
+            signals = df[signal_col].fillna(0).abs()
+            max_sig = signals.max()
+            # Scan 20 steps between 1% of max to 100% of max
+            thresholds = np.linspace(max_sig * 0.01, max_sig, 20)
 
-        best_thresh = 0.1
-        best_return = -np.inf
+        best_t = thresholds[0]
+        best_ret = -np.inf
 
-        # Scan for the best threshold
-        for t in np.arange(0.1, 1.0, 0.05):
-            bt = run_backtest(signal, prices, threshold=t)
+        for t in thresholds:
+            bt = run_backtest(df[signal_col], df["Close"], threshold=t)
             if bt.empty:
                 continue
             avg_ret = bt["return"].mean()
-            logging.debug(f"Threshold {t:.2f} → avg_return {avg_ret:.4f}")
-            if avg_ret > best_return:
-                best_return = avg_ret
-                best_thresh = t
+            logging.info(f"Threshold={t:.4f} → trades={len(bt)}, avg_return={avg_ret:.4%}")
+            if avg_ret > best_ret:
+                best_ret = avg_ret
+                best_t = t
 
-        logging.info(f"✨ Chosen threshold = {best_thresh:.2f} (avg_return={best_return:.4f})")
-        return round(best_thresh, 2)
+        if best_ret == -np.inf:
+            logging.warning(
+                "⚠️ adaptive_threshold: no trades for any threshold, "
+                f"falling back to 0.01 (signal max={thresholds.max():.4f})"
+            )
+            return thresholds.min()  # Something tiny so you at least trade
+        logging.info(f"✨ Chosen threshold = {best_t:.4f} (avg_return={best_ret:.4%})")
+        return float(best_t)
 
     except Exception as e:
         logging.error(f"adaptive_threshold failed: {e}")
