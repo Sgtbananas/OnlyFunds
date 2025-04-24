@@ -110,25 +110,20 @@ def trade_logic(pair: str):
     else:
         return  # No action
 
-    # Enforce position limits on BUY
-    if action == "buy":
-        if len(open_positions) >= max_positions:
-            logger.info("🚫 Max open positions reached → skipping BUY")
-            return
-
+    global DEFAULT_CAPITAL
     price = df["Close"].iloc[-1]
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Handle BUY action
     if action == "buy":
-        amount = (DEFAULT_CAPITAL * risk_pct) / price
+        position_size = (DEFAULT_CAPITAL * risk_pct) / price
         open_positions[pair] = {
             "timestamp": now,
             "action": "BUY",
             "entry_price": price,
-            "amount": amount,
+            "amount": position_size,
         }
-        logger.info(f"📥 BUY {pair} at {price:.2f}")
+        logging.info(f"📥 BUY {pair} at {price:.2f}, Size: {position_size:.4f}")
         return
 
     # Handle SELL action
@@ -136,6 +131,8 @@ def trade_logic(pair: str):
         position = open_positions.pop(pair)
         exit_price = price
         return_pct = (exit_price - position["entry_price"]) / position["entry_price"]
+        profit = position["amount"] * (exit_price - position["entry_price"])
+        DEFAULT_CAPITAL += position["amount"] * exit_price  # Update capital after the trade
 
         record = {
             "timestamp": now,
@@ -145,9 +142,11 @@ def trade_logic(pair: str):
             "exit_price": exit_price,
             "amount": position["amount"],
             "return_pct": return_pct,
+            "profit": profit,
+            "capital": DEFAULT_CAPITAL,
         }
         trade_log.append(record)
-        logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}")
+        logging.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}, Capital: {DEFAULT_CAPITAL:.2f}")
 
         if not backtest_mode:
             result = place_order(
