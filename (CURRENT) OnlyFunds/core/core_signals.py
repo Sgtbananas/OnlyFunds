@@ -1,3 +1,5 @@
+# core/core_signals.py
+
 import os
 import json
 import logging
@@ -5,14 +7,18 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
-from core.backtester import run_backtest  # for adaptive thresholding
+
+# backtester is assumed to expose run_backtest(signals: pd.Series, prices: pd.Series, threshold: float) -> pd.DataFrame
+from core.backtester import run_backtest
 
 load_dotenv()
 LOG_FILE = os.getenv("SIGNAL_LOG", "signals_log.json")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 
 def generate_signal(df: pd.DataFrame) -> pd.Series:
     """
-    Composite signal: RSI, MACD diff, EMA diff, BB position.
+    Composite signal: RSI, MACD diff, EMA diff, Bollinger Bands position.
     Clipped to [-1,1].
     """
     try:
@@ -26,64 +32,65 @@ def generate_signal(df: pd.DataFrame) -> pd.Series:
         return sig.clip(-1, 1)
     except Exception as e:
         logging.error(f"generate_signal error: {e}")
+        # Return a zero series as fallback
         return pd.Series(0, index=df.index)
+
 
 def smooth_signal(signal: pd.Series, window: int = 5) -> pd.Series:
     """Rolling mean to smooth noise."""
     return signal.rolling(window, min_periods=1).mean()
 
+
 def adaptive_threshold(
     df: pd.DataFrame,
-    signal_col: str = "signal",      # You might generate_signal(df) into df["signal"]
-    target_profit: float = 0.0,      # We just look for any positive avg return
-    thresholds: np.ndarray = None   # Allow injecting a custom grid
+    target_profit: float = 0.0,
+    n_steps: int = 20
 ) -> float:
     """
     Dynamically choose a threshold that:
       - Actually produces trades in backtest
       - Maximizes average return
+    Falls back to a small threshold if nothing trades.
     """
-    try:
-        if thresholds is None:
-            # Scan from very small up to the max absolute signal
-            signals = df[signal_col].fillna(0).abs()
-            max_sig = signals.max()
-            # Scan 20 steps between 1% of max to 100% of max
-            thresholds = np.linspace(max_sig * 0.01, max_sig, 20)
+    # First generate+smooth the signal series
+    sig = smooth_signal(generate_signal(df)).fillna(0)
+    abs_max = sig.abs().max()
 
-        best_t = thresholds[0]
-        best_ret = -np.inf
+    # build threshold grid from 1% of max up to max
+    if abs_max <= 0:
+        return 0.0
+    thresholds = np.linspace(abs_max * 0.01, abs_max, n_steps)
 
-        for t in thresholds:
-            bt = run_backtest(df[signal_col], df["Close"], threshold=t)
-            if bt.empty:
-                continue
-            avg_ret = bt["return"].mean()
-            logging.info(f"Threshold={t:.4f} → trades={len(bt)}, avg_return={avg_ret:.4%}")
-            if avg_ret > best_ret:
-                best_ret = avg_ret
-                best_t = t
+    best_t, best_ret = thresholds[0], -np.inf
+    for t in thresholds:
+        bt = run_backtest(sig, df["Close"], threshold=t)
+        if bt.empty:
+            continue
+        avg_ret = bt["return"].mean()
+        logging.info(f"[Adaptive] t={t:.4f}, trades={len(bt)}, avg_ret={avg_ret:.4%}")
+        if avg_ret > best_ret:
+            best_ret, best_t = avg_ret, t
 
-        if best_ret == -np.inf:
-            logging.warning(
-                "⚠️ adaptive_threshold: no trades for any threshold, "
-                f"falling back to 0.01 (signal max={thresholds.max():.4f})"
-            )
-            return thresholds.min()  # Something tiny so you at least trade
-        logging.info(f"✨ Chosen threshold = {best_t:.4f} (avg_return={best_ret:.4%})")
-        return float(best_t)
+    if best_ret == -np.inf:
+        logging.warning(
+            f"⚠️ adaptive_threshold: no trades at any threshold; "
+            f"using fallback {thresholds.min():.4f}"
+        )
+        return float(thresholds.min())
 
-    except Exception as e:
-        logging.error(f"adaptive_threshold failed: {e}")
-        return 0.5
+    logging.info(f"✨ adaptive_threshold chosen={best_t:.4f} (avg_ret={best_ret:.4%})")
+    return float(best_t)
 
-def track_trade_result(resp: dict, pair: str, action: str):
-    """Append a JSON record to disk."""
+
+def track_trade_result(response: dict, pair: str, action: str):
+    """
+    Append a JSON record to disk for auditing.
+    """
     rec = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "pair":      pair,
         "action":    action,
-        "response":  resp
+        "response":  response
     }
     try:
         data = []
