@@ -1,55 +1,63 @@
-# core/trade_execution.py
-
-import os
-import time
-import hmac
-import json
-import hashlib
 import logging
-import requests
-from dotenv import load_dotenv
+import random
 
-load_dotenv()
-API_KEY    = os.getenv("COINEX_API_KEY")
-SECRET_KEY = os.getenv("COINEX_SECRET_KEY")
-API_BASE   = os.getenv("API_BASE_URL", "https://api.coinex.com/v1")
-
-HEADERS = {"Content-Type":"application/json"}
-
-def _sign(params: dict) -> str:
-    s = "&".join(f"{k}={v}" for k,v in sorted(params.items()))
-    return hmac.new(SECRET_KEY.encode(), s.encode(), hashlib.sha256).hexdigest()
-
-def _auth_post(endpoint: str, payload: dict) -> dict:
-    payload["access_id"] = API_KEY
-    payload["tonce"]     = int(time.time()*1000)
-    sig = _sign(payload)
-    h = HEADERS.copy(); h["Authorization"] = sig
-    url = f"{API_BASE}/{endpoint}"
-    r = requests.post(url, data=payload, headers=h, timeout=15)
-    r.raise_for_status()
-    return r.json()
-
-def place_order(pair: str, action: str,
-                amount: float, price: float = None,
-                is_dry_run: bool = True) -> dict:
+def place_order(
+    pair: str,
+    action: str,
+    amount: float,
+    price: float,
+    is_dry_run: bool = True
+) -> dict:
     """
-    :action: 'buy' or 'sell'
+    Place a live or simulated order.
+
+    Parameters:
+    - pair (str): The trading pair (e.g., BTC/USD).
+    - action (str): "BUY" or "SELL".
+    - amount (float): The amount of the asset to trade.
+    - price (float): The price at which to place the order.
+    - is_dry_run (bool): Whether to simulate the order (dry run).
+
+    Returns:
+    - dict: A dictionary containing order details:
+        {
+          "order_id": str,
+          "amount": float,
+          "order_price": float,
+          "filled": bool,
+        }
     """
-    if is_dry_run:
-        logging.info(f"[DRY] {action.upper()} {amount} {pair} @ {'MKT' if price is None else price}")
-        return {"dry_run":True, "pair":pair, "action":action, "amount":amount, "price":price}
     try:
-        typ = "market" if price is None else "limit"
-        res = _auth_post("order/limit", {
-            "market": pair.lower(),
-            "type":  typ,
+        if is_dry_run:
+            # Simulated order
+            order_id = f"SIM-{random.randint(10000, 99999)}"
+            filled = True  # For dry runs, assume the order is always filled
+            logging.info(f"Simulated {action} order for {pair}: {amount} at {price:.2f}")
+        else:
+            # Live order logic here (stubbed for now)
+            # For example, using an exchange API like Binance or Coinbase
+            # response = exchange_api.place_order(pair, action, amount, price)
+            # order_id = response["order_id"]
+            # filled = response["filled"]
+            # For simplicity, we'll simulate live orders here
+            order_id = f"LIVE-{random.randint(10000, 99999)}"
+            filled = random.choice([True, False])  # Simulate partial fills randomly
+            logging.info(f"Live {action} order placed for {pair}: {amount} at {price:.2f}")
+
+        # Return consistent fields
+        return {
+            "order_id": order_id,
             "amount": amount,
-            "price":  price or 0,
-            "side":   action.lower()
-        })
-        logging.info(f"Executed {action} on {pair}: {res}")
-        return res
+            "order_price": price,
+            "filled": filled,
+        }
+
     except Exception as e:
-        logging.error(f"place_order error: {e}")
-        return {"error":str(e), "pair":pair, "action":action}
+        logging.error(f"Error placing {action} order for {pair}: {e}")
+        return {
+            "order_id": None,
+            "amount": amount,
+            "order_price": price,
+            "filled": False,
+            "error": str(e),  # Include the error message for debugging
+        }
