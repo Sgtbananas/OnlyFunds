@@ -93,7 +93,7 @@ def trade_logic(pair: str):
 
     # Determine threshold (manual or AI-tuned)
     if autotune:
-        threshold = adaptive_threshold(df, signal_col="signal")
+        threshold = adaptive_threshold(df, target_profit=0.01)
     else:
         threshold = DEFAULT_THRESHOLD
 
@@ -119,20 +119,28 @@ def trade_logic(pair: str):
     else:
         return  # No action
 
-    global DEFAULT_CAPITAL
+    # Enforce position limits on BUY
+    if action == "buy":
+        if len(open_positions) >= max_positions:
+            logger.info("🚫 Max open positions reached → skipping BUY")
+            return
+
     price = df["Close"].iloc[-1]
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Handle BUY action
     if action == "buy":
-        position_size = (DEFAULT_CAPITAL * risk_pct) / price
-        open_positions[pair] = {
+        amount = (DEFAULT_CAPITAL * risk_pct) / price
+        record = {
             "timestamp": now,
+            "pair": pair,
             "action": "BUY",
+            "amount": amount,
             "entry_price": price,
-            "amount": position_size,
         }
-        logging.info(f"📥 BUY {pair} at {price:.2f}, Size: {position_size:.4f}")
+        trade_log.append(record)  # Record BUY action
+        open_positions[pair] = {"amount": amount, "entry_price": price}
+        logger.info(f"📥 BUY {pair} at {price:.2f}")
         return
 
     # Handle SELL action
@@ -140,22 +148,17 @@ def trade_logic(pair: str):
         position = open_positions.pop(pair)
         exit_price = price
         return_pct = (exit_price - position["entry_price"]) / position["entry_price"]
-        profit = position["amount"] * (exit_price - position["entry_price"])
-        DEFAULT_CAPITAL += position["amount"] * exit_price  # Update capital after the trade
-
         record = {
             "timestamp": now,
             "pair": pair,
             "action": "SELL",
-            "entry_price": position["entry_price"],
-            "exit_price": exit_price,
             "amount": position["amount"],
+            "entry_price": position["entry_price"],  # Include entry price for performance tracking
+            "exit_price": exit_price,
             "return_pct": return_pct,
-            "profit": profit,
-            "capital": DEFAULT_CAPITAL,
         }
-        trade_log.append(record)
-        logging.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}, Capital: {DEFAULT_CAPITAL:.2f}")
+        trade_log.append(record)  # Record SELL action
+        logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}")
 
         if not backtest_mode:
             result = place_order(
