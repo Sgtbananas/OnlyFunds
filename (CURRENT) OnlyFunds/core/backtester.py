@@ -31,13 +31,13 @@ def run_backtest(
         sig = signal.iloc[i]
         price = prices.iloc[i]
 
-        # Handle BUY signal
+        # Handle LONG entry
         if sig > threshold and position is None:
             position = "long"
             entry_price = price
             logging.info(f"Entered LONG at {entry_price:.2f}")
 
-        # Handle SELL signal
+        # Handle LONG exit
         elif sig < 0 and position == "long":
             exit_price = price
             return_pct = (exit_price - entry_price) / entry_price
