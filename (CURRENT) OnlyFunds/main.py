@@ -115,7 +115,9 @@ def trade_logic(pair: str):
             return
 
     price = df["Close"].iloc[-1]
-    amount = (DEFAULT_CAPITAL * risk_pct) / price if action == "buy" else open_positions[pair]["amount"]
+    # Dynamically calculate amount based on DEFAULT_CAPITAL and RISK_PER_TRADE
+    amount = (DEFAULT_CAPITAL * RISK_PER_TRADE) / price if action == "buy" else open_positions[pair]["amount"]
+    logger.debug(f"Calculated trade amount: {amount:.4f} for price: {price:.2f}")
 
     result = place_order(
         pair=pair,
