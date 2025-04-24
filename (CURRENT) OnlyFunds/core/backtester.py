@@ -15,7 +15,7 @@ def run_backtest(
     Backtest a signal with a given threshold and return a combined DataFrame.
 
     Parameters:
-    - signal (pd.Series): The trading signal, smoothed and clipped to [-1, 1].
+    - signal (pd.Series): The trading signal, smoothed and clipped to [0, 1].
     - prices (pd.Series): The corresponding prices to trade.
     - threshold (float): The signal strength threshold for entering trades.
     - initial_capital (float): Starting capital for the backtest.
@@ -29,7 +29,7 @@ def run_backtest(
       Trade details follow with the column "type" set to "trade".
     """
     trades = []
-    position = None  # Tracks the current position
+    position = None  # Tracks the current position (only long)
     entry_price = None
     capital = initial_capital
 
@@ -42,7 +42,7 @@ def run_backtest(
             logging.debug(f"Step {i}: Signal={sig:.4f}, Price={price:.2f}, Position={position}, Capital={capital:.2f}")
 
         # Handle LONG entry
-        if sig > threshold and position is None:
+        if sig > threshold and position is None:  # Enter a long position
             # Compute position size based on available capital
             position_size = (capital * risk_pct) / price
             position = {
@@ -55,7 +55,7 @@ def run_backtest(
             logging.info(f"Entered LONG at {entry_price:.2f}, Size: {position_size:.4f}, Capital: {capital:.2f}")
 
         # Handle LONG exit
-        elif sig < 0 and position is not None:
+        elif sig < threshold and position is not None:  # Exit the long position
             exit_price = price
             position_size = position["size"]
             return_pct = (exit_price - entry_price) / entry_price
