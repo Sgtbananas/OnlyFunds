@@ -37,7 +37,10 @@ def run_backtest(
 
     # If nothing traded
     if not returns:
-        logger.warning("⚠️ No trades executed during backtesting. Check your signals or thresholds.")
+        logger.warning(
+            "⚠️ No trades executed during backtesting. Check your signals or thresholds. "
+            f"Threshold={threshold}, Signal range=({signals.min():.4f}, {signals.max():.4f})"
+        )
 
     # Log a one‐line summary at INFO level
     else:
