@@ -30,7 +30,7 @@ st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 # ─── Load env & defaults ──────────────────────────────────────────────────────
 load_dotenv()
 DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
-DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 1000))
+DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 10))
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))
 DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.1))  # Adjusted for spot scalping
 
