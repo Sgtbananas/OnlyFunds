@@ -8,25 +8,23 @@ COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]
 
 def generate_signal(df):
     """
-    Generate trading signals based on given indicators in the DataFrame.
+    Generate trading signals based on the composite indicator column.
 
     Parameters:
-    - df (pd.DataFrame): The DataFrame containing indicator columns.
+    - df (pd.DataFrame): The DataFrame containing the 'indicator' column.
 
     Returns:
     - pd.Series: A series of raw trading signals (e.g., [-1, 0, 1]).
     """
-    # Guard against missing 'indicator' column
+    # This should always be present now, but keep a defensive guard
     if "indicator" not in df.columns:
         logging.error(
             f"[generate_signal] Missing 'indicator' column. Available columns: {df.columns.tolist()}"
         )
-        # Return a zero signal series to prevent KeyError
         return pd.Series(0, index=df.index)
 
-    # Compute raw signal: +1 when indicator > 0, -1 when < 0, 0 otherwise
+    # Signal: +1 if indicator > 0, -1 if indicator < 0, 0 otherwise
     return (df["indicator"] > 0).astype(int) - (df["indicator"] < 0).astype(int)
-
 
 def smooth_signal(signal, smoothing_window=5):
     """
@@ -40,7 +38,6 @@ def smooth_signal(signal, smoothing_window=5):
     - pd.Series: The smoothed trading signal.
     """
     return signal.rolling(window=smoothing_window).mean().fillna(0)
-
 
 def adaptive_threshold(df, target_profit=0.01):
     """
@@ -87,7 +84,6 @@ def adaptive_threshold(df, target_profit=0.01):
             best_r, best_t = avg, t
 
     return best_t
-
 
 def track_trade_result(result, pair, action):
     """
