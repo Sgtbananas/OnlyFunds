@@ -8,24 +8,7 @@ import random
 from datetime import datetime
 
 def compute_trade_metrics(trade_log, initial_capital):
-    """
-    Compute performance metrics for a trade log.
-
-    Parameters:
-    - trade_log (list of dict): The trade log containing records of trades.
-    - initial_capital (float): The initial capital at the start of trading.
-
-    Returns:
-    - dict: A dictionary of performance metrics including:
-        - total_return: Total return as a percentage.
-        - win_rate: Percentage of winning trades.
-        - average_return: Average return per trade.
-        - max_drawdown: Maximum capital drawdown as a percentage.
-        - sharpe_ratio: Sharpe ratio of the trade returns.
-    """
     df = pd.DataFrame(trade_log)
-
-    # Early bail-out if no data or required fields absent
     required = {"entry_price", "exit_price"}
     if df.empty or not required.issubset(df.columns):
         return {
@@ -35,8 +18,6 @@ def compute_trade_metrics(trade_log, initial_capital):
             "max_drawdown": 0,
             "sharpe_ratio": 0
         }
-
-    # Remove any partially completed trades
     df = df.dropna(subset=["entry_price", "exit_price"])
     if df.empty:
         return {
@@ -46,28 +27,15 @@ def compute_trade_metrics(trade_log, initial_capital):
             "max_drawdown": 0,
             "sharpe_ratio": 0
         }
-
-    # Calculate returns for each trade
     df["trade_return"] = (df["exit_price"] - df["entry_price"]) / df["entry_price"]
-
-    # Total return
     final_capital = initial_capital * (1 + df["trade_return"]).prod()
     total_return = (final_capital - initial_capital) / initial_capital
-
-    # Win rate
     win_rate = (df["trade_return"] > 0).mean() * 100
-
-    # Average return
     average_return = df["trade_return"].mean()
-
-    # Max drawdown
     cumulative_returns = (1 + df["trade_return"]).cumprod()
     drawdown = 1 - cumulative_returns / cumulative_returns.cummax()
     max_drawdown = drawdown.max()
-
-    # Sharpe ratio
     sharpe_ratio = df["trade_return"].mean() / df["trade_return"].std() if df["trade_return"].std() != 0 else 0
-
     return {
         "total_return": total_return * 100,
         "win_rate": win_rate,
@@ -77,18 +45,8 @@ def compute_trade_metrics(trade_log, initial_capital):
     }
 
 def suggest_tuning(trade_log):
-    """
-    Suggest tuning recommendations based on the trade log.
-
-    Parameters:
-    - trade_log (list of dict): The trade log containing records of trades.
-
-    Returns:
-    - dict: A dictionary of tuning suggestions.
-    """
     if not trade_log:
         return {"suggestions": ["Insufficient data to provide tuning recommendations."]}
-
     df = pd.DataFrame(trade_log)
     suggestions = []
     if "return_pct" in df.columns:
@@ -103,35 +61,24 @@ def suggest_tuning(trade_log):
         suggestions.append("Sufficient data for comprehensive analysis.")
     else:
         suggestions.append("Gather more data for better tuning insights.")
-
     return {"suggestions": suggestions}
 
-# --- Additional general-purpose helpers below ---
-
 def save_json(data, filepath, **json_kwargs):
-    """Serialize `data` to a JSON file at `filepath`."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w") as f:
         json.dump(data, f, **json_kwargs)
 
 def load_json(filepath):
-    """Load and return JSON data from `filepath`."""
     with open(filepath, "r") as f:
         return json.load(f)
 
 def validate_pair(pair: str):
-    """
-    Ensure a symbol pair like "BTC/USDT" or compact "BTCUSDT".
-    Returns (base, quote) uppercased.
-    """
     if not isinstance(pair, str):
         raise ValueError(f"Invalid trading pair: {pair!r}")
     p = pair.strip().upper()
-    # Handle standard 'BASE/QUOTE'
     if "/" in p:
         base, quote = p.split("/", 1)
     else:
-        # Infer from common quote assets
         known_quotes = ["USDT", "BTC", "ETH", "BNB"]
         for q in known_quotes:
             if p.endswith(q) and len(p) > len(q):

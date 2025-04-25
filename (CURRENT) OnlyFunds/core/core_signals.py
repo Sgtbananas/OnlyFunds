@@ -6,31 +6,58 @@ from core.backtester import run_backtest
 COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]
 
 def generate_signal(df):
-    if "indicator" not in df.columns:
-        logging.error(
-            f"[generate_signal] Missing 'indicator' column. Available columns: {df.columns.tolist()}"
-        )
-        return pd.Series(0, index=df.index)
-    return (df["indicator"] > 0).astype(int) - (df["indicator"] < 0).astype(int)
+    """
+    Generate ensemble signals from multiple indicators:
+    - RSI breakout
+    - MACD cross
+    - EMA momentum
+    - Bollinger band squeeze & breakout
+    Returns: pd.Series of signal strength (clipped -1..1)
+    """
+    sig = pd.Series(0.0, index=df.index)
+    # RSI breakout: Strong buy when RSI crosses up from below 30, sell on 70 cross down
+    if "rsi" in df.columns:
+        sig += ((df["rsi"] > 30) & (df["rsi"].shift(1) <= 30)) * 0.5
+        sig -= ((df["rsi"] < 70) & (df["rsi"].shift(1) >= 70)) * 0.5
+    # MACD cross
+    if "macd" in df.columns and "macd_signal" in df.columns:
+        sig += (df["macd"] > df["macd_signal"]) * 0.3
+        sig -= (df["macd"] < df["macd_signal"]) * 0.3
+    # EMA momentum
+    if "ema_diff" in df.columns:
+        sig += (df["ema_diff"] > 0) * 0.3
+        sig -= (df["ema_diff"] < 0) * 0.3
+    # Bollinger squeeze & breakout
+    if "bollinger_upper" in df.columns and "bollinger_lower" in df.columns and "Close" in df.columns:
+        width = df["bollinger_upper"] - df["bollinger_lower"]
+        squeeze = width < width.rolling(20).mean() * 0.8
+        breakout = (df["Close"] > df["bollinger_upper"]) | (df["Close"] < df["bollinger_lower"])
+        sig += (squeeze & breakout) * 0.5
+    return sig.clip(-1, 1)
 
 def smooth_signal(signal, smoothing_window=5):
     return signal.rolling(window=smoothing_window).mean().fillna(0)
 
 def adaptive_threshold(df, target_profit=0.01):
-    best_t, best_r = 0.5, -float("inf")
+    """
+    Adaptive threshold selection based on expected value.
+    """
     sig = smooth_signal(generate_signal(df))
+    best_t, best_ev = 0.5, -float("inf")
     prices = df.get("Close") if "Close" in df.columns else pd.Series(0, index=df.index)
-    for t in np.arange(0.1, 1.0, 0.05):
+    for t in np.arange(0.05, 1.0, 0.05):
         combined_df = run_backtest(sig, prices, threshold=t)
         if "type" in combined_df.columns and combined_df.iloc[0].get("type") == "summary":
-            summary_record = combined_df.iloc[0]
+            trades_df = combined_df[combined_df["type"] == "trade"]
         else:
-            summary_record = combined_df.iloc[0]
-        avg = summary_record.get("avg_return")
-        if avg is None:
+            trades_df = combined_df
+        if trades_df.empty or "return" not in trades_df.columns:
             continue
-        if avg > best_r:
-            best_r, best_t = avg, t
+        win_pct = (trades_df["return"] > 0).mean()
+        avg_return = trades_df["return"].mean()
+        ev = avg_return * win_pct
+        if ev > best_ev:
+            best_ev, best_t = ev, t
     return best_t
 
 def track_trade_result(result, pair, action):

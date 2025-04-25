@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2025-04-25 09:12:30",
+    "pair": "LTCUSDT",
+    "action": "BUY",
+    "amount": 0.11809163911195086,
+    "entry_price": 84.68
+  },
+  {
+    "timestamp": "2025-04-25 09:13:46",
+    "pair": "LTCUSDT",
+    "action": "SELL",
+    "amount": 0.11809163911195086,
+    "entry_price": 84.68,
+    "exit_price": 84.68,
+    "return_pct": 0.0
+  }
+]

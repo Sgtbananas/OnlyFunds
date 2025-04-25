@@ -1,0 +1,98 @@
+[
+  {
+    "timestamp": "2025-04-23 12:39:10",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.00010675165806675309,
+      "price": 93675.36
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:43:04",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.00010682852184792831,
+      "price": 93607.96
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:43:53",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.00010682852184792831,
+      "price": 93607.96
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:46:23",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.00010682851043559646,
+      "price": 93607.97
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:46:37",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.00010682851043559646,
+      "price": 93607.97
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:47:35",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 5.341425521779823e-05,
+      "price": 93607.97
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:47:59",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 5.341425521779823e-05,
+      "price": 93607.97
+    }
+  },
+  {
+    "timestamp": "2025-04-23 12:48:27",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "response": {
+      "dry_run": true,
+      "pair": "BTCUSDT",
+      "action": "buy",
+      "amount": 0.0001602427656533947,
+      "price": 93607.97
+    }
+  }
+]
