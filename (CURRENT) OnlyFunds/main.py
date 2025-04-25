@@ -134,7 +134,20 @@ def trade_logic(pair: str):
 
     # Handle backtesting mode
     if backtest_mode:
-        summary_df, trades_df = run_backtest(smoothed, df["Close"], threshold)
+        # run_backtest now returns a single DataFrame with type='summary' and type='trade'
+        combined_df = run_backtest(smoothed, df["Close"], threshold)
+        # split out summary vs. trade details
+        summary_df = (
+            combined_df
+            .loc[combined_df["type"] == "summary"]
+            .drop(columns=["type"])
+        )
+        trades_df = (
+            combined_df
+            .loc[combined_df["type"] == "trade"]
+            .drop(columns=["type"])
+        )
+
         st.write("📊 Backtest Summary:")
         st.dataframe(summary_df)
         st.write("📘 Trade Details:")
