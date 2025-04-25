@@ -33,6 +33,9 @@ DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
 DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 10))
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))
 DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.1))  # Adjusted for spot scalping
+DEFAULT_STOP_LOSS = 0.005  # 0.5%
+DEFAULT_TAKE_PROFIT = 0.01  # 1%
+DEFAULT_FEE = 0.0004  # 0.04%
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,7 +55,7 @@ try:
     if os.path.exists(POSITIONS_FILE):
         open_positions = load_json(POSITIONS_FILE)
     else:
-        open_positions = {}  # pair -> { amount, entry_price, ...API response }
+        open_positions = {}
 except Exception as e:
     logger.warning(f"Failed to load {POSITIONS_FILE}: {e}")
     open_positions = {}
@@ -61,7 +64,7 @@ try:
     if os.path.exists(TRADE_LOG_FILE):
         trade_log = load_json(TRADE_LOG_FILE)
     else:
-        trade_log = []  # list of trade-record dicts for metrics
+        trade_log = []
 except Exception as e:
     logger.warning(f"Failed to load {TRADE_LOG_FILE}: {e}")
     trade_log = []
@@ -92,8 +95,10 @@ interval = st.sidebar.selectbox("Candle Interval",
                                  index=0)
 lookback = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)
 max_positions = st.sidebar.number_input("Max Open Positions", 1, 5, 2)
+stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, DEFAULT_STOP_LOSS*100.0, step=0.1) / 100
+take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, DEFAULT_TAKE_PROFIT*100.0, step=0.1) / 100
+fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, DEFAULT_FEE*100.0, step=0.01) / 100
 
-# Manual override for entry threshold
 threshold_slider = st.sidebar.slider(
     "Entry Threshold", 
     min_value=0.0, max_value=1.0, 
@@ -107,20 +112,17 @@ if start_btn:
 else:
     st.info("Ready. Configure & click Start.")
 
-# ─── Strategy risk params ─────────────────────────────────────────────────────
 if mode == "Conservative":
     risk_pct, trailing_stop_pct, scale_in = RISK_PER_TRADE * 0.5, 0.01, False
 elif mode == "Aggressive":
     risk_pct, trailing_stop_pct, scale_in = RISK_PER_TRADE * 1.5, 0.05, True
-else:  # Normal
+else:
     risk_pct, trailing_stop_pct, scale_in = RISK_PER_TRADE, 0.03, True
 
-# ─── Caching kline fetch ──────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def cached_fetch_klines(pair, interval, limit):
     return fetch_klines(pair=pair, interval=interval, limit=limit)
 
-# ─── Core Trade Logic ─────────────────────────────────────────────────────────
 def trade_logic(pair: str, current_capital):
     try:
         base, quote = validate_pair(pair)
@@ -134,23 +136,40 @@ def trade_logic(pair: str, current_capital):
         logger.warning(f"⚠️ Invalid/empty data for {pair}")
         return None, current_capital
 
+    # Volatility regime filter (optional, stub)
+    # vol = df["volatility"].rolling(20).mean().iloc[-1]
+    # if vol < df["volatility"].quantile(0.2):
+    #     logger.info(f"Skipping {pair} due to low volatility regime")
+    #     return None, current_capital
+
+    # Multi-timeframe confirmation (optional, stub)
+    # h1_df = cached_fetch_klines(pair, "1h", int(lookback / 4))
+    # indicator_h1 = ... # compute on h1_df
+    # if indicator_h1.iloc[-1] < 0:
+    #     return None, current_capital
+
     df = add_indicators(df)
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
 
-    # Determine threshold (manual or AI-tuned)
     if autotune:
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
-        threshold = DEFAULT_THRESHOLD
+        threshold = threshold_slider
 
     logger.debug(f"Threshold for {pair}: {threshold}")
-
     latest_signal = smoothed.iloc[-1]
 
-    # Handle backtesting mode - PURELY READ-ONLY
+    # --- Backtest mode: read-only, separate log ---
     if backtest_mode:
-        combined_df = run_backtest(smoothed, df["Close"], threshold, initial_capital=DEFAULT_CAPITAL)
+        combined_df = run_backtest(
+            smoothed, df["Close"], threshold,
+            initial_capital=DEFAULT_CAPITAL,
+            risk_pct=risk_pct,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            fee_pct=fee_pct,
+        )
         summary_df = (
             combined_df
             .loc[combined_df["type"] == "summary"]
@@ -161,23 +180,21 @@ def trade_logic(pair: str, current_capital):
             .loc[combined_df["type"] == "trade"]
             .drop(columns=["type"])
         )
-
         st.write(f"📊 Backtest Summary for {pair}:")
         st.dataframe(summary_df)
         st.write(f"📘 Trade Details for {pair}:")
         st.dataframe(trades_df)
-        return None, current_capital  # ← stop here in backtest mode, DO NOT mutate state
+        return None, current_capital
 
-    # --- Live mode below ---
+    # --- Live trading logic ---
     action = None
-    if latest_signal > threshold and pair not in open_positions:  # Buy signal
+    if latest_signal > threshold and pair not in open_positions:
         action = "buy"
-    elif pair in open_positions:  # Sell signal if already long
+    elif pair in open_positions:
         action = "sell"
     else:
-        return None, current_capital  # No action
+        return None, current_capital
 
-    # Enforce position limits on BUY
     if action == "buy":
         if len(open_positions) >= max_positions:
             logger.info("🚫 Max open positions reached → skipping BUY")
@@ -186,9 +203,8 @@ def trade_logic(pair: str, current_capital):
     price = df["Close"].iloc[-1]
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Handle BUY action
     if action == "buy":
-        amount = (current_capital * risk_pct) / price  # use current capital!
+        amount = (current_capital * risk_pct) / price
         record = {
             "timestamp": now,
             "pair": pair,
@@ -201,9 +217,8 @@ def trade_logic(pair: str, current_capital):
         logger.info(f"📥 BUY {pair} at {price:.2f}")
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
-        return None, current_capital  # Capital unchanged on BUY
+        return None, current_capital
 
-    # Handle SELL action
     if action == "sell":
         position = open_positions.pop(pair)
         exit_price = price
@@ -219,7 +234,7 @@ def trade_logic(pair: str, current_capital):
         }
         trade_log.append(record)
         logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}")
-        # Compound current capital
+        # Compound capital
         current_capital *= (1 + return_pct)
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
@@ -238,14 +253,12 @@ def trade_logic(pair: str, current_capital):
 
     return None, current_capital
 
-# ─── Dashboard & Metrics ─────────────────────────────────────────────────────
 def display_dashboard(current_capital):
     st.subheader("📈 Live Dashboard")
     perf = compute_trade_metrics(trade_log, current_capital)
     st.metric("Total Return", f"{perf['total_return']:.2%}")
     st.metric("Win Rate",     f"{perf['win_rate']:.2%}")
 
-    # Open positions
     if open_positions:
         st.write("🟢 Open Positions")
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
@@ -255,24 +268,20 @@ def display_dashboard(current_capital):
     else:
         st.info("No active trades.")
 
-    # Trade History
     if trade_log:
         st.write("📘 Trade History")
         st.dataframe(pd.DataFrame(trade_log))
     else:
         st.info("No trade history yet.")
 
-# ─── Main Loop ───────────────────────────────────────────────────────────────
 def main_loop():
     global current_capital
     if backtest_mode:
-        # Separate in-memory trade log for backtests, don't pollute live state!
         with st.spinner("Running backtest…"):
             for pair in TRADING_PAIRS:
                 trade_logic(pair, DEFAULT_CAPITAL)
         return
 
-    # Live mode: only act on new bars!
     last_timestamps = {pair: None for pair in TRADING_PAIRS}
     while True:
         for pair in TRADING_PAIRS:
@@ -285,8 +294,7 @@ def main_loop():
                 current_capital = updated_capital
                 last_timestamps[pair] = newest
         display_dashboard(current_capital)
-        time.sleep(1)  # Faster UI updates, but only acts on new bars
+        time.sleep(1)
 
-# ─── Entry Point ─────────────────────────────────────────────────────────────
 if start_btn:
     main_loop()
