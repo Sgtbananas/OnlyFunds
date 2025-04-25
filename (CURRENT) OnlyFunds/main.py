@@ -148,11 +148,11 @@ def trade_logic(pair: str):
             .drop(columns=["type"])
         )
 
-        st.write("📊 Backtest Summary:")
+        st.write(f"📊 Backtest Summary for {pair}:")
         st.dataframe(summary_df)
-        st.write("📘 Trade Details:")
+        st.write(f"📘 Trade Details for {pair}:")
         st.dataframe(trades_df)
-        return  # Exit after backtesting
+        # Do not return here; allow main_loop to run all pairs in backtest mode
 
     # Decide BUY or SELL
     action = None
@@ -248,6 +248,17 @@ def display_dashboard():
 
 # ─── Main Loop ───────────────────────────────────────────────────────────────
 def main_loop():
+    # If user asked for backtest, run it once for each pair, display, then exit.
+    if backtest_mode:
+        for pair in TRADING_PAIRS:
+            try:
+                trade_logic(pair)           # this will render backtest tables
+            except Exception as e:
+                logger.exception(f"❌ Error in backtest for {pair}: {e}")
+        display_dashboard()               # show combined metrics (from trade_log)
+        return                           # exit main_loop immediately
+
+    # Otherwise, live-trading mode: repeat every 10s
     while True:
         for pair in TRADING_PAIRS:
             try:
