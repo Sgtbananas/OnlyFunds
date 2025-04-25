@@ -46,15 +46,24 @@ POSITIONS_FILE = "state/open_positions.json"
 TRADE_LOG_FILE = "state/trade_log.json"
 
 # ─── State Loading ────────────────────────────────────────────────────────────
-if os.path.exists(POSITIONS_FILE):
-    open_positions = load_json(POSITIONS_FILE)
-else:
-    open_positions = {}  # pair -> { amount, entry_price, ...API response }
+os.makedirs("state", exist_ok=True)
+try:
+    if os.path.exists(POSITIONS_FILE):
+        open_positions = load_json(POSITIONS_FILE)
+    else:
+        open_positions = {}  # pair -> { amount, entry_price, ...API response }
+except Exception as e:
+    logger.warning(f"Failed to load {POSITIONS_FILE}: {e}")
+    open_positions = {}
 
-if os.path.exists(TRADE_LOG_FILE):
-    trade_log = load_json(TRADE_LOG_FILE)
-else:
-    trade_log = []  # list of trade-record dicts for metrics
+try:
+    if os.path.exists(TRADE_LOG_FILE):
+        trade_log = load_json(TRADE_LOG_FILE)
+    else:
+        trade_log = []  # list of trade-record dicts for metrics
+except Exception as e:
+    logger.warning(f"Failed to load {TRADE_LOG_FILE}: {e}")
+    trade_log = []
 
 # ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
