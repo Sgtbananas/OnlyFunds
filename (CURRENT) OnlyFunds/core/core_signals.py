@@ -3,8 +3,8 @@ import numpy as np
 import logging
 from core.backtester import run_backtest
 
-const COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]  # used if/when inferring symbols
-
+# COMMON_QUOTES can be used if/when inferring symbols from compact pairs
+COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]
 
 def generate_signal(df):
     """
@@ -62,14 +62,27 @@ def adaptive_threshold(df, target_profit=0.01):
     prices = df.get("Close") if "Close" in df.columns else pd.Series(0, index=df.index)
 
     for t in np.arange(0.1, 1.0, 0.05):
-        summary_df, _ = run_backtest(sig, prices, threshold=t)
-        if "avg_return" not in summary_df.columns:
+        # Backtest returns a combined DataFrame with a summary row first
+        combined_df = run_backtest(sig, prices, threshold=t)
+
+        # Extract the summary row (first row)
+        if "type" in combined_df.columns and combined_df.iloc[0].get("type") == "summary":
+            summary_record = combined_df.iloc[0]
+        else:
             logging.warning(
-                f"[adaptive_threshold] Missing 'avg_return' in backtest summary: {summary_df.columns.tolist()}"
+                f"[adaptive_threshold] Summary row not found or misplaced. Using first row as summary. Columns: {combined_df.columns.tolist()}"
+            )
+            summary_record = combined_df.iloc[0]
+
+        # Fetch average return
+        avg = summary_record.get("avg_return")
+        if avg is None:
+            logging.warning(
+                f"[adaptive_threshold] 'avg_return' missing in summary record: {summary_record.to_dict()}"
             )
             continue
 
-        avg = summary_df.at[0, "avg_return"]
+        # Update best threshold if this is superior
         if avg > best_r:
             best_r, best_t = avg, t
 
