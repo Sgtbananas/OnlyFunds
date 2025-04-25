@@ -6,7 +6,7 @@ def run_backtest(
     signal: pd.Series,
     prices: pd.Series,
     threshold: float = 0.05,
-    initial_capital: float = 1000.0,
+    initial_capital: float = 10.0,
     risk_pct: float = 0.01,  # Risk percentage per trade
     verbose: bool = False,  # Toggle for detailed logging
     log_every_n: int = 50   # Only log every N steps if verbose is True
