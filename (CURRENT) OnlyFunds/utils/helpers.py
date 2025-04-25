@@ -92,3 +92,52 @@ def suggest_tuning(trade_log):
         suggestions.append("Gather more data for better tuning insights.")
 
     return {"suggestions": suggestions}
+
+# --- OnlyFunds: General-Purpose Helpers ---
+
+import json
+import os
+import time
+import string
+import random
+from datetime import datetime
+
+def save_json(data, filepath, **json_kwargs):
+    """Serialize `data` to a JSON file at `filepath`."""
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w") as f:
+        json.dump(data, f, **json_kwargs)
+
+def load_json(filepath):
+    """Load and return JSON data from `filepath`."""
+    with open(filepath, "r") as f:
+        return json.load(f)
+
+def validate_pair(pair: str):
+    """
+    Ensure a symbol pair like "BTC/USDT".
+    Returns (base, quote) uppercased.
+    """
+    if not isinstance(pair, str) or "/" not in pair:
+        raise ValueError(f"Invalid trading pair: {pair!r}")
+    base, quote = pair.split("/", 1)
+    return base.upper(), quote.upper()
+
+def check_rate_limit(last_call_ts: float, min_interval: float = 1.0):
+    """
+    Enforce a minimum interval (in seconds) between calls.
+    Returns the updated timestamp.
+    """
+    elapsed = time.time() - last_call_ts
+    if elapsed < min_interval:
+        time.sleep(min_interval - elapsed)
+    return time.time()
+
+def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S"):
+    """Convert UNIX timestamp `ts` to formatted string."""
+    return datetime.fromtimestamp(ts).strftime(fmt)
+
+def generate_random_string(length: int = 8):
+    """Return a random alphanumeric string of given length."""
+    chars = string.ascii_letters + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
