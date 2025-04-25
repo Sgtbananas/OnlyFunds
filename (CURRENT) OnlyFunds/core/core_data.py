@@ -1,5 +1,3 @@
-# core/core_data.py
-
 import logging
 import os
 import requests
@@ -81,6 +79,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Append RSI, MACD, Bollinger Bands, EMA20, EMA_diff, Volatility.
     Fully forward‐fills to avoid NaNs.
+    Also computes a composite z-score indicator for robust signal generation.
     """
     df2 = df.copy()
     close = df2["Close"]
@@ -113,6 +112,23 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
         # Volatility
         df2["volatility"] = close.rolling(10, min_periods=1).std().fillna(0)
+
+        # --- Composite indicator logic (z-score normalization) ---
+        features = ["rsi", "macd", "ema_diff", "volatility"]
+        for col in features:
+            mean = df2[col].mean()
+            std = df2[col].std(ddof=0)
+            if std == 0:
+                df2[f"{col}_z"] = 0  # Avoid division by zero
+            else:
+                df2[f"{col}_z"] = (df2[col] - mean) / std
+
+        z_cols = [f"{c}_z" for c in features]
+        df2["indicator"] = df2[z_cols].mean(axis=1)
+
+        # # Optional: custom weights (uncomment and adjust weights if needed)
+        # weights = {"rsi_z": 0.3, "macd_z": 0.3, "ema_diff_z": 0.2, "volatility_z": 0.2}
+        # df2["indicator"] = sum(df2[col] * w for col, w in weights.items())
 
     except Exception as e:
         logging.error(f"Error in add_indicators: {e}")
