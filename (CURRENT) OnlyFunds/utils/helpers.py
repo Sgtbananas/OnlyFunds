@@ -26,7 +26,18 @@ def compute_trade_metrics(trade_log, initial_capital):
     # Convert trade log to DataFrame
     df = pd.DataFrame(trade_log)
 
-    # Only rows that have both entry_price and exit_price
+    # Early bail-out if no data or required fields absent
+    required = {"entry_price", "exit_price"}
+    if df.empty or not required.issubset(df.columns):
+        return {
+            "total_return": 0,
+            "win_rate": 0,
+            "average_return": 0,
+            "max_drawdown": 0,
+            "sharpe_ratio": 0
+        }
+
+    # Remove any partially completed trades
     df = df.dropna(subset=["entry_price", "exit_price"])
     if df.empty:
         return {
