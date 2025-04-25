@@ -16,7 +16,13 @@ from core.core_signals import (
 )
 from core.trade_execution import place_order
 from core.backtester import run_backtest
-from utils.helpers import compute_trade_metrics, suggest_tuning
+from utils.helpers import (
+    compute_trade_metrics,
+    suggest_tuning,
+    save_json,
+    load_json,
+    validate_pair,
+)
 
 # ─── Streamlit Configuration ──────────────────────────────────────────────────
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
@@ -34,6 +40,21 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# ─── File paths for persistence ───────────────────────────────────────────────
+POSITIONS_FILE = "state/open_positions.json"
+TRADE_LOG_FILE = "state/trade_log.json"
+
+# ─── State Loading ────────────────────────────────────────────────────────────
+if os.path.exists(POSITIONS_FILE):
+    open_positions = load_json(POSITIONS_FILE)
+else:
+    open_positions = {}  # pair -> { amount, entry_price, ...API response }
+
+if os.path.exists(TRADE_LOG_FILE):
+    trade_log = load_json(TRADE_LOG_FILE)
+else:
+    trade_log = []  # list of trade-record dicts for metrics
 
 # ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
@@ -74,12 +95,14 @@ elif mode == "Aggressive":
 else:  # Normal
     risk_pct, trailing_stop_pct, scale_in = RISK_PER_TRADE, 0.03, True
 
-# ─── Runtime store ────────────────────────────────────────────────────────────
-open_positions = {}  # pair -> { amount, entry_price, ...API response }
-trade_log = []  # list of trade-record dicts for metrics
-
 # ─── Core Trade Logic ─────────────────────────────────────────────────────────
 def trade_logic(pair: str):
+    try:
+        base, quote = validate_pair(pair)
+    except ValueError as ve:
+        logger.error(f"❌ Invalid trading pair '{pair}': {ve}")
+        return
+
     logger.info(f"🔍 Analyzing {pair}")
     df = fetch_klines(pair=pair, interval=interval, limit=lookback)
     if df.empty or not validate_df(df):
@@ -140,6 +163,9 @@ def trade_logic(pair: str):
         trade_log.append(record)  # Record BUY action
         open_positions[pair] = {"amount": amount, "entry_price": price}
         logger.info(f"📥 BUY {pair} at {price:.2f}")
+        # Persist state
+        save_json(open_positions, POSITIONS_FILE, indent=2)
+        save_json(trade_log, TRADE_LOG_FILE, indent=2)
         return
 
     # Handle SELL action
@@ -158,6 +184,9 @@ def trade_logic(pair: str):
         }
         trade_log.append(record)  # Record SELL action
         logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.2%}")
+        # Persist state
+        save_json(open_positions, POSITIONS_FILE, indent=2)
+        save_json(trade_log, TRADE_LOG_FILE, indent=2)
 
         if not backtest_mode:
             result = place_order(
@@ -195,7 +224,7 @@ def display_dashboard():
     else:
         st.info("No trade history yet.")
 
-# ─── Main Loop ────────────────────────────────────────────────────────────────
+# ─── Main Loop ───────────────────────────────────────────────────────────────
 def main_loop():
     while True:
         for pair in TRADING_PAIRS:
