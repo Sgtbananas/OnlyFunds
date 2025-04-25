@@ -23,7 +23,6 @@ def compute_trade_metrics(trade_log, initial_capital):
         - max_drawdown: Maximum capital drawdown as a percentage.
         - sharpe_ratio: Sharpe ratio of the trade returns.
     """
-    # Convert trade log to DataFrame
     df = pd.DataFrame(trade_log)
 
     # Early bail-out if no data or required fields absent
@@ -70,10 +69,10 @@ def compute_trade_metrics(trade_log, initial_capital):
     sharpe_ratio = df["trade_return"].mean() / df["trade_return"].std() if df["trade_return"].std() != 0 else 0
 
     return {
-        "total_return": total_return * 100,  # Convert to percentage
+        "total_return": total_return * 100,
         "win_rate": win_rate,
-        "average_return": average_return * 100,  # Convert to percentage
-        "max_drawdown": max_drawdown * 100,  # Convert to percentage
+        "average_return": average_return * 100,
+        "max_drawdown": max_drawdown * 100,
         "sharpe_ratio": sharpe_ratio
     }
 
@@ -91,8 +90,6 @@ def suggest_tuning(trade_log):
         return {"suggestions": ["Insufficient data to provide tuning recommendations."]}
 
     df = pd.DataFrame(trade_log)
-
-    # Suggestions based on performance
     suggestions = []
     if "return_pct" in df.columns:
         avg_return = df["return_pct"].mean()
@@ -102,7 +99,6 @@ def suggest_tuning(trade_log):
             suggestions.append("Strategy performing well. Consider scaling up.")
     else:
         suggestions.append("Unable to calculate return percentage for tuning.")
-
     if len(df) > 100:
         suggestions.append("Sufficient data for comprehensive analysis.")
     else:
@@ -125,29 +121,38 @@ def load_json(filepath):
 
 def validate_pair(pair: str):
     """
-    Ensure a symbol pair like "BTC/USDT".
+    Ensure a symbol pair like "BTC/USDT" or compact "BTCUSDT".
     Returns (base, quote) uppercased.
     """
-    if not isinstance(pair, str) or "/" not in pair:
+    if not isinstance(pair, str):
         raise ValueError(f"Invalid trading pair: {pair!r}")
-    base, quote = pair.split("/", 1)
-    return base.upper(), quote.upper()
+    p = pair.strip().upper()
+    # Handle standard 'BASE/QUOTE'
+    if "/" in p:
+        base, quote = p.split("/", 1)
+    else:
+        # Infer from common quote assets
+        known_quotes = ["USDT", "BTC", "ETH", "BNB"]
+        for q in known_quotes:
+            if p.endswith(q) and len(p) > len(q):
+                base = p[:-len(q)]
+                quote = q
+                break
+        else:
+            raise ValueError(f"Invalid trading pair: {pair!r}")
+    if not base or not quote:
+        raise ValueError(f"Invalid trading pair: {pair!r}")
+    return base, quote
 
 def check_rate_limit(last_call_ts: float, min_interval: float = 1.0):
-    """
-    Enforce a minimum interval (in seconds) between calls.
-    Returns the updated timestamp.
-    """
     elapsed = time.time() - last_call_ts
     if elapsed < min_interval:
         time.sleep(min_interval - elapsed)
     return time.time()
 
 def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S"):
-    """Convert UNIX timestamp `ts` to formatted string."""
     return datetime.fromtimestamp(ts).strftime(fmt)
 
 def generate_random_string(length: int = 8):
-    """Return a random alphanumeric string of given length."""
     chars = string.ascii_letters + string.digits
     return "".join(random.choice(chars) for _ in range(length))
