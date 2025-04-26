@@ -40,8 +40,6 @@ def place_limit_order(pair, side, amount, price, is_dry_run=True):
     """
     Place a limit order (stub for grid trading). Returns order_id.
     """
-    # In a live system, this would call your exchange API.
-    # For now, just simulate.
     try:
         if is_dry_run:
             order_id = f"SIMGRID-{random.randint(10000, 99999)}"
@@ -53,3 +51,18 @@ def place_limit_order(pair, side, amount, price, is_dry_run=True):
     except Exception as e:
         logging.error(f"Error placing grid limit order for {pair}: {e}")
         return None
+
+def cancel_order(order_id, is_dry_run=True):
+    """
+    Cancel an order (stub for grid trading). Returns True if cancelled.
+    """
+    try:
+        if is_dry_run:
+            logging.info(f"Simulated cancel for order {order_id}")
+            return True
+        else:
+            logging.info(f"Live cancel for order {order_id}")
+            return True
+    except Exception as e:
+        logging.error(f"Error cancelling order {order_id}: {e}")
+        return False

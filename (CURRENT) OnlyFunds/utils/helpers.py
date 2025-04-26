@@ -55,34 +55,22 @@ def compute_grid_metrics(grid_orders):
             "sell_fills": 0,
             "avg_fill_price": 0,
         }
-    fills = df[~df["fill_price"].isna()]
+    fills = df[df["filled"]]
     total_pnl = 0
-    if not fills.empty and "side" in fills.columns:
-        buy_fills = fills[fills["side"] == "buy"]
-        sell_fills = fills[fills["side"] == "sell"]
-        if not buy_fills.empty and not sell_fills.empty:
-            # Simple PnL: sum of (sell - buy) * size for matched pairs
-            min_fills = min(len(buy_fills), len(sell_fills))
-            total_pnl = ((sell_fills["fill_price"].iloc[:min_fills].values -
-                         buy_fills["fill_price"].iloc[:min_fills].values) *
-                         buy_fills["size"].iloc[:min_fills].values).sum()
-        else:
-            total_pnl = 0
-        return {
-            "total_pnl": total_pnl,
-            "fills": len(fills),
-            "buy_fills": len(buy_fills) if not buy_fills.empty else 0,
-            "sell_fills": len(sell_fills) if not sell_fills.empty else 0,
-            "avg_fill_price": fills["fill_price"].mean() if not fills.empty else 0,
-        }
-    else:
-        return {
-            "total_pnl": 0,
-            "fills": 0,
-            "buy_fills": 0,
-            "sell_fills": 0,
-            "avg_fill_price": 0,
-        }
+    buy_fills = fills[fills["side"] == "buy"]
+    sell_fills = fills[fills["side"] == "sell"]
+    min_fills = min(len(buy_fills), len(sell_fills))
+    if min_fills > 0:
+        total_pnl = ((sell_fills["fill_price"].iloc[:min_fills].values -
+                     buy_fills["fill_price"].iloc[:min_fills].values) *
+                     buy_fills["size"].iloc[:min_fills].values).sum()
+    return {
+        "total_pnl": total_pnl,
+        "fills": len(fills),
+        "buy_fills": len(buy_fills),
+        "sell_fills": len(sell_fills),
+        "avg_fill_price": fills["fill_price"].mean() if not fills.empty else 0,
+    }
 
 def suggest_tuning(trade_log):
     if not trade_log:
