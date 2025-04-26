@@ -11,13 +11,20 @@ from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PA
 from core.core_signals import (
     generate_signal, smooth_signal, adaptive_threshold, track_trade_result,
 )
-from core.trade_execution import place_order, place_limit_order, cancel_order
+from core.trade_execution import place_order
 from core.backtester import run_backtest
-from core.grid_trader import GridTrader
 from utils.helpers import (
-    compute_trade_metrics, compute_grid_metrics, suggest_tuning, save_json, load_json, validate_pair, log_grid_trade
+    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
 )
-from data.logs.logs import log_trade
+
+# NEW: Arbitrage and Market Making imports
+from core.arbitrage import find_triangular_arbitrage
+from core.market_maker import market_make
+
+try:
+    import ccxt
+except ImportError:
+    ccxt = None
 
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 
@@ -71,15 +78,8 @@ except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
     current_capital = DEFAULT_CAPITAL
 
-# === STRATEGY SELECTION ===
 st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
 st.sidebar.header("⚙️ Configuration")
-
-strategy_mode = st.sidebar.selectbox(
-    "Strategy Mode",
-    ["Signal Trading", "Grid Trading", "Grid Backtest"],  # Added grid backtest!
-    index=0
-)
 
 dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=DEFAULT_DRY_RUN)
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
@@ -96,120 +96,110 @@ stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, DEFAULT_STOP_L
 take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, DEFAULT_TAKE_PROFIT*100.0, step=0.1) / 100
 fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, DEFAULT_FEE*100.0, step=0.01) / 100
 
-# --- Grid Controls ---
-if strategy_mode in ["Grid Trading", "Grid Backtest"]:
-    st.sidebar.markdown("#### Grid Trading Settings")
-    grid_pair = st.sidebar.selectbox("Grid Pair", TRADING_PAIRS, index=0)
-    grid_levels = st.sidebar.number_input("Grid Levels (per side)", min_value=1, max_value=20, value=6)
-    grid_pct = st.sidebar.number_input("Grid Spacing (%)", min_value=0.1, max_value=5.0, value=0.4, step=0.1) / 100
-    grid_size = st.sidebar.number_input("Grid Order Size", min_value=0.0001, value=0.001)
-    grid_direction = st.sidebar.selectbox("Grid Direction", ["both", "buy", "sell"], index=0)
-    grid_trailing = st.sidebar.checkbox("Enable Trailing Grid", value=False)
-    grid_adaptive = st.sidebar.checkbox("Enable Adaptive Spacing", value=False)
-    grid_start_btn = st.sidebar.button("Start Grid Trader" if strategy_mode == "Grid Trading" else "Run Grid Backtest")
+threshold_slider = st.sidebar.slider(
+    "Entry Threshold",
+    min_value=0.0, max_value=1.0,
+    value=DEFAULT_THRESHOLD, step=0.01,
+    help="How strong must the signal be before we BUY/SELL?"
+)
+
+# --- NEW: Arbitrage and Market Making toggles ---
+enable_arb = False
+enable_mm = False
+if mode in ["Normal", "Aggressive"]:
+    enable_arb = st.sidebar.checkbox("Enable Arbitrage Module", value=False)
+    enable_mm = st.sidebar.checkbox("Enable Market Making Module", value=False)
 else:
-    threshold_slider = st.sidebar.slider(
-        "Entry Threshold",
-        min_value=0.0, max_value=1.0,
-        value=DEFAULT_THRESHOLD, step=0.01,
-        help="How strong must the signal be before we BUY/SELL?"
-    )
-    start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
+    st.sidebar.markdown("Arbitrage and Market Making only available in Normal/Aggressive mode.")
 
-if "grid_traders" not in st.session_state:
-    st.session_state["grid_traders"] = {}
+start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
+if start_btn:
+    st.success("Bot started! (Spot market only)")
+else:
+    st.info("Ready. Configure & click Start.")
 
-def grid_dashboard(grid: GridTrader):
-    st.subheader(f"🤖 Grid Trader for {grid.pair}")
-    st.write(f"Base price: {grid.base:.4f} | Levels: {grid.levels} | Spacing: {grid.grid_pct:.4%} | Size: {grid.size}")
-    metrics = compute_grid_metrics([o.to_dict() for o in grid.orders])
-    st.write(f"Total Fills: {metrics['fills']}, Buys: {metrics['buy_fills']}, Sells: {metrics['sell_fills']}, PnL: {metrics['total_pnl']:.6f}")
-    df_orders = pd.DataFrame([o.to_dict() for o in grid.orders])
-    if not df_orders.empty:
-        st.dataframe(df_orders[["side", "price", "size", "active", "filled", "fill_price", "fill_time", "order_id"]])
-        st.write(f"Active Orders: {df_orders['active'].sum()}")
+# MODE SETTINGS
+if mode == "Conservative":
+    risk_pct = 0.0025
+    stop_loss_pct = 0.005
+    take_profit_pct = 0.01
+    min_signal_conf = 0.7
+    max_positions = min(max_positions, 3)
+    enable_grid = False
+    enable_ml = True
+elif mode == "Aggressive":
+    risk_pct = 0.02
+    stop_loss_pct = 0.01
+    take_profit_pct = 0.01
+    min_signal_conf = 0.4
+    max_positions = max(max_positions, 20)
+    enable_grid = True
+    enable_ml = True
+else:
+    risk_pct = RISK_PER_TRADE
+    stop_loss_pct = DEFAULT_STOP_LOSS
+    take_profit_pct = DEFAULT_TAKE_PROFIT
+    min_signal_conf = 0.5
+    enable_grid = False
+    enable_ml = True
+
+@st.cache_data(show_spinner=False)
+def cached_fetch_klines(pair, interval, limit):
+    return fetch_klines(pair=pair, interval=interval, limit=limit)
+
+# --- NEW: CoinEx connector setup ---
+def get_ccxt_exchange():
+    if ccxt is None:
+        st.error("ccxt is not installed. Please install ccxt to use live exchange features.")
+        return None
+    api_key = os.getenv("COINEX_API_KEY")
+    api_secret = os.getenv("COINEX_API_SECRET")
+    if not api_key or not api_secret:
+        st.warning("Missing CoinEx API keys in .env. Arbitrage and MM modules disabled.")
+        return None
+    return ccxt.coinex({
+        'apiKey': api_key,
+        'secret': api_secret,
+        'enableRateLimit': True,
+    })
+
+def fetch_depths(exchange):
+    # Map to arbitrage function's expected format
+    orderbooks = {
+        "BTCUSDT": exchange.fetch_order_book("BTC/USDT"),
+        "ETHBTC": exchange.fetch_order_book("ETH/BTC"),
+        "ETHUSDT": exchange.fetch_order_book("ETH/USDT"),
+    }
+    depths = {
+        key: {
+            "bid": ob["bids"][0][0],
+            "ask": ob["asks"][0][0],
+        } for key, ob in orderbooks.items()
+    }
+    return depths
+
+def get_order_book_ccxt(exchange, pair):
+    return exchange.fetch_order_book(pair)
+
+def place_limit_ccxt(exchange, pair, side, size, price):
+    if dry_run:
+        logger.info(f"[DRY RUN] Would place {side} order on {pair}: {size}@{price}")
+        return None
+    if side == "buy":
+        order = exchange.create_limit_buy_order(pair, size, price)
     else:
-        st.info("No grid orders yet.")
+        order = exchange.create_limit_sell_order(pair, size, price)
+    logger.info(f"Placed {side} order for {pair}: size={size}, price={price}")
+    return order['id']
 
-def run_grid_trading():
-    key = f"{grid_pair}"
-    df = fetch_klines(pair=grid_pair, interval=interval, limit=lookback)
-    if df.empty:
-        st.error(f"No data for {grid_pair}")
+def cancel_all_ccxt(exchange, pair):
+    if dry_run:
+        logger.info(f"[DRY RUN] Would cancel all orders on {pair}")
         return
-    current_price = df["Close"].iloc[-1]
-    volatility = df["Close"].pct_change().rolling(20).std().iloc[-1] if grid_adaptive else None
-    spacing = grid_pct
-    if grid_adaptive and volatility is not None:
-        spacing = min(max(volatility, 0.001), 0.03)
-    grid = GridTrader(
-        pair=grid_pair,
-        base_price=current_price,
-        grid_levels=int(grid_levels),
-        grid_spacing_pct=spacing,
-        size=grid_size,
-        direction=grid_direction,
-        trailing=grid_trailing,
-        adaptive=grid_adaptive,
-    )
-    grid.build_orders()
-    grid.place_orders(lambda pair, side, size, price:
-        place_limit_order(pair, side, size, price, is_dry_run=dry_run)
-    )
-    st.session_state.grid_traders[key] = grid
-    grid_dashboard(grid)
-
-def step_grid_simulation(grid: GridTrader, price, timestamp=None):
-    # Simulate fills for all orders at this price
-    grid.check_and_fill_orders(price, timestamp=timestamp, log_func=log_grid_trade)
-    # Optionally trail grid
-    if grid.trailing:
-        grid.trail_grid(price)
-
-def run_grid_backtest():
-    df = fetch_klines(pair=grid_pair, interval=interval, limit=lookback)
-    if df.empty:
-        st.error(f"No data for {grid_pair}")
-        return
-    prices = df["Close"]
-    idx = df.index
-    grid_kwargs = dict(
-        pair=grid_pair,
-        base_price=prices.iloc[0],
-        grid_levels=int(grid_levels),
-        grid_spacing_pct=grid_pct,
-        size=grid_size,
-        direction=grid_direction,
-        trailing=grid_trailing,
-        adaptive=grid_adaptive,
-    )
-    result_df = run_backtest(
-        signal=None,
-        prices=prices,
-        grid_mode=True,
-        grid_kwargs=grid_kwargs,
-        log_func=log_grid_trade
-    )
-    st.subheader(f"Grid Backtest Results for {grid_pair}")
-    st.dataframe(result_df)
-    summary = result_df.iloc[0].to_dict()
-    st.write(f"Total Fills: {summary.get('trades', 0)}, Buys: {summary.get('buy_fills', 0)}, Sells: {summary.get('sell_fills', 0)}, PnL: {summary.get('total_pnl', 0):.6f}")
-
-def main_loop_signal_trading():
-    global current_capital
-    last_timestamps = {pair: None for pair in TRADING_PAIRS}
-    while True:
-        for pair in TRADING_PAIRS:
-            df = fetch_klines(pair=pair, interval=interval, limit=lookback)
-            if df.empty or not validate_df(df):
-                continue
-            newest = df.index[-1]
-            if newest != last_timestamps[pair]:
-                _, updated_capital = trade_logic(pair, current_capital)
-                current_capital = updated_capital
-                last_timestamps[pair] = newest
-        display_dashboard(current_capital)
-        time.sleep(1)
+    open_orders = exchange.fetch_open_orders(pair)
+    for order in open_orders:
+        exchange.cancel_order(order['id'], pair)
+    logger.info(f"Cancelled all open orders for {pair}")
 
 def trade_logic(pair: str, current_capital):
     try:
@@ -219,7 +209,7 @@ def trade_logic(pair: str, current_capital):
         return None, current_capital
 
     logger.info(f"🔍 Analyzing {pair}")
-    df = fetch_klines(pair=pair, interval=interval, limit=lookback)
+    df = cached_fetch_klines(pair, interval, lookback)
     if df.empty or not validate_df(df):
         logger.warning(f"⚠️ Invalid/empty data for {pair}")
         return None, current_capital
@@ -253,10 +243,10 @@ def trade_logic(pair: str, current_capital):
         combined_df = run_backtest(
             smoothed, df["Close"], threshold,
             initial_capital=DEFAULT_CAPITAL,
-            risk_pct=RISK_PER_TRADE,
-            stop_loss_pct=DEFAULT_STOP_LOSS,
-            take_profit_pct=DEFAULT_TAKE_PROFIT,
-            fee_pct=DEFAULT_FEE,
+            risk_pct=risk_pct,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            fee_pct=fee_pct,
         )
         summary_df = (
             combined_df
@@ -292,7 +282,7 @@ def trade_logic(pair: str, current_capital):
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
     current_capital_live = DEFAULT_CAPITAL * (1 + perf["total_return"]/100)
     net_profit = current_capital_live - DEFAULT_CAPITAL
-    risk_from_pct = DEFAULT_CAPITAL * RISK_PER_TRADE
+    risk_from_pct = DEFAULT_CAPITAL * risk_pct
     risk_from_pf = max(net_profit * 0.05, 0.0)
     usd_to_risk = max(1.0, risk_from_pct, risk_from_pf)
     amount = usd_to_risk / price
@@ -373,18 +363,64 @@ def display_dashboard(current_capital):
     else:
         st.info("No trade history yet.")
 
-# Main UI logic
-if strategy_mode == "Grid Trading":
-    if grid_start_btn:
-        run_grid_trading()
-    # Always show grid dashboard for the selected grid in session
-    key = f"{grid_pair}"
-    if key in st.session_state.grid_traders:
-        grid_dashboard(st.session_state.grid_traders[key])
+def main_loop():
+    global current_capital
 
-elif strategy_mode == "Grid Backtest":
-    if grid_start_btn:
-        run_grid_backtest()
-else:
-    if start_btn:
-        main_loop_signal_trading()
+    # --- NEW: Setup coinex if needed ---
+    coinex = None
+    if enable_arb or enable_mm:
+        coinex = get_ccxt_exchange()
+        if coinex is None:
+            st.warning("CoinEx live features not available. Arbitrage/Market Making disabled.")
+    
+    if backtest_mode:
+        with st.spinner("Running backtest…"):
+            for pair in TRADING_PAIRS:
+                trade_logic(pair, DEFAULT_CAPITAL)
+        return
+
+    last_timestamps = {pair: None for pair in TRADING_PAIRS}
+    while True:
+        for pair in TRADING_PAIRS:
+            df = cached_fetch_klines(pair, interval, lookback)
+            if df.empty or not validate_df(df):
+                continue
+            newest = df.index[-1]
+            if newest != last_timestamps[pair]:
+                _, updated_capital = trade_logic(pair, current_capital)
+                current_capital = updated_capital
+                last_timestamps[pair] = newest
+
+        # --- NEW: Arbitrage logic ---
+        if enable_arb and coinex is not None:
+            try:
+                depths = fetch_depths(coinex)
+                arb_ops = find_triangular_arbitrage(depths, dry_run=dry_run)
+                if arb_ops:
+                    st.info(f"Arbitrage opps: {arb_ops}")
+                    logger.info(f"Arbitrage opportunities found: {arb_ops}")
+            except Exception as e:
+                logger.warning(f"Arbitrage check failed: {e}")
+
+        # --- NEW: Market making logic (just on BTC/USDT for demo) ---
+        if enable_mm and coinex is not None:
+            try:
+                market_make(
+                    "BTC/USDT",
+                    get_order_book=lambda p: get_order_book_ccxt(coinex, p),
+                    place_limit=lambda p, side, size, price: place_limit_ccxt(coinex, p, side, size, price),
+                    cancel_all=lambda p: cancel_all_ccxt(coinex, p),
+                    spread=0.002,
+                    size=0.001,
+                    refresh_interval=5,
+                    dry_run=dry_run,
+                )
+                st.info("Market maker ran one cycle on BTC/USDT (see logs for details).")
+            except Exception as e:
+                logger.warning(f"Market maker failed: {e}")
+
+        display_dashboard(current_capital)
+        time.sleep(1)
+
+if start_btn:
+    main_loop()
