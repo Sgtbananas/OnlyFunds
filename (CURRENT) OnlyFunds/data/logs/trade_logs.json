@@ -1,43 +1,12 @@
 [
   {
-    "timestamp": "2025-04-25 09:12:30",
-    "pair": "LTCUSDT",
-    "action": "BUY",
-    "amount": 0.11809163911195086,
-    "entry_price": 84.68
-  },
-  {
-    "timestamp": "2025-04-25 09:13:46",
-    "pair": "LTCUSDT",
-    "action": "SELL",
-    "amount": 0.11809163911195086,
-    "entry_price": 84.68,
-    "exit_price": 84.68,
-    "return_pct": 0.0
-  },
-  {
-    "timestamp": "2025-04-25 12:05:27",
-    "pair": "SOLUSDT",
-    "action": "BUY",
-    "amount": 4.630746710257102,
-    "entry_price": 154.25
-  },
-  {
-    "timestamp": "2025-04-25 22:34:19",
-    "pair": "SOLUSDT",
-    "action": "SELL",
-    "amount": 4.630746710257102,
-    "entry_price": 154.25,
-    "exit_price": 150.45,
-    "return_pct": -0.02463533225283638
-  },
-  {
     "timestamp": "2025-04-26 01:20:02",
     "pair": "ETHUSDT",
     "action": "BUY",
     "amount": 0.0005567618729469407,
     "entry_price": 1796.1,
-    "threshold": 0.15000000000000002
+    "threshold": 0.15000000000000002,
+    "capital": 9.753646677471636
   },
   {
     "timestamp": "2025-04-26 01:20:02",
@@ -45,7 +14,8 @@
     "action": "BUY",
     "amount": 0.011504832029452369,
     "entry_price": 86.92,
-    "threshold": 0.1
+    "threshold": 0.1,
+    "capital": 9.753646677471636
   },
   {
     "timestamp": "2025-04-26 01:20:13",
@@ -55,7 +25,8 @@
     "entry_price": 1796.1,
     "exit_price": 1796.1,
     "return_pct": 0.0,
-    "threshold": 0.1
+    "threshold": 0.1,
+    "capital": 9.753646677471636
   },
   {
     "timestamp": "2025-04-26 01:20:13",
@@ -65,7 +36,8 @@
     "entry_price": 86.92,
     "exit_price": 86.92,
     "return_pct": 0.0,
-    "threshold": 0.1
+    "threshold": 0.1,
+    "capital": 9.753646677471636
   },
   {
     "timestamp": "2025-04-26 01:20:13",
@@ -73,6 +45,7 @@
     "action": "BUY",
     "amount": 0.0016653898677680445,
     "entry_price": 600.46,
-    "threshold": 0.1
+    "threshold": 0.1,
+    "capital": 9.753646677471636
   }
 ]

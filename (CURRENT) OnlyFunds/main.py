@@ -9,30 +9,17 @@ from dotenv import load_dotenv
 
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
-    generate_signal,
-    smooth_signal,
-    adaptive_threshold,
-    track_trade_result,
+    generate_signal, smooth_signal, adaptive_threshold, track_trade_result,
 )
 from core.trade_execution import place_order
 from core.backtester import run_backtest
 from utils.helpers import (
-    compute_trade_metrics,
-    suggest_tuning,
-    save_json,
-    load_json,
-    validate_pair,
-    enforce_stop_take,
-    volatility_scaled_size,
+    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
 )
-
-# --- PATCH: Import CoinEx WebSocket feed ---
-from core.ws_feed import start_ws_feed, get_mid_price, get_orderbook
-
-# OPTIONAL: advanced modules, implement stubs as you go!
+from data.logs.logs import log_trade, start_new_csv_run
+# Optional future imports for advanced features:
 # from core.grid_trader import GridTrader
-# from core.arbitrage import fetch_depths, find_triangular_arbitrage, execute_arbitrage
-# from core.scalper import scalp_pair
+# from core.arbitrage import find_triangular_arbitrage
 # from core.sentiment import fetch_sentiment_score
 # from core.market_maker import market_make
 # from core.ml_filter import load_model, ml_confidence
@@ -88,6 +75,9 @@ try:
 except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
     current_capital = DEFAULT_CAPITAL
+
+# === START NEW CSV RUN FOR THIS SESSION ===
+start_new_csv_run()
 
 st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
 st.sidebar.header("⚙️ Configuration")
@@ -151,9 +141,6 @@ else:
     enable_mm = False
     enable_ml = True
 
-# --- PATCH: Start WebSocket feed for all pairs at launch ---
-ws_feed = start_ws_feed(TRADING_PAIRS)
-
 @st.cache_data(show_spinner=False)
 def cached_fetch_klines(pair, interval, limit):
     return fetch_klines(pair=pair, interval=interval, limit=limit)
@@ -166,37 +153,15 @@ def trade_logic(pair: str, current_capital):
         return None, current_capital
 
     logger.info(f"🔍 Analyzing {pair}")
+    df = cached_fetch_klines(pair, interval, lookback)
+    if df.empty or not validate_df(df):
+        logger.warning(f"⚠️ Invalid/empty data for {pair}")
+        return None, current_capital
 
-    # --- PATCH: Use WebSocket mid price if available ---
-    mid_price = get_mid_price(pair)
-    orderbook = get_orderbook(pair)
+    df = add_indicators(df)
+    raw_signal = generate_signal(df)
+    smoothed = smooth_signal(raw_signal)
 
-    # Fallback: Use REST fetch if websocket is not ready, or for backtest/historical
-    if mid_price is None or backtest_mode:
-        df = cached_fetch_klines(pair, interval, lookback)
-        if df.empty or not validate_df(df):
-            logger.warning(f"⚠️ Invalid/empty data for {pair}")
-            return None, current_capital
-        price = df["Close"].iloc[-1]
-    else:
-        # Use live mid_price for all real-time logic
-        price = mid_price
-
-    # PATCH: Use add_indicators with a DataFrame for backtest, or minimal fake for live
-    if backtest_mode or mid_price is None:
-        df = add_indicators(df)
-        raw_signal = generate_signal(df)
-        smoothed = smooth_signal(raw_signal)
-    else:
-        # Live mode: build a one-row DataFrame with latest price for indicators
-        df_live = pd.DataFrame({
-            "Close": [price]
-        })
-        df_live = add_indicators(df_live)
-        raw_signal = generate_signal(df_live)
-        smoothed = smooth_signal(raw_signal)
-
-    # Determine threshold (manual or AI-tuned)
     if autotune:
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
@@ -205,14 +170,17 @@ def trade_logic(pair: str, current_capital):
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
 
-    # ML/Sentiment/other advanced filters (stub for now)
+    # ML confidence filter stub (to be implemented)
+    # if enable_ml:
+    #     features = [df["rsi"].iloc[-1], df["macd"].iloc[-1], df["ema_diff"].iloc[-1], df["Close"].pct_change().rolling(20).std().iloc[-1]]
+    #     prob = ml_confidence(model, features)
+    #     if prob < min_signal_conf:
+    #         return None, current_capital
+
+    # Sentiment filter stub
     # sentiment = fetch_sentiment_score(pair)
     # if sentiment < -0.2:
     #     return None, current_capital
-    # if enable_ml:
-    #     features = [...]
-    #     prob = ml_confidence(model, features)
-    #     if prob < min_signal_conf: return None, current_capital
 
     # --- Backtest mode: read-only, separate log ---
     if backtest_mode:
@@ -253,19 +221,16 @@ def trade_logic(pair: str, current_capital):
             logger.info("🚫 Max open positions reached → skipping BUY")
             return None, current_capital
 
+    price = df["Close"].iloc[-1]
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
     current_capital_live = DEFAULT_CAPITAL * (1 + perf["total_return"]/100)
     net_profit = current_capital_live - DEFAULT_CAPITAL
+    risk_from_pct = DEFAULT_CAPITAL * risk_pct
+    risk_from_pf = max(net_profit * 0.05, 0.0)
+    usd_to_risk = max(1.0, risk_from_pct, risk_from_pf)
+    amount = usd_to_risk / price
 
-    # VOLATILITY SIZING (use price from websocket or fallback)
-    if backtest_mode or mid_price is None:
-        vol = df["Close"].pct_change().rolling(20).std().iloc[-1]
-    else:
-        vol = 0.01  # PATCH: Use a dummy vol for live, or pull from rolling history if you store it
-
-    usd_to_risk = max(1.0, DEFAULT_CAPITAL * risk_pct, max(net_profit * 0.05, 0.0))
-    amount = volatility_scaled_size(vol, price, usd_to_risk)
     if amount < MIN_SIZE:
         logger.warning(f"Calculated amount {amount:.6f} below min size {MIN_SIZE} → skipping BUY")
         return None, current_capital
@@ -277,9 +242,11 @@ def trade_logic(pair: str, current_capital):
             "action": "BUY",
             "amount": amount,
             "entry_price": price,
+            "threshold": threshold
         }
         trade_log.append(record)
         open_positions[pair] = {"amount": amount, "entry_price": price}
+        log_trade(record, threshold_value=threshold, capital=current_capital)
         logger.info(f"📥 BUY {pair} at {price:.2f} (amount={amount:.6f})")
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
@@ -288,10 +255,6 @@ def trade_logic(pair: str, current_capital):
     if action == "sell":
         position = open_positions.pop(pair)
         exit_price = price
-        # Stop-loss / take-profit enforcement
-        sl_tp_result = enforce_stop_take(exit_price, position["entry_price"], stop_loss_pct, take_profit_pct)
-        if sl_tp_result:
-            logger.info(f"Sell reason: {sl_tp_result.upper()}")
         return_pct = (exit_price - position["entry_price"]) / position["entry_price"]
         record = {
             "timestamp": now,
@@ -301,8 +264,10 @@ def trade_logic(pair: str, current_capital):
             "entry_price": position["entry_price"],
             "exit_price": exit_price,
             "return_pct": return_pct,
+            "threshold": threshold
         }
         trade_log.append(record)
+        log_trade(record, threshold_value=threshold, capital=current_capital)
         logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.4%}")
         current_capital *= (1 + return_pct)
         save_json(open_positions, POSITIONS_FILE, indent=2)
@@ -322,15 +287,11 @@ def trade_logic(pair: str, current_capital):
 
     # --- Aggressive mode: grid, arb, MM extensions (stub) ---
     # if enable_grid:
-    #     grid = GridTrader(pair, grid_levels=10, grid_spacing=0.005, grid_size=0.001, base_price=mid_price)
-    #     orders = grid.generate_orders(mid_price)
-    #     # Place/cancel orders via your exchange wrapper
+    #     grid = GridTrader(pair, df["Close"].iloc[-1], grid_levels=10, grid_pct=0.005, size=0.001)
+    #     orders = grid.generate_orders()
     # if enable_arb:
-    #     symbols = ["BTC/USDT", "ETH/USDT", "ETH/BTC"]
-    #     depths = fetch_depths(exchange, symbols)
-    #     ops = find_triangular_arbitrage(depths)
-    #     for op in ops:
-    #         execute_arbitrage(exchange, op, amount=0.01)
+    #     depths = {...}
+    #     arb_ops = find_triangular_arbitrage(depths)
     # if enable_mm:
     #     market_make(pair, get_mid_price, place_limit, cancel_all, spread=0.002, size=0.01)
 
@@ -371,9 +332,14 @@ def main_loop():
     last_timestamps = {pair: None for pair in TRADING_PAIRS}
     while True:
         for pair in TRADING_PAIRS:
-            # --- PATCH: In live trading, don't refetch klines, rely on websocket data ---
-            _, updated_capital = trade_logic(pair, current_capital)
-            current_capital = updated_capital
+            df = cached_fetch_klines(pair, interval, lookback)
+            if df.empty or not validate_df(df):
+                continue
+            newest = df.index[-1]
+            if newest != last_timestamps[pair]:
+                _, updated_capital = trade_logic(pair, current_capital)
+                current_capital = updated_capital
+                last_timestamps[pair] = newest
         display_dashboard(current_capital)
         time.sleep(1)
 

@@ -50,13 +50,14 @@ def calculate_performance(
         "sharpe_ratio": sharpe
     }
 
-def suggest_tuning_parameters(metrics: Dict[str, float]) -> List[str]:
+def suggest_tuning_parameters(metrics: Dict[str, float], thresholds: list = None) -> List[str]:
     """
     Based on metrics, suggests parameter tweaks:
      - win_rate < 0.5   -> raise threshold
      - max_drawdown < -0.05 -> tighten stops or lower size
      - sharpe_ratio >1.5 -> lower threshold for more trades
      - total_pnl < 0   -> switch to Conservative
+     - thresholds volatile -> recommend smoothing/bounding
     """
     suggestions = []
     if metrics["win_rate"] < 0.5:
@@ -67,6 +68,15 @@ def suggest_tuning_parameters(metrics: Dict[str, float]) -> List[str]:
         suggestions.append("High Sharpe → consider lowering threshold to capture more trades.")
     if metrics["total_pnl"] < 0:
         suggestions.append("Overall loss → switch to Conservative mode or review signals.")
+
+    # Threshold volatility check (for autotune)
+    if thresholds is not None and len(thresholds) > 3:
+        std = np.std(thresholds)
+        if std > 0.1:
+            suggestions.append("Autotune threshold is volatile. Consider smoothing or bounding the threshold.")
+        elif std < 0.01:
+            suggestions.append("Autotune threshold is very stable. Manual or hybrid may be sufficient.")
+
     if not suggestions:
         suggestions.append("Performance stable → maintain current settings.")
     return suggestions
@@ -80,14 +90,20 @@ def adaptive_threshold(signals: pd.Series, prices: pd.Series) -> float:
 
     best_threshold = 0.5
     best_sharpe = -float("inf")
+    tested_thresholds = []
+    sharpes = []
 
     # Test multiple thresholds
     for threshold in np.arange(0.1, 1.1, 0.1):
         summary, _ = run_backtest(signals, prices, threshold)  # Extract summary only
         sharpe = summary.iloc[0]["sharpe"]
+        tested_thresholds.append(threshold)
+        sharpes.append(sharpe)
         if sharpe > best_sharpe:
             best_sharpe = sharpe
             best_threshold = threshold
 
     print(f"Optimal threshold: {best_threshold} with Sharpe Ratio: {best_sharpe}")
+    print(f"Thresholds tested: {tested_thresholds}")
+    print(f"Sharpes: {sharpes}")
     return best_threshold
