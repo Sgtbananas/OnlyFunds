@@ -1,6 +1,10 @@
 {
-  "BNBUSDT": {
-    "amount": 0.0016653898677680445,
-    "entry_price": 600.46
+  "LTCUSDT": {
+    "amount": 0.1157809424568716,
+    "entry_price": 86.37
+  },
+  "SOLUSDT": {
+    "amount": 0.06697923643670461,
+    "entry_price": 149.3
   }
 }

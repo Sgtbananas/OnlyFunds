@@ -74,5 +74,28 @@
     "amount": 0.0016653898677680445,
     "entry_price": 600.46,
     "threshold": 0.1
+  },
+  {
+    "timestamp": "2025-04-26 02:15:52",
+    "pair": "BNBUSDT",
+    "action": "SELL",
+    "amount": 0.0016653898677680445,
+    "entry_price": 600.46,
+    "exit_price": 603.17,
+    "return_pct": 0.004513206541651271
+  },
+  {
+    "timestamp": "2025-04-26 09:53:26",
+    "pair": "LTCUSDT",
+    "action": "BUY",
+    "amount": 0.1157809424568716,
+    "entry_price": 86.37
+  },
+  {
+    "timestamp": "2025-04-26 09:53:26",
+    "pair": "SOLUSDT",
+    "action": "BUY",
+    "amount": 0.06697923643670461,
+    "entry_price": 149.3
   }
 ]
