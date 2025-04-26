@@ -1,8 +1,14 @@
 import logging
 
-def find_triangular_arbitrage(depths, fee=0.001, threshold=0.0005, dry_run=True, execute_order=None):
+def find_triangular_arbitrage(
+    depths, 
+    fee=0.001, 
+    threshold=0.0005, 
+    dry_run=True, 
+    execute_order=None
+):
     """
-    Search for triangular arbitrage opportunities, and optionally (dry-run) execute them.
+    Search for triangular arbitrage opportunities and optionally execute them.
     depths: dict of {pair: {"bid": float, "ask": float}, ...}
     fee: trading fee per trade (e.g., 0.001 for 0.1%)
     threshold: minimum profitable rate after fees (e.g., 0.0005 = 0.05%)
