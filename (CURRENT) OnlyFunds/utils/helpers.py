@@ -8,40 +8,65 @@ import random
 from datetime import datetime
 
 def compute_trade_metrics(trade_log, initial_capital):
+    # Defensive: If empty, return zeroed metrics
+    if not trade_log:
+        return {
+            "total_return": 0,
+            "win_rate": 0,
+            "average_return": 0,
+            "max_drawdown": 0,
+            "sharpe_ratio": 0,
+            "current_capital": initial_capital
+        }
+    # Try to use return_pct if present, else fallback to entry/exit
     df = pd.DataFrame(trade_log)
-    required = {"entry_price", "exit_price"}
-    if df.empty or not required.issubset(df.columns):
+    # Use return_pct if present on all trades, else fallback to calculated trade_return
+    if "return_pct" in df.columns and not df["return_pct"].isnull().all():
+        returns = df["return_pct"].dropna()
+    elif {"entry_price", "exit_price"}.issubset(df.columns):
+        returns = ((df["exit_price"] - df["entry_price"]) / df["entry_price"]).dropna()
+    else:
+        returns = pd.Series(dtype=float)
+
+    if returns.empty:
         return {
             "total_return": 0,
             "win_rate": 0,
             "average_return": 0,
             "max_drawdown": 0,
-            "sharpe_ratio": 0
+            "sharpe_ratio": 0,
+            "current_capital": initial_capital
         }
-    df = df.dropna(subset=["entry_price", "exit_price"])
-    if df.empty:
-        return {
-            "total_return": 0,
-            "win_rate": 0,
-            "average_return": 0,
-            "max_drawdown": 0,
-            "sharpe_ratio": 0
-        }
-    df["trade_return"] = (df["exit_price"] - df["entry_price"]) / df["entry_price"]
-    final_capital = initial_capital * (1 + df["trade_return"]).prod()
-    total_return = (final_capital - initial_capital) / initial_capital
-    win_rate = (df["trade_return"] > 0).mean() * 100
-    average_return = df["trade_return"].mean()
-    cumulative_returns = (1 + df["trade_return"]).cumprod()
-    drawdown = 1 - cumulative_returns / cumulative_returns.cummax()
-    max_drawdown = drawdown.max()
-    sharpe_ratio = df["trade_return"].mean() / df["trade_return"].std() if df["trade_return"].std() != 0 else 0
+
+    capital = initial_capital
+    wins = 0
+    for r in returns:
+        capital *= (1 + r)
+        if r > 0:
+            wins += 1
+
+    trades = len(returns)
+    win_rate = (wins / trades * 100) if trades else 0
+    win_rate = min(max(win_rate, 0), 100)  # Clamp 0-100%
+    total_return = (capital / initial_capital - 1) * 100
+    total_return = max(total_return, -100)  # Clamp to -100% max loss
+    average_return = returns.mean() * 100
+
+    # Max drawdown: in % (peak-to-valley)
+    cumulative = (1 + returns).cumprod()
+    peak = cumulative.cummax()
+    drawdown = 1 - cumulative / peak
+    max_drawdown = drawdown.max() * 100 if not drawdown.empty else 0
+
+    sharpe_ratio = (returns.mean() / returns.std()) if returns.std() != 0 else 0
+
     return {
-        "total_return": total_return * 100,
+        "total_return": total_return,
         "win_rate": win_rate,
-        "average_return": average_return * 100,
-        "max_drawdown": max_drawdown * 100,
-        "sharpe_ratio": sharpe_ratio
+        "average_return": average_return,
+        "max_drawdown": max_drawdown,
+        "sharpe_ratio": sharpe_ratio,
+        "current_capital": capital
     }
 
 def compute_grid_metrics(grid_orders):

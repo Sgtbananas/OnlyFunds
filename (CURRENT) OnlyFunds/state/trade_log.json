@@ -97,5 +97,126 @@
     "action": "BUY",
     "amount": 0.06697923643670461,
     "entry_price": 149.3
+  },
+  {
+    "timestamp": "2025-04-26 10:28:28",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "amount": 0.00010603934356556444,
+    "entry_price": 94304.62
+  },
+  {
+    "timestamp": "2025-04-26 10:28:29",
+    "pair": "ETHUSDT",
+    "action": "BUY",
+    "amount": 0.005532993238682262,
+    "entry_price": 1807.34
+  },
+  {
+    "timestamp": "2025-04-26 10:28:29",
+    "pair": "LTCUSDT",
+    "action": "SELL",
+    "amount": 0.1157809424568716,
+    "entry_price": 86.37,
+    "exit_price": 87.04,
+    "return_pct": 0.0077573231446104165
+  },
+  {
+    "timestamp": "2025-04-26 10:28:29",
+    "pair": "SOLUSDT",
+    "action": "SELL",
+    "amount": 0.06697923643670461,
+    "entry_price": 149.3,
+    "exit_price": 149.52,
+    "return_pct": 0.001473543201607494
+  },
+  {
+    "timestamp": "2025-04-26 10:35:00",
+    "pair": "BTCUSDT",
+    "action": "SELL",
+    "amount": 0.00010603934356556444,
+    "entry_price": 94304.62,
+    "exit_price": 94268.64,
+    "return_pct": -0.00038152955814885767
+  },
+  {
+    "timestamp": "2025-04-26 10:35:00",
+    "pair": "ETHUSDT",
+    "action": "SELL",
+    "amount": 0.005532993238682262,
+    "entry_price": 1807.34,
+    "exit_price": 1805.42,
+    "return_pct": -0.001062334701826909
+  },
+  {
+    "timestamp": "2025-04-26 10:35:00",
+    "pair": "LTCUSDT",
+    "action": "BUY",
+    "amount": 0.11507479861910241,
+    "entry_price": 86.9
+  },
+  {
+    "timestamp": "2025-04-26 10:37:44",
+    "pair": "ETHUSDT",
+    "action": "BUY",
+    "amount": 0.0005538877380332554,
+    "entry_price": 1805.42
+  },
+  {
+    "timestamp": "2025-04-26 10:37:44",
+    "pair": "LTCUSDT",
+    "action": "SELL",
+    "amount": 0.11507479861910241,
+    "entry_price": 86.9,
+    "exit_price": 86.9,
+    "return_pct": 0.0
+  },
+  {
+    "timestamp": "2025-04-26 10:46:29",
+    "pair": "BTCUSDT",
+    "action": "BUY",
+    "amount": 0.0001059721674699357,
+    "entry_price": 94364.4
+  },
+  {
+    "timestamp": "2025-04-26 10:46:29",
+    "pair": "ETHUSDT",
+    "action": "SELL",
+    "amount": 0.0005538877380332554,
+    "entry_price": 1805.42,
+    "exit_price": 1809.13,
+    "return_pct": 0.0020549235081033976
+  },
+  {
+    "timestamp": "2025-04-26 10:46:30",
+    "pair": "LTCUSDT",
+    "action": "BUY",
+    "amount": 0.11486331265793705,
+    "entry_price": 87.06
+  },
+  {
+    "timestamp": "2025-04-26 10:48:12",
+    "pair": "BTCUSDT",
+    "action": "SELL",
+    "amount": 0.0001059721674699357,
+    "entry_price": 94364.4,
+    "exit_price": 94364.4,
+    "return_pct": 0.0
+  },
+  {
+    "timestamp": "2025-04-26 10:48:12",
+    "pair": "ETHUSDT",
+    "action": "BUY",
+    "amount": 0.005527518752107366,
+    "entry_price": 1809.13
+  },
+  {
+    "timestamp": "2025-04-26 10:48:12",
+    "pair": "LTCUSDT",
+    "action": "SELL",
+    "amount": 0.11486331265793705,
+    "entry_price": 87.06,
+    "exit_price": 87.06,
+    "return_pct": 0.0
   }
 ]

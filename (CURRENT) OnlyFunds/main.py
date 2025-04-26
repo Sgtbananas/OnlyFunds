@@ -238,9 +238,9 @@ def trade_logic(pair: str, current_capital):
 
     price = df["Close"].iloc[-1]
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    # Remove previous buggy capital math, just use compute_trade_metrics
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
-    current_capital_live = DEFAULT_CAPITAL * (1 + perf["total_return"]/100)
-    net_profit = current_capital_live - DEFAULT_CAPITAL
+    net_profit = perf["current_capital"] - DEFAULT_CAPITAL
     risk_from_pct = DEFAULT_CAPITAL * risk_pct
     risk_from_pf = max(net_profit * 0.05, 0.0)
     usd_to_risk = max(1.0, risk_from_pct, risk_from_pf)
@@ -280,10 +280,10 @@ def trade_logic(pair: str, current_capital):
         }
         trade_log.append(record)
         logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.4%}")
-        current_capital *= (1 + return_pct)
+        # Remove in-place capital math, always rely on compute_trade_metrics
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
-        save_json(current_capital, CAPITAL_FILE, indent=2)
+        save_json(compute_trade_metrics(trade_log, DEFAULT_CAPITAL)["current_capital"], CAPITAL_FILE, indent=2)
 
         if not backtest_mode:
             result = place_order(
@@ -294,7 +294,7 @@ def trade_logic(pair: str, current_capital):
                 is_dry_run=dry_run,
             )
             track_trade_result(result, pair, action.upper())
-        return None, current_capital
+        return None, compute_trade_metrics(trade_log, DEFAULT_CAPITAL)["current_capital"]
 
     # --- Aggressive mode: grid, arb, MM extensions (stub) ---
     # if enable_grid:
@@ -310,12 +310,11 @@ def trade_logic(pair: str, current_capital):
 
 def display_dashboard(current_capital):
     perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
-    current_capital_live = DEFAULT_CAPITAL * (1 + perf["total_return"]/100)
     st.subheader("📈 Live Dashboard")
     st.metric("Starting Capital", f"{DEFAULT_CAPITAL:.2f} USDT")
-    st.metric("Current Capital",  f"{current_capital_live:.4f} USDT")
-    st.metric("Total Return",     f"{perf['total_return']:.2%}")
-    st.metric("Win Rate",         f"{perf['win_rate']:.2%}")
+    st.metric("Current Capital",  f"{perf['current_capital']:.4f} USDT")
+    st.metric("Total Return",     f"{perf['total_return']:.2f}%")
+    st.metric("Win Rate",         f"{perf['win_rate']:.2f}%")
 
     if open_positions:
         st.write("🟢 Open Positions")

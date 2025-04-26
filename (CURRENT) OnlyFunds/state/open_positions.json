@@ -1,10 +1,6 @@
 {
-  "LTCUSDT": {
-    "amount": 0.1157809424568716,
-    "entry_price": 86.37
-  },
-  "SOLUSDT": {
-    "amount": 0.06697923643670461,
-    "entry_price": 149.3
+  "ETHUSDT": {
+    "amount": 0.005527518752107366,
+    "entry_price": 1809.13
   }
 }
