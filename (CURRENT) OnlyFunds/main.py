@@ -17,18 +17,16 @@ from utils.helpers import (
     compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
+from core.risk_manager import RiskManager
+from utils.config import load_config
+
+# --- Load config ---
+config = load_config()
+risk_cfg = config["risk"]
+trading_cfg = config["trading"]
+ml_cfg = config.get("ml", {})
 
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
-
-load_dotenv()
-DEFAULT_DRY_RUN = os.getenv("USE_DRY_RUN", "True").lower() == "true"
-DEFAULT_CAPITAL = float(os.getenv("DEFAULT_CAPITAL", 10))
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))
-DEFAULT_THRESHOLD = float(os.getenv("DEFAULT_THRESHOLD", 0.1))
-DEFAULT_STOP_LOSS = 0.005
-DEFAULT_TAKE_PROFIT = 0.01
-DEFAULT_FEE = 0.0004
-MIN_SIZE = 0.0001
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,35 +61,39 @@ try:
     if os.path.exists(CAPITAL_FILE):
         current_capital = load_json(CAPITAL_FILE)
         if not isinstance(current_capital, (float, int)):
-            current_capital = DEFAULT_CAPITAL
+            current_capital = trading_cfg["default_capital"]
     else:
-        current_capital = DEFAULT_CAPITAL
+        current_capital = trading_cfg["default_capital"]
 except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
-    current_capital = DEFAULT_CAPITAL
+    current_capital = trading_cfg["default_capital"]
+
+# --- Instantiate Risk Manager ---
+risk_manager = RiskManager(config)
 
 st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
 st.sidebar.header("⚙️ Configuration")
 
-dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=DEFAULT_DRY_RUN)
+# --- Sidebar config (now from config file) ---
+dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg["dry_run"])
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
 backtest_mode = st.sidebar.checkbox("Enable Backtesting", value=False)
 mode = st.sidebar.selectbox("Trading Mode",
                              ["Conservative", "Normal", "Aggressive"],
-                             index=1)
+                             index={"Conservative":0,"Normal":1,"Aggressive":2}[config.get("strategy",{}).get("mode","Normal").capitalize()])
 interval = st.sidebar.selectbox("Candle Interval",
                                  ["5m", "15m", "30m", "1h", "4h", "1d"],
                                  index=0)
 lookback = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)
-max_positions = st.sidebar.number_input("Max Open Positions", 1, 30, 2)
-stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, DEFAULT_STOP_LOSS*100.0, step=0.1) / 100
-take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, DEFAULT_TAKE_PROFIT*100.0, step=0.1) / 100
-fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, DEFAULT_FEE*100.0, step=0.01) / 100
+max_positions = st.sidebar.number_input("Max Open Positions", 1, 30, trading_cfg["max_positions"])
+stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, risk_cfg["stop_loss_pct"]*100.0, step=0.1) / 100
+take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, risk_cfg["take_profit_pct"]*100.0, step=0.1) / 100
+fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, trading_cfg["fee"]*100.0, step=0.01) / 100
 
 threshold_slider = st.sidebar.slider(
     "Entry Threshold",
     min_value=0.0, max_value=1.0,
-    value=DEFAULT_THRESHOLD, step=0.01,
+    value=trading_cfg["threshold"], step=0.01,
     help="How strong must the signal be before we BUY/SELL?"
 )
 
@@ -110,36 +112,21 @@ if start_btn:
 else:
     st.info("Ready. Configure & click Start.")
 
-# MODE SETTINGS
+# MODE SETTINGS (now from config and sidebar only)
 if mode == "Conservative":
     risk_pct = 0.0025
-    stop_loss_pct = 0.005
-    take_profit_pct = 0.01
-    min_signal_conf = 0.7
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.7)
     max_positions = min(max_positions, 3)
-    enable_grid = False
-    enable_arb = False
-    enable_mm = False
-    enable_ml = True
+    enable_ml = ml_cfg.get("enabled", True)
 elif mode == "Aggressive":
     risk_pct = 0.02
-    stop_loss_pct = 0.01
-    take_profit_pct = 0.01
-    min_signal_conf = 0.4
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.4)
     max_positions = max(max_positions, 20)
-    enable_grid = True
-    enable_arb = True
-    enable_mm = True
-    enable_ml = True
+    enable_ml = ml_cfg.get("enabled", True)
 else:
-    risk_pct = RISK_PER_TRADE
-    stop_loss_pct = DEFAULT_STOP_LOSS
-    take_profit_pct = DEFAULT_TAKE_PROFIT
-    min_signal_conf = 0.5
-    enable_grid = False
-    enable_arb = False
-    enable_mm = False
-    enable_ml = True
+    risk_pct = risk_cfg["per_trade"]
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
+    enable_ml = ml_cfg.get("enabled", True)
 
 @st.cache_data(show_spinner=False)
 def cached_fetch_klines(pair, interval, limit):
@@ -201,7 +188,7 @@ def trade_logic(pair: str, current_capital):
     if backtest_mode:
         combined_df = run_backtest(
             smoothed, df["Close"], threshold,
-            initial_capital=DEFAULT_CAPITAL,
+            initial_capital=trading_cfg["default_capital"],
             risk_pct=risk_pct,
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
@@ -231,26 +218,34 @@ def trade_logic(pair: str, current_capital):
     else:
         return None, current_capital
 
+    # --- RISK MANAGER ENFORCEMENT ---
+    # Enforce global drawdown/daily loss kill-switch
+    perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
+    equity_curve = [trading_cfg["default_capital"]]
+    for trade in trade_log:
+        if "return_pct" in trade:
+            equity_curve.append(equity_curve[-1] * (1 + trade["return_pct"]))
+    if risk_manager.check_max_drawdown(equity_curve, risk_cfg["max_drawdown_pct"]):
+        logger.warning("⚠️ Max global drawdown exceeded! No more trades today.")
+        st.error("Max global drawdown exceeded! Trading halted.")
+        return None, current_capital
+    if risk_manager.check_daily_loss(trade_log, perf["current_capital"], risk_cfg["max_daily_loss_pct"]):
+        logger.warning("⚠️ Max daily loss exceeded! No more trades today.")
+        st.error("Max daily loss exceeded! Trading halted.")
+        return None, current_capital
+
+    price = df["Close"].iloc[-1]
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    amount = risk_manager.position_size(perf["current_capital"], price, risk_pct)
+
+    if amount < risk_cfg["min_size"]:
+        logger.warning(f"Calculated amount {amount:.6f} below min size {risk_cfg['min_size']} → skipping BUY")
+        return None, current_capital
+
     if action == "buy":
         if len(open_positions) >= max_positions:
             logger.info("🚫 Max open positions reached → skipping BUY")
             return None, current_capital
-
-    price = df["Close"].iloc[-1]
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    # Remove previous buggy capital math, just use compute_trade_metrics
-    perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
-    net_profit = perf["current_capital"] - DEFAULT_CAPITAL
-    risk_from_pct = DEFAULT_CAPITAL * risk_pct
-    risk_from_pf = max(net_profit * 0.05, 0.0)
-    usd_to_risk = max(1.0, risk_from_pct, risk_from_pf)
-    amount = usd_to_risk / price
-
-    if amount < MIN_SIZE:
-        logger.warning(f"Calculated amount {amount:.6f} below min size {MIN_SIZE} → skipping BUY")
-        return None, current_capital
-
-    if action == "buy":
         record = {
             "timestamp": now,
             "pair": pair,
@@ -280,10 +275,9 @@ def trade_logic(pair: str, current_capital):
         }
         trade_log.append(record)
         logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.4%}")
-        # Remove in-place capital math, always rely on compute_trade_metrics
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
-        save_json(compute_trade_metrics(trade_log, DEFAULT_CAPITAL)["current_capital"], CAPITAL_FILE, indent=2)
+        save_json(compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"], CAPITAL_FILE, indent=2)
 
         if not backtest_mode:
             result = place_order(
@@ -294,7 +288,7 @@ def trade_logic(pair: str, current_capital):
                 is_dry_run=dry_run,
             )
             track_trade_result(result, pair, action.upper())
-        return None, compute_trade_metrics(trade_log, DEFAULT_CAPITAL)["current_capital"]
+        return None, compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"]
 
     # --- Aggressive mode: grid, arb, MM extensions (stub) ---
     # if enable_grid:
@@ -309,9 +303,9 @@ def trade_logic(pair: str, current_capital):
     return None, current_capital
 
 def display_dashboard(current_capital):
-    perf = compute_trade_metrics(trade_log, DEFAULT_CAPITAL)
+    perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     st.subheader("📈 Live Dashboard")
-    st.metric("Starting Capital", f"{DEFAULT_CAPITAL:.2f} USDT")
+    st.metric("Starting Capital", f"{trading_cfg['default_capital']:.2f} USDT")
     st.metric("Current Capital",  f"{perf['current_capital']:.4f} USDT")
     st.metric("Total Return",     f"{perf['total_return']:.2f}%")
     st.metric("Win Rate",         f"{perf['win_rate']:.2f}%")
@@ -336,7 +330,7 @@ def main_loop():
     if backtest_mode:
         with st.spinner("Running backtest…"):
             for pair in TRADING_PAIRS:
-                trade_logic(pair, DEFAULT_CAPITAL)
+                trade_logic(pair, trading_cfg["default_capital"])
         return
 
     last_timestamps = {pair: None for pair in TRADING_PAIRS}

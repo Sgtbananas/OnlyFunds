@@ -1,0 +1,22 @@
+version: 1
+risk:
+  per_trade: 0.01          # 1% of equity per trade
+  stop_loss_pct: 0.005     # 0.5% stop loss
+  take_profit_pct: 0.01    # 1% take profit
+  trailing_stop_pct: 0.008 # 0.8% trailing stop (optional)
+  max_drawdown_pct: 0.15   # 15% global drawdown
+  max_daily_loss_pct: 0.05 # 5% daily loss
+  min_size: 0.0001
+trading:
+  default_capital: 10
+  max_positions: 2
+  dry_run: true
+  threshold: 0.1
+  fee: 0.0004
+ml:
+  min_signal_conf: 0.5
+  enabled: true
+  retrain_on_start: false
+strategy:
+  mode: normal # normal/conservative/aggressive
+  # You can add more strategy variants here for A/B testing
