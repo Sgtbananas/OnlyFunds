@@ -1,5 +1,11 @@
-import random
+import requests  # or use tweepy or other libs
+
 def fetch_sentiment_score(pair):
-    # Placeholder: Replace with API call or model inference
-    # Return a score in [-1, 1]
+    """
+    Return a rolling sentiment score for the pair in [-1,1].
+    Placeholder: Replace with a real model/API.
+    """
+    # Example: call X/Twitter API, aggregate, run TextBlob/HuggingFace
+    # score = nlp_pipeline(tweet_texts)
+    import random
     return random.uniform(-0.5, 0.5)

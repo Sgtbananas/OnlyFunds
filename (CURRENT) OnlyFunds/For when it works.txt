@@ -1,0 +1,102 @@
+1. Understand What Autotune Is Doing
+Your autotune routine (in core/autotune.py) effectively:
+
+Generates a smoothed signal series over your recent lookback window.
+
+Back-tests that signal across a grid of thresholds (e.g. 0.1 → 0.95 in 0.05 steps).
+
+Picks the threshold that maximizes average per-trade return historically.
+
+By periodically re-running this, your bot can adapt to shifting market regimes (e.g. high-volatility vs. grinding ranges).
+
+2. Don’t Run It Every Tick
+If you call autotune on every 10-second loop, you’ll:
+
+Waste API calls and CPU on backtests.
+
+Risk over-fitting to intraday noise.
+
+Best Practice:
+
+Time-based: Re-tune once every hour (or once per new higher-timeframe candle, e.g. when a 15 m bar closes).
+
+Event-based: Trigger only when volatility regime changes sharply (e.g. 2× ATR spike), or after a drawdown beyond your max_drawdown threshold.
+
+3. Keep Your Lookback Window Reasonable
+Your autotune uses the same data window as live signals. If you use too much history:
+
+You’ll be slow to adapt to current regime shifts.
+If you use too little:
+
+Backtests become noisy and thresholds jump around.
+
+Recommendation:
+
+Short-term regimes (e.g. scalping): 150–300 candles.
+
+Swing regimes (e.g. 1 h–4 h bars): 500–1 000 candles.
+
+Tune your lookback via backtesting across multiple timeframes and pick the window that consistently produced the highest risk-adjusted returns.
+
+4. Combine Autotune with Cross-Validation
+Instead of using one contiguous in-sample chunk, split your lookback into folds:
+
+Train: Use 70% of the window to select a threshold.
+
+Validate: Test that threshold on the remaining 30%.
+
+Average performance across multiple rolling folds.
+
+This reduces the chance that your “optimal” threshold is just a quirk of one period.
+
+5. Smooth Your Threshold Over Time
+Even after you pick a new threshold, don’t slam it from, say, 0.20 to 0.65 in one go. Instead:
+
+python
+Copy
+Edit
+current_thresh = previous_thresh * (1 - α) + new_thresh * α
+Where α ∈ [0.1, 0.3]. This damped update prevents whipsaw entries when the market noise spikes.
+
+6. Monitor and Alert on Threshold Stability
+On your dashboard, display both:
+
+Current threshold (from last autotune run).
+
+Historical thresholds (last N autotune points).
+
+If you see wild swings (e.g. your threshold hops between 0.2 ↔ 0.8), that’s a sign your lookback is too short or your signal itself is unstable. Consider adding:
+
+Threshold bounds: clamp new thresholds to a [min, max] (e.g. [0.3, 0.7]).
+
+Hysteresis: only accept a new threshold if it differs from the current one by more than Δ (e.g. 0.1).
+
+7. Tie Autotune to Risk Management
+Your autotune maximizes raw return, but you care about risk-adjusted return:
+
+In your objective function (instead of avg_return = bt["return"].mean()), use Sharpe-like measures:
+
+python
+Copy
+Edit
+returns = bt["return"]
+score = returns.mean() / (returns.std() + ε)
+Or penalize threshold candidates that produce too many drawdowns or whipsaw trades.
+
+8. Fallbacks & Safeguards
+Always have a hard-coded “safe” default threshold (e.g. 0.5). If your autotune:
+
+Fails (e.g. no trades in backtest window), revert to default.
+
+Overfits (e.g. new threshold produces < 5 trades in-sample), skip the update.
+
+Putting It All Together
+Configure your autotune slider in Streamlit to run on-demand and on a schedule (e.g. once per new candle).
+
+Backtest extensively with cross-validation to pick a lookback window and α smoothing factor.
+
+Deploy with monitoring: log each new threshold, its in-sample vs. out-of-sample performance, and alert if thresholds oscillate.
+
+Iterate: if your real-time win-rate drifts below target, revisit your autotune hyperparameters (lookback size, grid resolution, scoring function).
+
+By treating autotune as a controlled experiment rather than an on-every-candle black-box, you’ll adapt to new market conditions while preserving the statistical edge that got you toward that $10 → $200 goal in the first place.

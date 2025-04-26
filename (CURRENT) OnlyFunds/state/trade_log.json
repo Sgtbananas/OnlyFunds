@@ -14,5 +14,21 @@
     "entry_price": 84.68,
     "exit_price": 84.68,
     "return_pct": 0.0
+  },
+  {
+    "timestamp": "2025-04-25 12:05:27",
+    "pair": "SOLUSDT",
+    "action": "BUY",
+    "amount": 4.630746710257102,
+    "entry_price": 154.25
+  },
+  {
+    "timestamp": "2025-04-25 22:34:19",
+    "pair": "SOLUSDT",
+    "action": "SELL",
+    "amount": 4.630746710257102,
+    "entry_price": 154.25,
+    "exit_price": 150.45,
+    "return_pct": -0.02463533225283638
   }
 ]

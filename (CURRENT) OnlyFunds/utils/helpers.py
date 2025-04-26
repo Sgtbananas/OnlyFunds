@@ -103,3 +103,18 @@ def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S"):
 def generate_random_string(length: int = 8):
     chars = string.ascii_letters + string.digits
     return "".join(random.choice(chars) for _ in range(length))
+
+def enforce_stop_take(price, entry, stop_loss_pct=0.005, take_profit_pct=0.01):
+    """Return 'stop_loss', 'take_profit', or None if neither."""
+    unreal = (price / entry) - 1
+    if unreal <= -stop_loss_pct:
+        return "stop_loss"
+    elif unreal >= take_profit_pct:
+        return "take_profit"
+    return None
+
+def volatility_scaled_size(vol, price, usd_risk=1.0):
+    """Returns size in units for a given $ risk, vol, and price."""
+    if vol == 0 or price == 0:
+        return 0
+    return usd_risk / (vol * price)
