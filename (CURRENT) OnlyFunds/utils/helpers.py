@@ -44,6 +44,46 @@ def compute_trade_metrics(trade_log, initial_capital):
         "sharpe_ratio": sharpe_ratio
     }
 
+def compute_grid_metrics(grid_orders):
+    """Compute metrics for grid trading orders (PnL, fill rates, etc)."""
+    df = pd.DataFrame(grid_orders)
+    if df.empty or "fill_price" not in df.columns or "side" not in df.columns:
+        return {
+            "total_pnl": 0,
+            "fills": 0,
+            "buy_fills": 0,
+            "sell_fills": 0,
+            "avg_fill_price": 0,
+        }
+    fills = df[~df["fill_price"].isna()]
+    total_pnl = 0
+    if not fills.empty and "side" in fills.columns:
+        buy_fills = fills[fills["side"] == "buy"]
+        sell_fills = fills[fills["side"] == "sell"]
+        if not buy_fills.empty and not sell_fills.empty:
+            # Simple PnL: sum of (sell - buy) * size for matched pairs
+            min_fills = min(len(buy_fills), len(sell_fills))
+            total_pnl = ((sell_fills["fill_price"].iloc[:min_fills].values -
+                         buy_fills["fill_price"].iloc[:min_fills].values) *
+                         buy_fills["size"].iloc[:min_fills].values).sum()
+        else:
+            total_pnl = 0
+        return {
+            "total_pnl": total_pnl,
+            "fills": len(fills),
+            "buy_fills": len(buy_fills) if not buy_fills.empty else 0,
+            "sell_fills": len(sell_fills) if not sell_fills.empty else 0,
+            "avg_fill_price": fills["fill_price"].mean() if not fills.empty else 0,
+        }
+    else:
+        return {
+            "total_pnl": 0,
+            "fills": 0,
+            "buy_fills": 0,
+            "sell_fills": 0,
+            "avg_fill_price": 0,
+        }
+
 def suggest_tuning(trade_log):
     if not trade_log:
         return {"suggestions": ["Insufficient data to provide tuning recommendations."]}
@@ -104,17 +144,18 @@ def generate_random_string(length: int = 8):
     chars = string.ascii_letters + string.digits
     return "".join(random.choice(chars) for _ in range(length))
 
-def enforce_stop_take(price, entry, stop_loss_pct=0.005, take_profit_pct=0.01):
-    """Return 'stop_loss', 'take_profit', or None if neither."""
-    unreal = (price / entry) - 1
-    if unreal <= -stop_loss_pct:
-        return "stop_loss"
-    elif unreal >= take_profit_pct:
-        return "take_profit"
-    return None
-
-def volatility_scaled_size(vol, price, usd_risk=1.0):
-    """Returns size in units for a given $ risk, vol, and price."""
-    if vol == 0 or price == 0:
-        return 0
-    return usd_risk / (vol * price)
+def log_grid_trade(trade_data, log_file="data/logs/grid_trade_logs.json"):
+    """Append a grid trade to a dedicated grid trade log."""
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    trade_data["timestamp"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        if os.path.exists(log_file):
+            with open(log_file, "r") as f:
+                logs = json.load(f)
+        else:
+            logs = []
+        logs.append(trade_data)
+        with open(log_file, "w") as f:
+            json.dump(logs, f, indent=2)
+    except Exception as e:
+        print(f"Error logging grid trade: {e}")
