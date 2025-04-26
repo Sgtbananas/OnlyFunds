@@ -16,15 +16,7 @@ from core.backtester import run_backtest
 from utils.helpers import (
     compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
 )
-
-# NEW: Arbitrage and Market Making imports
-from core.arbitrage import find_triangular_arbitrage
-from core.market_maker import market_make
-
-try:
-    import ccxt
-except ImportError:
-    ccxt = None
+from core.ml_filter import load_model, ml_confidence, train_and_save_model
 
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 
@@ -103,14 +95,14 @@ threshold_slider = st.sidebar.slider(
     help="How strong must the signal be before we BUY/SELL?"
 )
 
-# --- NEW: Arbitrage and Market Making toggles ---
-enable_arb = False
-enable_mm = False
-if mode in ["Normal", "Aggressive"]:
-    enable_arb = st.sidebar.checkbox("Enable Arbitrage Module", value=False)
-    enable_mm = st.sidebar.checkbox("Enable Market Making Module", value=False)
-else:
-    st.sidebar.markdown("Arbitrage and Market Making only available in Normal/Aggressive mode.")
+# --- ML Retrain Button ---
+if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
+    with st.spinner("Retraining ML model..."):
+        success, msg = train_and_save_model()
+        if success:
+            st.sidebar.success(msg)
+        else:
+            st.sidebar.error(msg)
 
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
 if start_btn:
@@ -126,6 +118,8 @@ if mode == "Conservative":
     min_signal_conf = 0.7
     max_positions = min(max_positions, 3)
     enable_grid = False
+    enable_arb = False
+    enable_mm = False
     enable_ml = True
 elif mode == "Aggressive":
     risk_pct = 0.02
@@ -134,6 +128,8 @@ elif mode == "Aggressive":
     min_signal_conf = 0.4
     max_positions = max(max_positions, 20)
     enable_grid = True
+    enable_arb = True
+    enable_mm = True
     enable_ml = True
 else:
     risk_pct = RISK_PER_TRADE
@@ -141,65 +137,13 @@ else:
     take_profit_pct = DEFAULT_TAKE_PROFIT
     min_signal_conf = 0.5
     enable_grid = False
+    enable_arb = False
+    enable_mm = False
     enable_ml = True
 
 @st.cache_data(show_spinner=False)
 def cached_fetch_klines(pair, interval, limit):
     return fetch_klines(pair=pair, interval=interval, limit=limit)
-
-# --- NEW: CoinEx connector setup ---
-def get_ccxt_exchange():
-    if ccxt is None:
-        st.error("ccxt is not installed. Please install ccxt to use live exchange features.")
-        return None
-    api_key = os.getenv("COINEX_API_KEY")
-    api_secret = os.getenv("COINEX_API_SECRET")
-    if not api_key or not api_secret:
-        st.warning("Missing CoinEx API keys in .env. Arbitrage and MM modules disabled.")
-        return None
-    return ccxt.coinex({
-        'apiKey': api_key,
-        'secret': api_secret,
-        'enableRateLimit': True,
-    })
-
-def fetch_depths(exchange):
-    # Map to arbitrage function's expected format
-    orderbooks = {
-        "BTCUSDT": exchange.fetch_order_book("BTC/USDT"),
-        "ETHBTC": exchange.fetch_order_book("ETH/BTC"),
-        "ETHUSDT": exchange.fetch_order_book("ETH/USDT"),
-    }
-    depths = {
-        key: {
-            "bid": ob["bids"][0][0],
-            "ask": ob["asks"][0][0],
-        } for key, ob in orderbooks.items()
-    }
-    return depths
-
-def get_order_book_ccxt(exchange, pair):
-    return exchange.fetch_order_book(pair)
-
-def place_limit_ccxt(exchange, pair, side, size, price):
-    if dry_run:
-        logger.info(f"[DRY RUN] Would place {side} order on {pair}: {size}@{price}")
-        return None
-    if side == "buy":
-        order = exchange.create_limit_buy_order(pair, size, price)
-    else:
-        order = exchange.create_limit_sell_order(pair, size, price)
-    logger.info(f"Placed {side} order for {pair}: size={size}, price={price}")
-    return order['id']
-
-def cancel_all_ccxt(exchange, pair):
-    if dry_run:
-        logger.info(f"[DRY RUN] Would cancel all orders on {pair}")
-        return
-    open_orders = exchange.fetch_open_orders(pair)
-    for order in open_orders:
-        exchange.cancel_order(order['id'], pair)
-    logger.info(f"Cancelled all open orders for {pair}")
 
 def trade_logic(pair: str, current_capital):
     try:
@@ -226,12 +170,27 @@ def trade_logic(pair: str, current_capital):
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
 
-    # ML confidence filter stub (to be implemented)
-    # if enable_ml:
-    #     features = [df["rsi"].iloc[-1], df["macd"].iloc[-1], df["ema_diff"].iloc[-1], df["Close"].pct_change().rolling(20).std().iloc[-1]]
-    #     prob = ml_confidence(model, features)
-    #     if prob < min_signal_conf:
-    #         return None, current_capital
+    # ML confidence filter
+    if enable_ml:
+        try:
+            features = [
+                df["rsi"].iloc[-1],
+                df["macd"].iloc[-1],
+                df["ema_diff"].iloc[-1],
+                df["Close"].pct_change().rolling(20).std().iloc[-1]
+            ]
+            model = load_model()
+            if model is not None:
+                prob = ml_confidence(features, model=model)
+                logger.info(f"ML confidence for {pair}: {prob:.2f} (min required: {min_signal_conf})")
+                st.sidebar.write(f"ML prob for {pair}: {prob:.2f}")
+                if prob < min_signal_conf:
+                    logger.info(f"ML filter blocked trade on {pair} (prob={prob:.2f})")
+                    return None, current_capital
+            else:
+                logger.info("ML model not found, skipping ML filter.")
+        except Exception as e:
+            logger.warning(f"ML filter error: {e}")
 
     # Sentiment filter stub
     # sentiment = fetch_sentiment_score(pair)
@@ -337,6 +296,16 @@ def trade_logic(pair: str, current_capital):
             track_trade_result(result, pair, action.upper())
         return None, current_capital
 
+    # --- Aggressive mode: grid, arb, MM extensions (stub) ---
+    # if enable_grid:
+    #     grid = GridTrader(pair, df["Close"].iloc[-1], grid_levels=10, grid_pct=0.005, size=0.001)
+    #     orders = grid.generate_orders()
+    # if enable_arb:
+    #     depths = {...}
+    #     arb_ops = find_triangular_arbitrage(depths)
+    # if enable_mm:
+    #     market_make(pair, get_mid_price, place_limit, cancel_all, spread=0.002, size=0.01)
+
     return None, current_capital
 
 def display_dashboard(current_capital):
@@ -365,14 +334,6 @@ def display_dashboard(current_capital):
 
 def main_loop():
     global current_capital
-
-    # --- NEW: Setup coinex if needed ---
-    coinex = None
-    if enable_arb or enable_mm:
-        coinex = get_ccxt_exchange()
-        if coinex is None:
-            st.warning("CoinEx live features not available. Arbitrage/Market Making disabled.")
-    
     if backtest_mode:
         with st.spinner("Running backtest…"):
             for pair in TRADING_PAIRS:
@@ -390,35 +351,6 @@ def main_loop():
                 _, updated_capital = trade_logic(pair, current_capital)
                 current_capital = updated_capital
                 last_timestamps[pair] = newest
-
-        # --- NEW: Arbitrage logic ---
-        if enable_arb and coinex is not None:
-            try:
-                depths = fetch_depths(coinex)
-                arb_ops = find_triangular_arbitrage(depths, dry_run=dry_run)
-                if arb_ops:
-                    st.info(f"Arbitrage opps: {arb_ops}")
-                    logger.info(f"Arbitrage opportunities found: {arb_ops}")
-            except Exception as e:
-                logger.warning(f"Arbitrage check failed: {e}")
-
-        # --- NEW: Market making logic (just on BTC/USDT for demo) ---
-        if enable_mm and coinex is not None:
-            try:
-                market_make(
-                    "BTC/USDT",
-                    get_order_book=lambda p: get_order_book_ccxt(coinex, p),
-                    place_limit=lambda p, side, size, price: place_limit_ccxt(coinex, p, side, size, price),
-                    cancel_all=lambda p: cancel_all_ccxt(coinex, p),
-                    spread=0.002,
-                    size=0.001,
-                    refresh_interval=5,
-                    dry_run=dry_run,
-                )
-                st.info("Market maker ran one cycle on BTC/USDT (see logs for details).")
-            except Exception as e:
-                logger.warning(f"Market maker failed: {e}")
-
         display_dashboard(current_capital)
         time.sleep(1)
 
