@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Interval mapping for CoinEx API
 _INTERVAL_MAP = {
     "1m":  "1min",  "3m":  "3min", "5m":  "5min", "15m": "15min",
     "30m": "30min", "1h":  "1hour","2h":  "2hour","4h":  "4hour",
@@ -15,16 +14,11 @@ _INTERVAL_MAP = {
     "1w":  "1week"
 }
 
-# Default trading pairs
 TRADING_PAIRS = os.getenv("TRADING_PAIRS", "BTCUSDT,ETHUSDT,LTCUSDT").split(",")
 
 COINEX_BASE = os.getenv("API_BASE_URL", "https://api.coinex.com/v1")
 
 def fetch_klines(pair: str, interval: str = "5m", limit: int = 500) -> pd.DataFrame:
-    """
-    Fetch OHLCV data from CoinEx. Returns DataFrame indexed by Timestamp
-    with Open, High, Low, Close, Volume columns.
-    """
     resolution = _INTERVAL_MAP.get(interval)
     if not resolution:
         logging.error(f"Invalid interval: {interval}")
@@ -42,7 +36,6 @@ def fetch_klines(pair: str, interval: str = "5m", limit: int = 500) -> pd.DataFr
             logging.warning(f"No kline data for {pair}@{interval}")
             return pd.DataFrame()
 
-        # CoinEx: [timestamp, open, high, low, close, volume, turnover]
         df = pd.DataFrame(data, columns=[
             "timestamp", "open", "high", "low", "close", "volume", "turnover"
         ]).drop(columns=["turnover"])
@@ -64,7 +57,6 @@ def fetch_klines(pair: str, interval: str = "5m", limit: int = 500) -> pd.DataFr
     return pd.DataFrame()
 
 def validate_df(df: pd.DataFrame) -> bool:
-    """Ensure DataFrame has OHLCV & no NaNs."""
     required = {"Open","High","Low","Close","Volume"}
     missing_columns = required - set(df.columns)
     if missing_columns:
@@ -76,60 +68,43 @@ def validate_df(df: pd.DataFrame) -> bool:
     return True
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Append RSI, MACD, Bollinger Bands, EMA20, EMA_diff, Volatility.
-    Fully forward‐fills to avoid NaNs.
-    Also computes a composite z-score indicator for robust signal generation.
-    """
     df2 = df.copy()
     close = df2["Close"]
 
     try:
-        # RSI
         df2["rsi"] = (
             ta.momentum.RSIIndicator(close, window=14)
             .rsi()
             .fillna(50)
             .ffill()
         )
-
-        # MACD
         macd = ta.trend.MACD(close)
         df2["macd"]        = macd.macd_diff().fillna(0).ffill()
         df2["macd_signal"] = macd.macd_signal().fillna(0).ffill()
 
-        # Bollinger Bands
         mid = close.rolling(20, min_periods=1).mean()
         std = close.rolling(20, min_periods=1).std().fillna(0)
         df2["bollinger_mid"]   = mid.ffill()
         df2["bollinger_upper"] = (mid + 2 * std).ffill()
         df2["bollinger_lower"] = (mid - 2 * std).ffill()
 
-        # EMA 20
         ema20 = close.ewm(span=20, adjust=False).mean()
         df2["ema20"]    = ema20.ffill()
         df2["ema_diff"] = (close - ema20).fillna(0)
 
-        # Volatility
         df2["volatility"] = close.rolling(10, min_periods=1).std().fillna(0)
 
-        # --- Composite indicator logic (z-score normalization) ---
+        # Composite z-score indicators for robust ML features
         features = ["rsi", "macd", "ema_diff", "volatility"]
         for col in features:
             mean = df2[col].mean()
             std = df2[col].std(ddof=0)
             if std == 0:
-                df2[f"{col}_z"] = 0  # Avoid division by zero
+                df2[f"{col}_z"] = 0
             else:
                 df2[f"{col}_z"] = (df2[col] - mean) / std
-
         z_cols = [f"{c}_z" for c in features]
         df2["indicator"] = df2[z_cols].mean(axis=1)
-
-        # # Optional: custom weights (uncomment and adjust weights if needed)
-        # weights = {"rsi_z": 0.3, "macd_z": 0.3, "ema_diff_z": 0.2, "volatility_z": 0.2}
-        # df2["indicator"] = sum(df2[col] * w for col, w in weights.items())
-
     except Exception as e:
         logging.error(f"Error in add_indicators: {e}")
         return pd.DataFrame()
