@@ -3,6 +3,9 @@ import logging
 import time
 from datetime import datetime
 import json
+import joblib
+META_MODEL = joblib.load("state/meta_model.pkl")
+
 
 import streamlit as st
 import pandas as pd
