@@ -3,10 +3,10 @@ import logging
 import time
 from datetime import datetime
 
-# === Ensure state/ directory exists before anything else ===
+# --- Ensure state/ directory exists before anything else ---
 os.makedirs("state", exist_ok=True)
 
-# --- Streamlit page config MUST be first Streamlit call ---
+# --- Set Streamlit page config as the first Streamlit call ---
 import streamlit as st
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
@@ -14,6 +14,7 @@ st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="w
 import pandas as pd
 from dotenv import load_dotenv
 from pythonjsonlogger import jsonlogger
+import joblib
 
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
@@ -28,8 +29,7 @@ from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
-# === NEW: A/B meta-learner selector support ===
-import joblib
+# === Meta-learner selector support ===
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
     METRICS_PREFIX = "onlyfunds_A"
@@ -40,7 +40,6 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
-# --- Only attempt to load the meta-learner if file exists, and silence warning if missing ---
 META_MODEL = None
 if os.path.exists(META_MODEL_PATH):
     try:
@@ -62,11 +61,13 @@ root.setLevel(logging.INFO)
 from prometheus_client import start_http_server, Counter, Gauge
 
 def initialize_prometheus_metrics():
-    if 'trade_counter' not in globals():
+    # Only create metrics if not already in globals (per process)
+    if "trade_counter" not in globals():
         try:
             start_http_server(8000)
         except Exception as e:
             print(f"[WARN] Prometheus server may already be running: {e}")
+
         globals()["trade_counter"] = Counter(
             f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed"
         )
@@ -76,7 +77,11 @@ def initialize_prometheus_metrics():
         globals()["heartbeat_gauge"] = Gauge(
             f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp"
         )
-    return globals()["trade_counter"], globals()["pnl_gauge"], globals()["heartbeat_gauge"]
+    return (
+        globals()["trade_counter"],
+        globals()["pnl_gauge"],
+        globals()["heartbeat_gauge"],
+    )
 
 trade_counter, pnl_gauge, heartbeat_gauge = initialize_prometheus_metrics()
 
@@ -131,7 +136,7 @@ st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VAR
 st.sidebar.header("⚙️ Configuration")
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
-# --- Sidebar config (now from config file) ---
+# --- Sidebar config (from config file) ---
 dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg["dry_run"])
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
 backtest_mode = st.sidebar.checkbox("Enable Backtesting", value=False)
@@ -164,7 +169,6 @@ if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
             st.sidebar.error(msg)
 
 # === NEW: Backtest/Optuna Results Viewer ===
-
 def load_backtest_results():
     if os.path.exists(BACKTEST_RESULTS_FILE):
         try:
@@ -224,7 +228,7 @@ if start_btn:
 else:
     st.info("Ready. Configure & click Start.")
 
-# MODE SETTINGS (now from config and sidebar only)
+# MODE SETTINGS (from config and sidebar only)
 if mode == "Conservative":
     risk_pct = 0.0025
     min_signal_conf = ml_cfg.get("min_signal_conf", 0.7)
