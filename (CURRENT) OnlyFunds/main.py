@@ -2,10 +2,6 @@ import os
 import logging
 import time
 from datetime import datetime
-import json
-import joblib
-META_MODEL = joblib.load("state/meta_model.pkl")
-
 
 import streamlit as st
 import pandas as pd
@@ -24,25 +20,44 @@ from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
+# === NEW: A/B meta-learner selector support ===
+import joblib
+SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
+if SELECTOR_VARIANT == "A":
+    META_MODEL_PATH = "state/meta_model_A.pkl"
+    METRICS_PREFIX = "onlyfunds_A"
+elif SELECTOR_VARIANT == "B":
+    META_MODEL_PATH = "state/meta_model_B.pkl"
+    METRICS_PREFIX = "onlyfunds_B"
+else:
+    META_MODEL_PATH = "state/meta_model.pkl"
+    METRICS_PREFIX = "onlyfunds"
+
+try:
+    META_MODEL = joblib.load(META_MODEL_PATH)
+except Exception as e:
+    META_MODEL = None
+    print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
+
 # === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
-handler = logging.FileHandler(os.path.join(LOGS_DIR, "onlyfunds.json"))
+handler = logging.FileHandler(os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json"))
 formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 handler.setFormatter(formatter)
 root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.INFO)
 
-# === Prometheus metrics server ===
+# === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge
 
 start_http_server(8000)  # exposes /metrics for Prometheus
 
-trade_counter = Counter("onlyfunds_trades_executed_total", "Total trades executed")
-pnl_gauge    = Gauge("onlyfunds_current_pnl", "Current unrealized PnL (USDT)")
-heartbeat_gauge = Gauge("onlyfunds_heartbeat", "Heartbeat timestamp")
+trade_counter = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
+pnl_gauge    = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
+heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
 
 # --- Load config ---
 config = load_config()
@@ -50,7 +65,7 @@ risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
-st.set_page_config(page_title="CryptoTrader AI", layout="wide")
+st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +74,7 @@ TRADE_LOG_FILE = "state/trade_log.json"
 CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
-HEARTBEAT_FILE = "state/heartbeat.json"  # For file-based health
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -94,8 +109,9 @@ except Exception as e:
 # --- Instantiate Risk Manager ---
 risk_manager = RiskManager(config)
 
-st.title("🧠 CryptoTrader AI Bot (SPOT Market Only)")
+st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
 st.sidebar.header("⚙️ Configuration")
+st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
 # --- Sidebar config (now from config file) ---
 dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg["dry_run"])
@@ -186,7 +202,7 @@ if st.sidebar.button("🏆 Show Optuna Best Params"):
 
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
 if start_btn:
-    st.success("Bot started! (Spot market only)")
+    st.success(f"Bot started! (Spot market only, Variant {SELECTOR_VARIANT})")
 else:
     st.info("Ready. Configure & click Start.")
 
@@ -371,7 +387,7 @@ def trade_logic(pair: str, current_capital):
 def display_dashboard(current_capital):
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     pnl_gauge.set(perf["total_return"])  # You may prefer "current_capital" or unrealized PnL
-    st.subheader("📈 Live Dashboard")
+    st.subheader(f"📈 Live Dashboard — Variant {SELECTOR_VARIANT}")
     st.metric("Starting Capital", f"{trading_cfg['default_capital']:.2f} USDT")
     st.metric("Current Capital",  f"{perf['current_capital']:.4f} USDT")
     st.metric("Total Return",     f"{perf['total_return']:.2f}%")
@@ -423,7 +439,6 @@ if start_btn:
         import traceback, smtplib
         tb = traceback.format_exc()
         logger.error(f"CRASHED: {tb}")
-        # Optional: send email alert (if you configure USER, PASS, ALERT_EMAIL in env)
         USER = os.getenv("ALERT_USER")
         PASS = os.getenv("ALERT_PASS")
         ALERT_EMAIL = os.getenv("ALERT_EMAIL")
