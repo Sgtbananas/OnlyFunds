@@ -2,6 +2,7 @@ import os
 import logging
 import time
 from datetime import datetime
+import json
 
 import streamlit as st
 import pandas as pd
@@ -20,6 +21,26 @@ from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
+# === Structured JSON logging ===
+from pythonjsonlogger import jsonlogger
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
+handler = logging.FileHandler(os.path.join(LOGS_DIR, "onlyfunds.json"))
+formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+handler.setFormatter(formatter)
+root = logging.getLogger()
+root.addHandler(handler)
+root.setLevel(logging.INFO)
+
+# === Prometheus metrics server ===
+from prometheus_client import start_http_server, Counter, Gauge
+
+start_http_server(8000)  # exposes /metrics for Prometheus
+
+trade_counter = Counter("onlyfunds_trades_executed_total", "Total trades executed")
+pnl_gauge    = Gauge("onlyfunds_current_pnl", "Current unrealized PnL (USDT)")
+heartbeat_gauge = Gauge("onlyfunds_heartbeat", "Heartbeat timestamp")
+
 # --- Load config ---
 config = load_config()
 risk_cfg = config["risk"]
@@ -28,10 +49,6 @@ ml_cfg = config.get("ml", {})
 
 st.set_page_config(page_title="CryptoTrader AI", layout="wide")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = "state/open_positions.json"
@@ -39,6 +56,7 @@ TRADE_LOG_FILE = "state/trade_log.json"
 CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
+HEARTBEAT_FILE = "state/heartbeat.json"  # For file-based health
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -116,11 +134,10 @@ def load_backtest_results():
             results = load_json(BACKTEST_RESULTS_FILE)
             df = pd.DataFrame(results)
             if not df.empty and "pair" in df and "threshold" in df:
-                # Show most recent runs/results on top if possible
                 if "timestamp" in df.columns:
                     df = df.sort_values("timestamp", ascending=False)
                 else:
-                    df = df.iloc[::-1]  # Show latest first
+                    df = df.iloc[::-1]
             return df
         except Exception as e:
             st.warning(f"Failed to load backtest results: {e}")
@@ -190,6 +207,13 @@ else:
 def cached_fetch_klines(pair, interval, limit):
     return fetch_klines(pair=pair, interval=interval, limit=limit)
 
+def write_heartbeat():
+    """Update heartbeat file and metric for external monitoring."""
+    ts = time.time()
+    heartbeat_gauge.set(ts)
+    with open(HEARTBEAT_FILE, "w") as f:
+        json.dump({"last_run": ts}, f)
+
 def trade_logic(pair: str, current_capital):
     try:
         base, quote = validate_pair(pair)
@@ -237,11 +261,6 @@ def trade_logic(pair: str, current_capital):
         except Exception as e:
             logger.warning(f"ML filter error: {e}")
 
-    # Sentiment filter stub
-    # sentiment = fetch_sentiment_score(pair)
-    # if sentiment < -0.2:
-    #     return None, current_capital
-
     # --- Backtest mode: read-only, separate log ---
     if backtest_mode:
         combined_df = run_backtest(
@@ -277,7 +296,6 @@ def trade_logic(pair: str, current_capital):
         return None, current_capital
 
     # --- RISK MANAGER ENFORCEMENT ---
-    # Enforce global drawdown/daily loss kill-switch
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     equity_curve = [trading_cfg["default_capital"]]
     for trade in trade_log:
@@ -300,6 +318,9 @@ def trade_logic(pair: str, current_capital):
         logger.warning(f"Calculated amount {amount:.6f} below min size {risk_cfg['min_size']} → skipping BUY")
         return None, current_capital
 
+    # === Track trades for Prometheus ===
+    prev_trades = len(trade_log)
+
     if action == "buy":
         if len(open_positions) >= max_positions:
             logger.info("🚫 Max open positions reached → skipping BUY")
@@ -316,6 +337,8 @@ def trade_logic(pair: str, current_capital):
         logger.info(f"📥 BUY {pair} at {price:.2f} (amount={amount:.6f})")
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
+        new_trades = len(trade_log) - prev_trades
+        trade_counter.inc(new_trades)
         return None, current_capital
 
     if action == "sell":
@@ -336,32 +359,15 @@ def trade_logic(pair: str, current_capital):
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
         save_json(compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"], CAPITAL_FILE, indent=2)
-
-        if not backtest_mode:
-            result = place_order(
-                pair=pair,
-                action=action,
-                amount=position["amount"],
-                price=exit_price,
-                is_dry_run=dry_run,
-            )
-            track_trade_result(result, pair, action.upper())
+        new_trades = len(trade_log) - prev_trades
+        trade_counter.inc(new_trades)
         return None, compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"]
-
-    # --- Aggressive mode: grid, arb, MM extensions (stub) ---
-    # if enable_grid:
-    #     grid = GridTrader(pair, df["Close"].iloc[-1], grid_levels=10, grid_pct=0.005, size=0.001)
-    #     orders = grid.generate_orders()
-    # if enable_arb:
-    #     depths = {...}
-    #     arb_ops = find_triangular_arbitrage(depths)
-    # if enable_mm:
-    #     market_make(pair, get_mid_price, place_limit, cancel_all, spread=0.002, size=0.01)
 
     return None, current_capital
 
 def display_dashboard(current_capital):
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
+    pnl_gauge.set(perf["total_return"])  # You may prefer "current_capital" or unrealized PnL
     st.subheader("📈 Live Dashboard")
     st.metric("Starting Capital", f"{trading_cfg['default_capital']:.2f} USDT")
     st.metric("Current Capital",  f"{perf['current_capital']:.4f} USDT")
@@ -373,7 +379,6 @@ def display_dashboard(current_capital):
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
         desired_cols = ["amount", "entry_price"]
         cols = [c for c in desired_cols if c in df_open.columns]
-        # Show most recent position at the top (if possible)
         st.dataframe(df_open[cols].iloc[::-1])
     else:
         st.info("No active trades.")
@@ -405,7 +410,27 @@ def main_loop():
                 current_capital = updated_capital
                 last_timestamps[pair] = newest
         display_dashboard(current_capital)
+        write_heartbeat()
         time.sleep(1)
 
 if start_btn:
-    main_loop()
+    try:
+        main_loop()
+    except Exception:
+        import traceback, smtplib
+        tb = traceback.format_exc()
+        logger.error(f"CRASHED: {tb}")
+        # Optional: send email alert (if you configure USER, PASS, ALERT_EMAIL in env)
+        USER = os.getenv("ALERT_USER")
+        PASS = os.getenv("ALERT_PASS")
+        ALERT_EMAIL = os.getenv("ALERT_EMAIL")
+        if USER and PASS and ALERT_EMAIL:
+            try:
+                with smtplib.SMTP("smtp.gmail.com", 587) as s:
+                    s.starttls()
+                    s.login(USER, PASS)
+                    msg = f"Subject: OnlyFunds CRASHED!\n\n{tb}"
+                    s.sendmail(USER, ALERT_EMAIL, msg)
+            except Exception as e:
+                logger.error(f"Failed to send alert email: {e}")
+        raise
