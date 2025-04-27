@@ -1,0 +1,54 @@
+Here’s a quick rundown of what you now have:
+
+🧠 Intelligence Layer
+Autotune + Threshold Optimization via core/autotune.py
+
+Signal Smoothing & Adaptive Scoring in core/core_signals.py
+
+🧩 Configuration + Control
+.env = env vars (secure, portable)
+
+api_config.json + strategy_config.json = persistent tuning state + exchange handling
+
+config_loader.py = typed access to .env and configs
+
+strategy_utils.py = time-based trading enforcement
+
+📈 Dashboard + Backtesting
+Streamlit for real-time display + toggles
+
+Full dry run mode
+
+Embedded backtester in live loop (if toggle is on)
+
+⚙️ Infrastructure
+Modular directories:
+
+core/ = logic + strategy
+
+data/ = results, logs, cache
+
+utils/ = universal helpers/decorators
+
+✅ Next optional enhancements (pick any time):
+Telegram/Slack Notifier for alerts on trades
+
+Capital-aware Position Sizing — use percent of available capital per trade
+
+Web API (FastAPI) to trigger trades remotely or log outcomes
+
+Strategy Uploading UI — change strategy live via interface
+
+SQLite or TinyDB trade database (instead of just JSON logs)
+
+You're now in a place where you can:
+
+Simulate trades
+
+Tune AI
+
+Backtest signals
+
+Execute real orders if you want
+
+And visually manage it all with Streamlit
