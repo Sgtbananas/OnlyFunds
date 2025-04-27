@@ -3,9 +3,17 @@ import logging
 import time
 from datetime import datetime
 
+# === Ensure state/ directory exists before anything else ===
+os.makedirs("state", exist_ok=True)
+
+# --- Streamlit page config MUST be first Streamlit call ---
 import streamlit as st
+SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
+st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
+
 import pandas as pd
 from dotenv import load_dotenv
+from pythonjsonlogger import jsonlogger
 
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
@@ -22,7 +30,6 @@ from utils.config import load_config
 
 # === NEW: A/B meta-learner selector support ===
 import joblib
-SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
     METRICS_PREFIX = "onlyfunds_A"
@@ -33,14 +40,15 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
-try:
-    META_MODEL = joblib.load(META_MODEL_PATH)
-except Exception as e:
-    META_MODEL = None
-    st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}: {e}")
+# --- Only attempt to load the meta-learner if file exists, and silence warning if missing ---
+META_MODEL = None
+if os.path.exists(META_MODEL_PATH):
+    try:
+        META_MODEL = joblib.load(META_MODEL_PATH)
+    except Exception as e:
+        st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
 # === Structured JSON logging ===
-from pythonjsonlogger import jsonlogger
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 handler = logging.FileHandler(os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json"))
@@ -78,9 +86,6 @@ risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
-# --- Set page config FIRST ---
-st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
-
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = "state/open_positions.json"
@@ -90,7 +95,6 @@ BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
 HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
 
-os.makedirs("state", exist_ok=True)
 try:
     if os.path.exists(POSITIONS_FILE):
         open_positions = load_json(POSITIONS_FILE)
