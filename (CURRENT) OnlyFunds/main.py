@@ -231,6 +231,7 @@ def write_heartbeat():
     ts = time.time()
     heartbeat_gauge.set(ts)
     with open(HEARTBEAT_FILE, "w") as f:
+        import json
         json.dump({"last_run": ts}, f)
 
 def trade_logic(pair: str, current_capital):
@@ -413,8 +414,11 @@ def main_loop():
     global current_capital
     if backtest_mode:
         with st.spinner("Running backtest…"):
-            for pair in TRADING_PAIRS:
+            # --- PATCH: Run all pairs in parallel for backtest mode ---
+            from joblib import Parallel, delayed
+            def run_pair(pair):
                 trade_logic(pair, trading_cfg["default_capital"])
+            Parallel(n_jobs=-1)(delayed(run_pair)(pair) for pair in TRADING_PAIRS)
         return
 
     last_timestamps = {pair: None for pair in TRADING_PAIRS}
