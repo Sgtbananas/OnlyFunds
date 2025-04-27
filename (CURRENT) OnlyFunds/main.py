@@ -1,12 +1,13 @@
 import os
+import sys
 import logging
 import time
 from datetime import datetime
 
-# --- Ensure state/ directory exists before anything else ---
+# ─── Ensure state/ directory exists before anything else ───────────────────────
 os.makedirs("state", exist_ok=True)
 
-# --- Set Streamlit page config as the first Streamlit call ---
+# ─── Set Streamlit page config as the first Streamlit call ────────────────────
 import streamlit as st
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
@@ -29,7 +30,7 @@ from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
-# === Meta-learner selector support ===
+# ─── Meta-learner selector support ────────────────────────────────────────────
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
     METRICS_PREFIX = "onlyfunds_A"
@@ -47,7 +48,7 @@ if os.path.exists(META_MODEL_PATH):
     except Exception as e:
         st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
-# === Structured JSON logging ===
+# ─── Structured JSON logging ─────────────────────────────────────────────────
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 handler = logging.FileHandler(os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json"))
@@ -57,33 +58,48 @@ root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.INFO)
 
-# === Prometheus metrics server (A/B aware naming) ===
-from prometheus_client import start_http_server, Counter, Gauge
+# ─── Prometheus metrics server (A/B aware naming) ────────────────────────────
+from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
 
-def initialize_prometheus_metrics():
-    # Only create metrics if not already in globals (per process)
-    if "trade_counter" not in globals():
+def get_prometheus_metrics():
+    """
+    Create or retrieve the Prometheus metrics in the global REGISTRY.
+    Ensures we never double-register the same metric.
+    """
+    module = sys.modules[__name__]
+    if not hasattr(module, "_PROMETHEUS_METRICS"):
         try:
             start_http_server(8000)
-        except Exception as e:
-            print(f"[WARN] Prometheus server may already be running: {e}")
+        except Exception:
+            pass  # if already running, ignore
+        metrics = {}
+        # trades_executed_total
+        name = f"{METRICS_PREFIX}_trades_executed_total"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['trade_counter'] = Counter(name, "Total trades executed")
+        else:
+            metrics['trade_counter'] = REGISTRY._names_to_collectors[name]
 
-        globals()["trade_counter"] = Counter(
-            f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed"
-        )
-        globals()["pnl_gauge"] = Gauge(
-            f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)"
-        )
-        globals()["heartbeat_gauge"] = Gauge(
-            f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp"
-        )
-    return (
-        globals()["trade_counter"],
-        globals()["pnl_gauge"],
-        globals()["heartbeat_gauge"],
-    )
+        # current_pnl gauge
+        name = f"{METRICS_PREFIX}_current_pnl"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['pnl_gauge'] = Gauge(name, "Current unrealized PnL (USDT)")
+        else:
+            metrics['pnl_gauge'] = REGISTRY._names_to_collectors[name]
 
-trade_counter, pnl_gauge, heartbeat_gauge = initialize_prometheus_metrics()
+        # heartbeat gauge
+        name = f"{METRICS_PREFIX}_heartbeat"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['heartbeat_gauge'] = Gauge(name, "Heartbeat timestamp")
+        else:
+            metrics['heartbeat_gauge'] = REGISTRY._names_to_collectors[name]
+
+        module._PROMETHEUS_METRICS = metrics
+
+    m = module._PROMETHEUS_METRICS
+    return m['trade_counter'], m['pnl_gauge'], m['heartbeat_gauge']
+
+trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
 # --- Load config ---
 config = load_config()
@@ -98,161 +114,116 @@ TRADE_LOG_FILE = "state/trade_log.json"
 CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
-HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 
+# ─── State load ────────────────────────────────────────────────────────────────
+os.makedirs("state", exist_ok=True)
 try:
-    if os.path.exists(POSITIONS_FILE):
-        open_positions = load_json(POSITIONS_FILE)
-    else:
-        open_positions = {}
-except Exception as e:
-    logger.warning(f"Failed to load {POSITIONS_FILE}: {e}")
-    open_positions = {}
-
+    open_positions = load_json(POSITIONS_FILE) if os.path.exists(POSITIONS_FILE) else {}
+except:
+    logger.warning(f"Failed loading {POSITIONS_FILE}"); open_positions = {}
 try:
-    if os.path.exists(TRADE_LOG_FILE):
-        trade_log = load_json(TRADE_LOG_FILE)
-    else:
-        trade_log = []
-except Exception as e:
-    logger.warning(f"Failed to load {TRADE_LOG_FILE}: {e}")
-    trade_log = []
-
+    trade_log     = load_json(TRADE_LOG_FILE) if os.path.exists(TRADE_LOG_FILE) else []
+except:
+    logger.warning(f"Failed loading {TRADE_LOG_FILE}"); trade_log = []
 try:
-    if os.path.exists(CAPITAL_FILE):
-        current_capital = load_json(CAPITAL_FILE)
-        if not isinstance(current_capital, (float, int)):
-            current_capital = trading_cfg["default_capital"]
-    else:
-        current_capital = trading_cfg["default_capital"]
-except Exception as e:
-    logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
-    current_capital = trading_cfg["default_capital"]
+    raw_cap      = load_json(CAPITAL_FILE) if os.path.exists(CAPITAL_FILE) else trading_cfg["default_capital"]
+    current_capital = raw_cap if isinstance(raw_cap, (int, float)) else trading_cfg["default_capital"]
+except:
+    logger.warning(f"Failed loading {CAPITAL_FILE}"); current_capital = trading_cfg["default_capital"]
 
-# --- Instantiate Risk Manager ---
+# ─── Risk manager ─────────────────────────────────────────────────────────────
 risk_manager = RiskManager(config)
 
+# ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
 st.sidebar.header("⚙️ Configuration")
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
-# --- Sidebar config (from config file) ---
-dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg["dry_run"])
-autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
-backtest_mode = st.sidebar.checkbox("Enable Backtesting", value=False)
-mode = st.sidebar.selectbox("Trading Mode",
-                             ["Conservative", "Normal", "Aggressive"],
-                             index={"Conservative":0,"Normal":1,"Aggressive":2}[config.get("strategy",{}).get("mode","Normal").capitalize()])
-interval = st.sidebar.selectbox("Candle Interval",
-                                 ["5m", "15m", "30m", "1h", "4h", "1d"],
-                                 index=0)
-lookback = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)
-max_positions = st.sidebar.number_input("Max Open Positions", 1, 30, trading_cfg["max_positions"])
-stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, risk_cfg["stop_loss_pct"]*100.0, step=0.1) / 100
-take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, risk_cfg["take_profit_pct"]*100.0, step=0.1) / 100
-fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, trading_cfg["fee"]*100.0, step=0.01) / 100
-
+dry_run        = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg["dry_run"])
+autotune       = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=False)
+backtest_mode  = st.sidebar.checkbox("Enable Backtesting", value=False)
+mode           = st.sidebar.selectbox(
+    "Trading Mode",
+    ["Conservative", "Normal", "Aggressive"],
+    index={"Conservative":0,"Normal":1,"Aggressive":2}[config.get("strategy",{}).get("mode","Normal").capitalize()]
+)
+interval       = st.sidebar.selectbox("Candle Interval", ["5m","15m","30m","1h","4h","1d"], index=0)
+lookback       = st.sidebar.slider("Historical Lookback", 300, 2000, 1000)
+max_positions  = st.sidebar.number_input("Max Open Positions", 1, 30, trading_cfg["max_positions"])
+stop_loss_pct  = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, risk_cfg["stop_loss_pct"]*100, step=0.1)/100
+take_profit_pct= st.sidebar.number_input("Take-Profit %",0.0,10.0,risk_cfg["take_profit_pct"]*100,step=0.1)/100
+fee_pct        = st.sidebar.number_input("Trade Fee %",    0.0,1.0, trading_cfg["fee"]*100, step=0.01)/100
 threshold_slider = st.sidebar.slider(
-    "Entry Threshold",
-    min_value=0.0, max_value=1.0,
-    value=trading_cfg["threshold"], step=0.01,
+    "Entry Threshold", 0.0, 1.0, trading_cfg["threshold"], step=0.01,
     help="How strong must the signal be before we BUY/SELL?"
 )
 
-# --- ML Retrain Button ---
 if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
     with st.spinner("Retraining ML model..."):
         success, msg = train_and_save_model()
-        if success:
-            st.sidebar.success(msg)
-        else:
-            st.sidebar.error(msg)
+        st.sidebar.success(msg) if success else st.sidebar.error(msg)
 
-# === NEW: Backtest/Optuna Results Viewer ===
+# ─── Backtest/Optuna viewers ──────────────────────────────────────────────────
 def load_backtest_results():
     if os.path.exists(BACKTEST_RESULTS_FILE):
         try:
-            results = load_json(BACKTEST_RESULTS_FILE)
-            df = pd.DataFrame(results)
+            df = pd.DataFrame(load_json(BACKTEST_RESULTS_FILE))
             if not df.empty and "pair" in df and "threshold" in df:
-                if "timestamp" in df.columns:
-                    df = df.sort_values("timestamp", ascending=False)
-                else:
-                    df = df.iloc[::-1]
+                if "timestamp" in df: df.sort_values("timestamp",ascending=False, inplace=True)
+                else: df = df.iloc[::-1]
             return df
         except Exception as e:
-            st.warning(f"Failed to load backtest results: {e}")
-            return pd.DataFrame()
-    else:
-        return pd.DataFrame()
+            st.warning(f"Failed loading backtests: {e}")
+    return pd.DataFrame()
 
 def load_optuna_best():
     if os.path.exists(OPTUNA_BEST_FILE):
-        try:
-            return load_json(OPTUNA_BEST_FILE)
-        except Exception as e:
-            st.warning(f"Failed to load Optuna best results: {e}")
-            return None
+        try: return load_json(OPTUNA_BEST_FILE)
+        except Exception as e: st.warning(f"Failed loading optuna best: {e}")
     return None
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📊 Backtest & Optimization Results")
-
 if st.sidebar.button("⏬ Show Backtest Results Table"):
-    with st.spinner("Loading backtest results..."):
-        df_results = load_backtest_results()
-        if not df_results.empty:
-            st.subheader("Recent Backtest Results (Most Recent on Top)")
-            st.dataframe(df_results, use_container_width=True)
-            st.download_button(
-                "Download Backtest Results as CSV",
-                df_results.to_csv(index=False),
-                file_name="backtest_results.csv"
-            )
-        else:
-            st.info("No backtest results found.")
+    df = load_backtest_results()
+    if not df.empty:
+        st.subheader("Recent Backtest Results")
+        st.dataframe(df)
+        st.download_button("Download CSV", df.to_csv(index=False), "backtest_results.csv")
+    else:
+        st.info("No backtest results found.")
 
 if st.sidebar.button("🏆 Show Optuna Best Params"):
     best = load_optuna_best()
-    if best:
-        st.subheader("Optuna Best Hyperparameters")
-        st.json(best)
-    else:
-        st.info("No Optuna best parameters found.")
-
-# ============================================
+    best and st.json(best) or st.info("No Optuna best parameters found.")
 
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
-if start_btn:
-    st.success(f"Bot started! (Spot market only, Variant {SELECTOR_VARIANT})")
-else:
-    st.info("Ready. Configure & click Start.")
+start_btn and st.success("Bot started!") or st.info("Ready. Configure & click Start.")
 
-# MODE SETTINGS (from config and sidebar only)
-if mode == "Conservative":
-    risk_pct = 0.0025
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.7)
-    max_positions = min(max_positions, 3)
-    enable_ml = ml_cfg.get("enabled", True)
-elif mode == "Aggressive":
-    risk_pct = 0.02
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.4)
-    max_positions = max(max_positions, 20)
-    enable_ml = ml_cfg.get("enabled", True)
+# ─── Mode settings ────────────────────────────────────────────────────────────
+if mode=="Conservative":
+    risk_pct         = 0.0025
+    min_signal_conf  = ml_cfg.get("min_signal_conf",0.7)
+    max_positions    = min(max_positions,3)
+    enable_ml        = ml_cfg.get("enabled",True)
+elif mode=="Aggressive":
+    risk_pct         = 0.02
+    min_signal_conf  = ml_cfg.get("min_signal_conf",0.4)
+    max_positions    = max(max_positions,20)
+    enable_ml        = ml_cfg.get("enabled",True)
 else:
-    risk_pct = risk_cfg["per_trade"]
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
-    enable_ml = ml_cfg.get("enabled", True)
+    risk_pct         = risk_cfg["per_trade"]
+    min_signal_conf  = ml_cfg.get("min_signal_conf",0.5)
+    enable_ml        = ml_cfg.get("enabled",True)
 
 @st.cache_data(show_spinner=False)
 def cached_fetch_klines(pair, interval, limit):
     return fetch_klines(pair=pair, interval=interval, limit=limit)
 
 def write_heartbeat():
-    """Update heartbeat file and metric for external monitoring."""
     ts = time.time()
     heartbeat_gauge.set(ts)
-    with open(HEARTBEAT_FILE, "w") as f:
+    with open(HEARTBEAT_FILE,"w") as f:
         import json
         json.dump({"last_run": ts}, f)
 
@@ -273,12 +244,10 @@ def trade_logic(pair: str, current_capital):
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
 
-    # --- Robust autotune logic: use meta-learner if present, fall back if not ---
-    if autotune and META_MODEL:
-        # If you have a trained meta-learner, you can use it here.
+    if autotune:
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
-        threshold = adaptive_threshold(df, target_profit=0.01) if autotune else threshold_slider
+        threshold = threshold_slider
 
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
