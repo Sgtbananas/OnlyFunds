@@ -37,7 +37,7 @@ try:
     META_MODEL = joblib.load(META_MODEL_PATH)
 except Exception as e:
     META_MODEL = None
-    print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
+    st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
 # === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
@@ -53,18 +53,24 @@ root.setLevel(logging.INFO)
 # === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge
 
-# --- PATCH: Only initialize Prometheus metrics ONCE per process. ---
-if 'PROMETHEUS_INITIALIZED' not in globals():
-    start_http_server(8000)
-    trade_counter   = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
-    pnl_gauge       = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
-    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
-    PROMETHEUS_INITIALIZED = True
-# On rerun, use existing globals
-else:
-    trade_counter = globals()["trade_counter"]
-    pnl_gauge = globals()["pnl_gauge"]
-    heartbeat_gauge = globals()["heartbeat_gauge"]
+def initialize_prometheus_metrics():
+    if 'trade_counter' not in globals():
+        try:
+            start_http_server(8000)
+        except Exception as e:
+            print(f"[WARN] Prometheus server may already be running: {e}")
+        globals()["trade_counter"] = Counter(
+            f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed"
+        )
+        globals()["pnl_gauge"] = Gauge(
+            f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)"
+        )
+        globals()["heartbeat_gauge"] = Gauge(
+            f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp"
+        )
+    return globals()["trade_counter"], globals()["pnl_gauge"], globals()["heartbeat_gauge"]
+
+trade_counter, pnl_gauge, heartbeat_gauge = initialize_prometheus_metrics()
 
 # --- Load config ---
 config = load_config()
@@ -72,6 +78,7 @@ risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
+# --- Set page config FIRST ---
 st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
 
 logger = logging.getLogger(__name__)
@@ -258,10 +265,12 @@ def trade_logic(pair: str, current_capital):
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
 
-    if autotune:
+    # --- Robust autotune logic: use meta-learner if present, fall back if not ---
+    if autotune and META_MODEL:
+        # If you have a trained meta-learner, you can use it here.
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
-        threshold = threshold_slider
+        threshold = adaptive_threshold(df, target_profit=0.01) if autotune else threshold_slider
 
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
@@ -460,4 +469,3 @@ if start_btn:
             except Exception as e:
                 logger.error(f"Failed to send alert email: {e}")
         raise
-        
