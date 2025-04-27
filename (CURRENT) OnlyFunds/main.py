@@ -20,7 +20,6 @@ from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
-# === NEW: A/B meta-learner selector support ===
 import joblib
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
@@ -39,7 +38,6 @@ except Exception as e:
     META_MODEL = None
     print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
-# === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -50,7 +48,6 @@ root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.INFO)
 
-# === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
 
 def get_prometheus_metrics():
@@ -59,7 +56,7 @@ def get_prometheus_metrics():
         try:
             start_http_server(8000)
         except Exception:
-            pass  # if already running, ignore
+            pass
         metrics = {}
         name = f"{METRICS_PREFIX}_trades_executed_total"
         if name not in REGISTRY._names_to_collectors:
@@ -82,7 +79,6 @@ def get_prometheus_metrics():
 
 trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
-# --- Load config ---
 config = load_config()
 risk_cfg = config["risk"]
 trading_cfg = config["trading"]
@@ -98,7 +94,7 @@ CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
 AUTO_PARAMS_FILE = "state/auto_params.json"
-HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -130,7 +126,6 @@ except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
     current_capital = trading_cfg["default_capital"]
 
-# --- Instantiate Risk Manager ---
 risk_manager = RiskManager(config)
 
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
@@ -156,7 +151,6 @@ if mode == "Auto":
         pair_params = auto_params.get(pair)
         if pair_params:
             return pair_params
-        # Global best in auto_params.json (key "global" or "GLOBAL")
         if "global" in auto_params:
             return auto_params["global"]
         if "GLOBAL" in auto_params:
@@ -258,109 +252,16 @@ if st.sidebar.button("🧠 Show Auto Params"):
     else:
         st.info("No Auto (per-pair) parameters found.")
 
-# ========== Diagnostics Tab ==========
-
-def diagnostics_panel():
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    from sklearn.ensemble import RandomForestClassifier
-    import numpy as np
-
-    st.header("📊 Diagnostics Panel: Performance, Distribution, Feature Importance")
-    try:
-        if not os.path.exists(TRADE_LOG_FILE):
-            st.info("No trade log found.")
-            return
-        df = pd.DataFrame(load_json(TRADE_LOG_FILE))
-        if df.empty or "return_pct" not in df.columns:
-            st.info("No trade history found.")
-            return
-
-        st.subheader("1️⃣ Equity Curve & Drawdown")
-        initial_cap = trading_cfg.get("default_capital", 1000)
-        df = df.copy()
-        if "timestamp" in df.columns:
-            df = df.sort_values("timestamp")
-        # Compute equity curve
-        returns = df["return_pct"].fillna(0)
-        equity_curve = (1 + returns).cumprod() * initial_cap
-        running_max = np.maximum.accumulate(equity_curve)
-        drawdown = (equity_curve - running_max) / running_max
-
-        fig, ax1 = plt.subplots(figsize=(8,4))
-        ax1.plot(equity_curve.values, label="Equity Curve", color="blue")
-        ax1.set_ylabel("Equity")
-        ax2 = ax1.twinx()
-        ax2.plot(drawdown.values, label="Drawdown", color="red", alpha=0.4)
-        ax2.set_ylabel("Drawdown")
-        ax1.legend(loc="upper left")
-        ax2.legend(loc="upper right")
-        ax1.set_title("Equity Curve & Drawdown")
-        st.pyplot(fig)
-
-        st.subheader("2️⃣ Per-Trade Return Distribution")
-        fig2, ax = plt.subplots(figsize=(6,3))
-        sns.histplot(returns, bins=30, kde=True, ax=ax, color="purple")
-        ax.set_xlabel("Return per Trade")
-        ax.set_title("Histogram of Per-Trade Returns")
-        st.pyplot(fig2)
-
-        st.subheader("3️⃣ Feature Importance (RandomForest)")
-        feature_cols = [c for c in ["rsi", "macd", "ema_diff", "volatility"] if c in df.columns]
-        df = df.dropna(subset=feature_cols + ["return_pct"])
-        if len(df) > 10 and all(col in df.columns for col in feature_cols):
-            X = df[feature_cols].values
-            y = (df["return_pct"] > 0).astype(int).values
-            rf = RandomForestClassifier(n_estimators=200, random_state=42)
-            rf.fit(X, y)
-            importances = rf.feature_importances_
-            fig3, ax = plt.subplots(figsize=(5,3))
-            sns.barplot(x=feature_cols, y=importances, ax=ax)
-            ax.set_title("Feature Importances for Profitability (RandomForest)")
-            st.pyplot(fig3)
-            st.write({f: float(i) for f, i in zip(feature_cols, importances)})
-        else:
-            st.info("Not enough trade data or features for feature importance plot.")
-    except Exception as e:
-        st.error(f"Error in diagnostics: {e}")
-
-# ========== End Diagnostics Tab ==========
-
-start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
-if start_btn:
-    st.success(f"Bot started! (Spot market only, Variant {SELECTOR_VARIANT})")
-else:
-    st.info("Ready. Configure & click Start.")
-
-if mode == "Conservative":
-    risk_pct = 0.0025
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.7)
-    max_positions = min(max_positions, 3)
-    enable_ml = ml_cfg.get("enabled", True)
-elif mode == "Aggressive":
-    risk_pct = 0.02
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.4)
-    max_positions = max(max_positions, 20)
-    enable_ml = ml_cfg.get("enabled", True)
-elif mode == "Auto":
-    risk_pct = risk_cfg["per_trade"]
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
-    enable_ml = ml_cfg.get("enabled", True)
-else:
-    risk_pct = risk_cfg["per_trade"]
-    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
-    enable_ml = ml_cfg.get("enabled", True)
-
-@st.cache_data(show_spinner=False)
-def cached_fetch_klines(pair, interval, limit):
-    return fetch_klines(pair=pair, interval=interval, limit=limit)
-
 def write_heartbeat():
     ts = time.time()
     heartbeat_gauge.set(ts)
     with open(HEARTBEAT_FILE, "w") as f:
         import json
         json.dump({"last_run": ts}, f)
+
+@st.cache_data(show_spinner=False)
+def cached_fetch_klines(pair, interval, limit):
+    return fetch_klines(pair=pair, interval=interval, limit=limit)
 
 def trade_logic(pair: str, current_capital):
     if mode == "Auto":
@@ -400,7 +301,6 @@ def trade_logic(pair: str, current_capital):
     logger.debug(f"Threshold for {pair}: {threshold_final}")
     latest_signal = smoothed.iloc[-1]
 
-    # ML confidence filter
     if enable_ml:
         try:
             features = [
@@ -422,7 +322,6 @@ def trade_logic(pair: str, current_capital):
         except Exception as e:
             logger.warning(f"ML filter error: {e}")
 
-    # --- Backtest mode: read-only, separate log ---
     if backtest_mode:
         combined_df = run_backtest(
             smoothed, df["Close"], threshold_final,
@@ -456,7 +355,6 @@ def trade_logic(pair: str, current_capital):
     else:
         return None, current_capital
 
-    # --- RISK MANAGER ENFORCEMENT ---
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     equity_curve = [trading_cfg["default_capital"]]
     for trade in trade_log:
@@ -556,13 +454,101 @@ def display_dashboard(current_capital):
     else:
         st.info("No trade history yet.")
 
+def main_loop():
+    global current_capital
+    if backtest_mode:
+        with st.spinner("Running backtest…"):
+            for pair in TRADING_PAIRS:
+                trade_logic(pair, trading_cfg["default_capital"])
+        return
+
+    last_timestamps = {pair: None for pair in TRADING_PAIRS}
+    while True:
+        for pair in TRADING_PAIRS:
+            df = cached_fetch_klines(pair, interval if mode != "Auto" else get_pair_params(pair)["interval"],
+                                     lookback if mode != "Auto" else get_pair_params(pair)["lookback"])
+            if df.empty or not validate_df(df):
+                continue
+            newest = df.index[-1]
+            if newest != last_timestamps[pair]:
+                _, updated_capital = trade_logic(pair, current_capital)
+                current_capital = updated_capital
+                last_timestamps[pair] = newest
+        display_dashboard(current_capital)
+        write_heartbeat()
+        time.sleep(1)
+
+def diagnostics_panel():
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from sklearn.ensemble import RandomForestClassifier
+    import numpy as np
+
+    st.header("📊 Diagnostics Panel: Performance, Distribution, Feature Importance")
+    try:
+        if not os.path.exists(TRADE_LOG_FILE):
+            st.info("No trade log found.")
+            return
+        df = pd.DataFrame(load_json(TRADE_LOG_FILE))
+        if df.empty or "return_pct" not in df.columns:
+            st.info("No trade history found.")
+            return
+
+        st.subheader("1️⃣ Equity Curve & Drawdown")
+        initial_cap = trading_cfg.get("default_capital", 1000)
+        df = df.copy()
+        if "timestamp" in df.columns:
+            df = df.sort_values("timestamp")
+        returns = df["return_pct"].fillna(0)
+        equity_curve = (1 + returns).cumprod() * initial_cap
+        running_max = np.maximum.accumulate(equity_curve)
+        drawdown = (equity_curve - running_max) / running_max
+
+        fig, ax1 = plt.subplots(figsize=(8,4))
+        ax1.plot(equity_curve.values, label="Equity Curve", color="blue")
+        ax1.set_ylabel("Equity")
+        ax2 = ax1.twinx()
+        ax2.plot(drawdown.values, label="Drawdown", color="red", alpha=0.4)
+        ax2.set_ylabel("Drawdown")
+        ax1.legend(loc="upper left")
+        ax2.legend(loc="upper right")
+        ax1.set_title("Equity Curve & Drawdown")
+        st.pyplot(fig)
+
+        st.subheader("2️⃣ Per-Trade Return Distribution")
+        fig2, ax = plt.subplots(figsize=(6,3))
+        sns.histplot(returns, bins=30, kde=True, ax=ax, color="purple")
+        ax.set_xlabel("Return per Trade")
+        ax.set_title("Histogram of Per-Trade Returns")
+        st.pyplot(fig2)
+
+        st.subheader("3️⃣ Feature Importance (RandomForest)")
+        feature_cols = [c for c in ["rsi", "macd", "ema_diff", "volatility"] if c in df.columns]
+        df = df.dropna(subset=feature_cols + ["return_pct"])
+        if len(df) > 10 and all(col in df.columns for col in feature_cols):
+            X = df[feature_cols].values
+            y = (df["return_pct"] > 0).astype(int).values
+            rf = RandomForestClassifier(n_estimators=200, random_state=42)
+            rf.fit(X, y)
+            importances = rf.feature_importances_
+            fig3, ax = plt.subplots(figsize=(5,3))
+            sns.barplot(x=feature_cols, y=importances, ax=ax)
+            ax.set_title("Feature Importances for Profitability (RandomForest)")
+            st.pyplot(fig3)
+            st.write({f: float(i) for f, i in zip(feature_cols, importances)})
+        else:
+            st.info("Not enough trade data or features for feature importance plot.")
+    except Exception as e:
+        st.error(f"Error in diagnostics: {e}")
+
 # ========== Streamlit Tab Layout ==========
 
 tab_trade, tab_diag = st.tabs(["Trade", "📊 Diagnostics"])
 
 with tab_trade:
-    # Keep all live trading and dashboard logic here
+    start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
     if start_btn:
+        st.success(f"Bot started! (Spot market only, Variant {SELECTOR_VARIANT})")
         try:
             main_loop()
         except Exception:
@@ -583,6 +569,7 @@ with tab_trade:
                     logger.error(f"Failed to send alert email: {e}")
             raise
     else:
+        st.info("Ready. Configure & click Start.")
         display_dashboard(current_capital)
 
 with tab_diag:
