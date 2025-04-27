@@ -55,9 +55,11 @@ from prometheus_client import start_http_server, Counter, Gauge
 
 start_http_server(8000)  # exposes /metrics for Prometheus
 
-trade_counter = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
-pnl_gauge    = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
-heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
+# Patch: Avoid duplicated metrics registration on Streamlit reruns
+if "trade_counter" not in globals():
+    trade_counter = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
+    pnl_gauge    = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
+    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
 
 # --- Load config ---
 config = load_config()
@@ -414,7 +416,7 @@ def main_loop():
     global current_capital
     if backtest_mode:
         with st.spinner("Running backtest…"):
-            # --- PATCH: Run all pairs in parallel for backtest mode ---
+            # PATCH: Run all pairs in parallel for backtest mode
             from joblib import Parallel, delayed
             def run_pair(pair):
                 trade_logic(pair, trading_cfg["default_capital"])
