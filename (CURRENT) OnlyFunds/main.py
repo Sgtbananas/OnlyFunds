@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
-    generate_signal, smooth_signal, adaptive_threshold, track_trade_result,
+    generate_signal, generate_ml_signal, smooth_signal, adaptive_threshold, track_trade_result,
 )
 from core.trade_execution import place_order
 from core.backtester import run_backtest
@@ -98,7 +98,7 @@ CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
 AUTO_PARAMS_FILE = "state/auto_params.json"
-HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -130,7 +130,6 @@ except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
     current_capital = trading_cfg["default_capital"]
 
-# --- Instantiate Risk Manager ---
 risk_manager = RiskManager(config)
 
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
@@ -156,7 +155,6 @@ if mode == "Auto":
         pair_params = auto_params.get(pair)
         if pair_params:
             return pair_params
-        # Global best in auto_params.json (key "global" or "GLOBAL")
         if "global" in auto_params:
             return auto_params["global"]
         if "GLOBAL" in auto_params:
@@ -277,7 +275,7 @@ elif mode == "Aggressive":
 elif mode == "Auto":
     risk_pct = risk_cfg["per_trade"]
     min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
-    enable_ml = ml_cfg.get("enabled", True)
+    enable_ml = True
 else:
     risk_pct = risk_cfg["per_trade"]
     min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
@@ -321,7 +319,17 @@ def trade_logic(pair: str, current_capital):
         return None, current_capital
 
     df = add_indicators(df)
-    raw_signal = generate_signal(df)
+
+    # ML ensemble signal for Auto mode
+    if mode == "Auto":
+        model = load_model()
+        if model is None:
+            logger.warning("No ML ensemble model found for Auto mode, skipping.")
+            return None, current_capital
+        raw_signal = generate_ml_signal(df, model=model)
+    else:
+        raw_signal = generate_signal(df)
+
     smoothed = smooth_signal(raw_signal)
 
     if autotune and mode != "Auto":
@@ -332,14 +340,14 @@ def trade_logic(pair: str, current_capital):
     logger.debug(f"Threshold for {pair}: {threshold_final}")
     latest_signal = smoothed.iloc[-1]
 
-    # ML confidence filter
-    if enable_ml:
+    # ML confidence filter (for non-Auto modes)
+    if enable_ml and mode != "Auto":
         try:
             features = [
                 df["rsi"].iloc[-1],
                 df["macd"].iloc[-1],
                 df["ema_diff"].iloc[-1],
-                df["Close"].pct_change().rolling(20).std().iloc[-1]
+                df["volatility"].iloc[-1] if "volatility" in df.columns else df["Close"].pct_change().rolling(20).std().iloc[-1]
             ]
             model = load_model()
             if model is not None:
@@ -388,7 +396,6 @@ def trade_logic(pair: str, current_capital):
     else:
         return None, current_capital
 
-    # --- RISK MANAGER ENFORCEMENT ---
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     equity_curve = [trading_cfg["default_capital"]]
     for trade in trade_log:
