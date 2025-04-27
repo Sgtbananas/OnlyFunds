@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
-from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
+from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PsAIRS
 from core.core_signals import (
     generate_signal, smooth_signal, adaptive_threshold, track_trade_result,
 )
@@ -175,6 +175,27 @@ max_positions = st.sidebar.number_input("Max Open Positions", 1, 30, trading_cfg
 stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, risk_cfg["stop_loss_pct"]*100.0, step=0.1) / 100
 take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, risk_cfg["take_profit_pct"]*100.0, step=0.1) / 100
 fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, trading_cfg["fee"]*100.0, step=0.01) / 100
+
+# ====== FIX: SET RISK/ML PARAMS EARLY SO ALL FUNCTIONS SEE THEM ======
+if mode == "Conservative":
+    risk_pct = 0.0025
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.7)
+    max_positions = min(max_positions, 3)
+    enable_ml = ml_cfg.get("enabled", True)
+elif mode == "Aggressive":
+    risk_pct = 0.02
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.4)
+    max_positions = max(max_positions, 20)
+    enable_ml = ml_cfg.get("enabled", True)
+elif mode == "Auto":
+    risk_pct = risk_cfg["per_trade"]
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
+    enable_ml = ml_cfg.get("enabled", True)
+else:
+    risk_pct = risk_cfg["per_trade"]
+    min_signal_conf = ml_cfg.get("min_signal_conf", 0.5)
+    enable_ml = ml_cfg.get("enabled", True)
+# =====================================================================
 
 if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
     with st.spinner("Retraining ML model..."):
@@ -373,7 +394,7 @@ def trade_logic(pair: str, current_capital):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     amount = risk_manager.position_size(perf["current_capital"], price, risk_pct)
 
-    if amount < risk_cfg["min_size"]:
+    if amount < risk_cfg.get("min_size", 0.0001):
         logger.warning(f"Calculated amount {amount:.6f} below min size {risk_cfg['min_size']} → skipping BUY")
         return None, current_capital
 
