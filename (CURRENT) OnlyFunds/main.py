@@ -4,6 +4,11 @@ import time
 from datetime import datetime
 
 import streamlit as st
+
+# --- set page config FIRST! ---
+SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
+st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
+
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -22,7 +27,6 @@ from utils.config import load_config
 
 # === NEW: A/B meta-learner selector support ===
 import joblib
-SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
     METRICS_PREFIX = "onlyfunds_A"
@@ -70,8 +74,6 @@ config = load_config()
 risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
-
-st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +261,7 @@ def trade_logic(pair: str, current_capital):
 
     # --- Robust autotune logic: use meta-learner if present, fall back if not ---
     if autotune and META_MODEL:
-        # You can add your ML-based threshold logic here if you have a trained model.
-        # Example (pseudo):
+        # If you have a trained meta-learner, you can use it here:
         # features = ... (extract from df)
         # threshold = META_MODEL.predict([features])[0]
         # For now, fallback to adaptive_threshold since we have no meta-learner
@@ -426,10 +427,8 @@ def main_loop():
     global current_capital
     if backtest_mode:
         with st.spinner("Running backtest…"):
-            from joblib import Parallel, delayed
-            def run_pair(pair):
+            for pair in TRADING_PAIRS:
                 trade_logic(pair, trading_cfg["default_capital"])
-            Parallel(n_jobs=-1)(delayed(run_pair)(pair) for pair in TRADING_PAIRS)
         return
 
     last_timestamps = {pair: None for pair in TRADING_PAIRS}
