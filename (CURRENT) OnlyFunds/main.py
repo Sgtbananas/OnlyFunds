@@ -4,11 +4,6 @@ import time
 from datetime import datetime
 
 import streamlit as st
-
-# --- set page config FIRST! ---
-SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
-st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
-
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -27,6 +22,7 @@ from utils.config import load_config
 
 # === NEW: A/B meta-learner selector support ===
 import joblib
+SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
     METRICS_PREFIX = "onlyfunds_A"
@@ -37,15 +33,11 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
-# --- Graceful meta-learner loading ---
 try:
     META_MODEL = joblib.load(META_MODEL_PATH)
-except FileNotFoundError:
-    st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}")
-    META_MODEL = None
 except Exception as e:
-    st.warning(f"Meta-learner load error: {e}")
     META_MODEL = None
+    print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
 # === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
@@ -61,19 +53,26 @@ root.setLevel(logging.INFO)
 # === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge
 
-# ─── Prometheus Metrics (only initialize once) ──────────────────────────────
+# --- PATCH: Only initialize Prometheus metrics ONCE per process. ---
 if 'PROMETHEUS_INITIALIZED' not in globals():
     start_http_server(8000)
     trade_counter   = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
-    pnl_gauge       = Gauge(f"{METRICS_PREFIX}_current_pnl",          "Current PnL in USDT")
-    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat",            "Heartbeat timestamp")
+    pnl_gauge       = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
+    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
     PROMETHEUS_INITIALIZED = True
+# On rerun, use existing globals
+else:
+    trade_counter = globals()["trade_counter"]
+    pnl_gauge = globals()["pnl_gauge"]
+    heartbeat_gauge = globals()["heartbeat_gauge"]
 
 # --- Load config ---
 config = load_config()
 risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
+
+st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
 
 logger = logging.getLogger(__name__)
 
@@ -259,12 +258,10 @@ def trade_logic(pair: str, current_capital):
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
 
-    # --- Robust autotune logic: use meta-learner if present, fall back if not ---
-    if autotune and META_MODEL:
-        # (Optional: add your logic to use META_MODEL as threshold predictor)
+    if autotune:
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
-        threshold = adaptive_threshold(df, target_profit=0.01) if autotune else threshold_slider
+        threshold = threshold_slider
 
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
@@ -463,3 +460,4 @@ if start_btn:
             except Exception as e:
                 logger.error(f"Failed to send alert email: {e}")
         raise
+        
