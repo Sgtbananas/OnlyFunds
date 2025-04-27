@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 from core.backtester import run_backtest
+from core.ml_filter import load_model, ml_confidence, extract_feature_array
 
 COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]
 
@@ -34,6 +35,17 @@ def generate_signal(df):
         breakout = (df["Close"] > df["bollinger_upper"]) | (df["Close"] < df["bollinger_lower"])
         sig += (squeeze & breakout) * 0.5
     return sig.clip(-1, 1)
+
+def generate_ml_signal(df, model=None):
+    # Return predicted probability of positive return for each row
+    if model is None:
+        model = load_model()
+    feats = [extract_feature_array(df.iloc[i]) for i in range(len(df))]
+    if hasattr(model, "predict_proba"):
+        preds = model.predict_proba(feats)[:,1]
+    else:
+        preds = model.predict(feats)
+    return pd.Series(preds, index=df.index)
 
 def smooth_signal(signal, smoothing_window=5):
     return signal.rolling(window=smoothing_window).mean().fillna(0)
