@@ -6,6 +6,8 @@ python-dotenv>=1.0
 ta>=0.10  # Technical Analysis indicators
 scikit-learn>=1.0
 websockets>=10.0
+prometheus_client
+python-json-logger
 
 # Web App & UI
 streamlit>=1.25
