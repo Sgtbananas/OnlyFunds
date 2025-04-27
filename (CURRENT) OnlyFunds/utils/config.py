@@ -135,3 +135,9 @@ class Config:
 
     def as_dict(self):
         return self._data
+
+def load_config(path: str = "config/config.yaml") -> Config:
+    """
+    Convenience function to load and return a Config instance.
+    """
+    return Config(path)
