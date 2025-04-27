@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 POSITIONS_FILE = "state/open_positions.json"
 TRADE_LOG_FILE = "state/trade_log.json"
 CAPITAL_FILE = "state/current_capital.json"
+BACKTEST_RESULTS_FILE = "state/backtest_results.json"
+OPTUNA_BEST_FILE = "state/optuna_best.json"
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -105,6 +107,62 @@ if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
             st.sidebar.success(msg)
         else:
             st.sidebar.error(msg)
+
+# === NEW: Backtest/Optuna Results Viewer ===
+
+def load_backtest_results():
+    if os.path.exists(BACKTEST_RESULTS_FILE):
+        try:
+            results = load_json(BACKTEST_RESULTS_FILE)
+            df = pd.DataFrame(results)
+            if not df.empty and "pair" in df and "threshold" in df:
+                # Show most recent runs/results on top if possible
+                if "timestamp" in df.columns:
+                    df = df.sort_values("timestamp", ascending=False)
+                else:
+                    df = df.iloc[::-1]  # Show latest first
+            return df
+        except Exception as e:
+            st.warning(f"Failed to load backtest results: {e}")
+            return pd.DataFrame()
+    else:
+        return pd.DataFrame()
+
+def load_optuna_best():
+    if os.path.exists(OPTUNA_BEST_FILE):
+        try:
+            return load_json(OPTUNA_BEST_FILE)
+        except Exception as e:
+            st.warning(f"Failed to load Optuna best results: {e}")
+            return None
+    return None
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 Backtest & Optimization Results")
+
+if st.sidebar.button("⏬ Show Backtest Results Table"):
+    with st.spinner("Loading backtest results..."):
+        df_results = load_backtest_results()
+        if not df_results.empty:
+            st.subheader("Recent Backtest Results (Most Recent on Top)")
+            st.dataframe(df_results, use_container_width=True)
+            st.download_button(
+                "Download Backtest Results as CSV",
+                df_results.to_csv(index=False),
+                file_name="backtest_results.csv"
+            )
+        else:
+            st.info("No backtest results found.")
+
+if st.sidebar.button("🏆 Show Optuna Best Params"):
+    best = load_optuna_best()
+    if best:
+        st.subheader("Optuna Best Hyperparameters")
+        st.json(best)
+    else:
+        st.info("No Optuna best parameters found.")
+
+# ============================================
 
 start_btn = st.sidebar.button("🚀 Start Trading Bot (Spot Only)")
 if start_btn:
@@ -315,13 +373,15 @@ def display_dashboard(current_capital):
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
         desired_cols = ["amount", "entry_price"]
         cols = [c for c in desired_cols if c in df_open.columns]
-        st.dataframe(df_open[cols])
+        # Show most recent position at the top (if possible)
+        st.dataframe(df_open[cols].iloc[::-1])
     else:
         st.info("No active trades.")
 
     if trade_log:
-        st.write("📘 Trade History")
-        st.dataframe(pd.DataFrame(trade_log))
+        st.write("📘 Trade History (Most Recent First)")
+        df_trades = pd.DataFrame(trade_log)
+        st.dataframe(df_trades.iloc[::-1])
     else:
         st.info("No trade history yet.")
 

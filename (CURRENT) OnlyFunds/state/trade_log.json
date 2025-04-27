@@ -218,5 +218,14 @@
     "entry_price": 87.06,
     "exit_price": 87.06,
     "return_pct": 0.0
+  },
+  {
+    "timestamp": "2025-04-27 02:09:54",
+    "pair": "ETHUSDT",
+    "action": "SELL",
+    "amount": 0.005527518752107366,
+    "entry_price": 1809.13,
+    "exit_price": 1807.01,
+    "return_pct": -0.001171833975446827
   }
 ]

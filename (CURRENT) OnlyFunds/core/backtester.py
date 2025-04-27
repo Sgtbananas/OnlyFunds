@@ -21,6 +21,8 @@ def run_backtest(
     """
     Backtest with support for stop-loss, take-profit, and fee modeling.
     If grid_mode, runs a grid strategy simulation instead.
+    Returns DataFrame: [summary row, trade rows], summary always includes: 
+        type, trades, avg_return, win_rate, capital, total_pnl, max_drawdown, sharpe_ratio
     """
     if not grid_mode:
         # Standard signal backtest as before
@@ -28,6 +30,7 @@ def run_backtest(
         position = None
         entry_price = None
         capital = initial_capital
+        equity_curve = [capital]
 
         for i in range(len(signal)):
             sig = signal.iloc[i]
@@ -78,16 +81,40 @@ def run_backtest(
                         "profit": profit,
                         "capital": capital,
                     })
+                    equity_curve.append(capital)
                     logging.info(f"Exited LONG at {exit_price:.2f} → Return: {return_pct:.2%}, Reason: {trades[-1]['reason']}, Capital: {capital:.2f}")
                     position = None
 
         trades_df = pd.DataFrame(trades)
+        # --- Robust summary with all key metrics ---
+        if not trades_df.empty:
+            avg_return = trades_df["return"].mean()
+            win_rate = (trades_df["return"] > 0).mean() * 100
+            total_pnl = trades_df["profit"].sum()
+            # Max Drawdown
+            curve = np.array(equity_curve)
+            peak = np.maximum.accumulate(curve)
+            drawdown = (peak - curve) / peak
+            max_drawdown = np.max(drawdown) * 100 if len(drawdown) > 0 else 0
+            # Sharpe ratio
+            returns = trades_df["return"]
+            sharpe_ratio = (returns.mean() / returns.std()) if returns.std() != 0 else 0
+        else:
+            avg_return = 0
+            win_rate = 0
+            total_pnl = 0
+            max_drawdown = 0
+            sharpe_ratio = 0
+
         summary = {
             "type": "summary",
             "trades": len(trades_df),
-            "avg_return": trades_df["return"].mean() if not trades_df.empty else 0,
-            "win_rate": (trades_df["return"] > 0).mean() * 100 if not trades_df.empty else 0,
+            "avg_return": avg_return,
+            "win_rate": win_rate,
             "capital": capital,
+            "total_pnl": total_pnl,
+            "max_drawdown": max_drawdown,
+            "sharpe_ratio": sharpe_ratio
         }
         summary_df = pd.DataFrame([summary])
         combined_df = pd.concat([summary_df, trades_df], ignore_index=True)
@@ -95,7 +122,6 @@ def run_backtest(
         if trades_df.empty:
             logging.warning("No trades executed during backtest.")
         else:
-            avg_return = summary["avg_return"]
             logging.info(f"Backtest complete: {summary['trades']} trades, Avg Return: {avg_return:.2%}")
 
         return combined_df

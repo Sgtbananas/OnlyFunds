@@ -6,19 +6,19 @@ class RiskManager:
 
     def position_size(self, equity, price, risk_pct=None):
         """Determine position size, capping per-trade risk."""
-        risk_pct = risk_pct or self.config["risk"]["per_trade"]
+        risk_pct = risk_pct or self.config.per_trade_risk
         usd_to_risk = equity * risk_pct
         amount = usd_to_risk / price
-        min_size = self.config["risk"].get("min_size", 0.0001)
+        min_size = self.config.min_size
         return max(amount, min_size)
 
     def check_stop_loss(self, entry, current, stop_loss_pct):
         """Return True if stop loss hit."""
         return (current - entry) / entry <= -abs(stop_loss_pct)
 
-    def check_take_profit(self, entry, current, take_profit_pct):
+    def check_take_profit(self, entry, current, tp_pct):
         """Return True if take profit hit."""
-        return (current - entry) / entry >= abs(take_profit_pct)
+        return (current - entry) / entry >= abs(tp_pct)
 
     def check_trailing_stop(self, entry, peak, current, trail_pct):
         """Return True if trailing stop hit (from peak)."""
@@ -26,9 +26,11 @@ class RiskManager:
 
     def check_max_drawdown(self, equity_curve, max_dd_pct):
         """Return True if global drawdown exceeded."""
+        if not equity_curve:
+            return False
         peak = max(equity_curve)
-        trough = min(equity_curve[equity_curve.index(peak):])
-        dd = (trough - peak) / peak
+        trough = min(equity_curve[equity_curve.index(peak):] or [peak])
+        dd = (trough - peak) / peak if peak else 0
         return dd <= -abs(max_dd_pct)
 
     def check_daily_loss(self, trade_log, equity, max_loss_pct, date=None):

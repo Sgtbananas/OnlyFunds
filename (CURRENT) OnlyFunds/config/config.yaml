@@ -1,14 +1,8 @@
 version: 2
 
-# === API Credentials ===
-# Keep secrets in environment variables only (do not store API keys in YAML!)
-# Example: COINEX_API_KEY and COINEX_SECRET_KEY loaded via os.getenv in your trading API code
 api:
   exchange: CoinEx
-  # api_key: !!ENV COINEX_API_KEY
-  # secret_key: !!ENV COINEX_SECRET_KEY
 
-# === Trading Settings ===
 trading:
   pairs: ["BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "BNBUSDT"]
   default_interval: "5m"
@@ -20,32 +14,27 @@ trading:
   min_size: 0.0001
   backtest_lookback: 500
 
-# === Risk Management ===
 risk:
-  per_trade: 0.01          # 1% of equity per trade
-  stop_loss_pct: 0.005     # 0.5% stop loss
-  take_profit_pct: 0.01    # 1% take profit
-  trailing_stop_pct: 0.008 # 0.8% trailing stop (optional)
-  max_drawdown_pct: 0.15   # 15% global drawdown
-  max_daily_loss_pct: 0.05 # 5% daily loss
+  per_trade: 0.01
+  stop_loss_pct: 0.005
+  take_profit_pct: 0.01
+  trailing_stop_pct: 0.008
+  max_drawdown_pct: 0.15
+  max_daily_loss_pct: 0.05
 
-# === AI & Strategy Tuning ===
 ml:
   enabled: true
   min_signal_conf: 0.5
   retrain_on_start: false
 
 strategy:
-  mode: normal # normal/conservative/aggressive
+  mode: normal
   autotune: true
-  # Add more strategy variants here for A/B testing
 
-# === Notifications ===
 notifications:
-  telegram_bot_token: "" # If used, fill in or keep empty for now
+  telegram_bot_token: ""
   telegram_chat_id: ""
   webhook_url: ""
 
-# === Debug & Logging ===
 debug: false
 log_level: "INFO"
