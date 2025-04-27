@@ -261,10 +261,7 @@ def trade_logic(pair: str, current_capital):
 
     # --- Robust autotune logic: use meta-learner if present, fall back if not ---
     if autotune and META_MODEL:
-        # If you have a trained meta-learner, you can use it here:
-        # features = ... (extract from df)
-        # threshold = META_MODEL.predict([features])[0]
-        # For now, fallback to adaptive_threshold since we have no meta-learner
+        # (Optional: add your logic to use META_MODEL as threshold predictor)
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
         threshold = adaptive_threshold(df, target_profit=0.01) if autotune else threshold_slider
