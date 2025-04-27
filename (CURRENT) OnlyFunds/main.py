@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
-from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PsAIRS
+from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
     generate_signal, smooth_signal, adaptive_threshold, track_trade_result,
 )
