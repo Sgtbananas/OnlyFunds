@@ -33,11 +33,15 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
+# --- Graceful meta-learner loading ---
 try:
     META_MODEL = joblib.load(META_MODEL_PATH)
-except Exception as e:
+except FileNotFoundError:
+    st.warning(f"Could not load meta-learner model at {META_MODEL_PATH}")
     META_MODEL = None
-    print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
+except Exception as e:
+    st.warning(f"Meta-learner load error: {e}")
+    META_MODEL = None
 
 # === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
@@ -53,17 +57,13 @@ root.setLevel(logging.INFO)
 # === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge
 
-start_http_server(8000)  # exposes /metrics for Prometheus
-
-# PATCH: Prevent duplicate metrics registration (Streamlit rerun safe)
-if "trade_counter" not in globals():
-    trade_counter = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
-    pnl_gauge    = Gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
-    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
-else:
-    trade_counter = globals()["trade_counter"]
-    pnl_gauge = globals()["pnl_gauge"]
-    heartbeat_gauge = globals()["heartbeat_gauge"]
+# ─── Prometheus Metrics (only initialize once) ──────────────────────────────
+if 'PROMETHEUS_INITIALIZED' not in globals():
+    start_http_server(8000)
+    trade_counter   = Counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
+    pnl_gauge       = Gauge(f"{METRICS_PREFIX}_current_pnl",          "Current PnL in USDT")
+    heartbeat_gauge = Gauge(f"{METRICS_PREFIX}_heartbeat",            "Heartbeat timestamp")
+    PROMETHEUS_INITIALIZED = True
 
 # --- Load config ---
 config = load_config()
@@ -257,10 +257,16 @@ def trade_logic(pair: str, current_capital):
     raw_signal = generate_signal(df)
     smoothed = smooth_signal(raw_signal)
 
-    if autotune:
+    # --- Robust autotune logic: use meta-learner if present, fall back if not ---
+    if autotune and META_MODEL:
+        # You can add your ML-based threshold logic here if you have a trained model.
+        # Example (pseudo):
+        # features = ... (extract from df)
+        # threshold = META_MODEL.predict([features])[0]
+        # For now, fallback to adaptive_threshold since we have no meta-learner
         threshold = adaptive_threshold(df, target_profit=0.01)
     else:
-        threshold = threshold_slider
+        threshold = adaptive_threshold(df, target_profit=0.01) if autotune else threshold_slider
 
     logger.debug(f"Threshold for {pair}: {threshold}")
     latest_signal = smoothed.iloc[-1]
