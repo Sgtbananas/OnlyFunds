@@ -6,9 +6,9 @@ import time
 import string
 import random
 from datetime import datetime
+import threading
 
 def compute_trade_metrics(trade_log, initial_capital):
-    # Defensive: If empty, return zeroed metrics
     if not trade_log:
         return {
             "total_return": 0,
@@ -18,9 +18,7 @@ def compute_trade_metrics(trade_log, initial_capital):
             "sharpe_ratio": 0,
             "current_capital": initial_capital
         }
-    # Try to use return_pct if present, else fallback to entry/exit
     df = pd.DataFrame(trade_log)
-    # Use return_pct if present on all trades, else fallback to calculated trade_return
     if "return_pct" in df.columns and not df["return_pct"].isnull().all():
         returns = df["return_pct"].dropna()
     elif {"entry_price", "exit_price"}.issubset(df.columns):
@@ -47,12 +45,11 @@ def compute_trade_metrics(trade_log, initial_capital):
 
     trades = len(returns)
     win_rate = (wins / trades * 100) if trades else 0
-    win_rate = min(max(win_rate, 0), 100)  # Clamp 0-100%
+    win_rate = min(max(win_rate, 0), 100)
     total_return = (capital / initial_capital - 1) * 100
-    total_return = max(total_return, -100)  # Clamp to -100% max loss
+    total_return = max(total_return, -100)
     average_return = returns.mean() * 100
 
-    # Max drawdown: in % (peak-to-valley)
     cumulative = (1 + returns).cumprod()
     peak = cumulative.cummax()
     drawdown = 1 - cumulative / peak
@@ -70,7 +67,6 @@ def compute_trade_metrics(trade_log, initial_capital):
     }
 
 def compute_grid_metrics(grid_orders):
-    """Compute metrics for grid trading orders (PnL, fill rates, etc)."""
     df = pd.DataFrame(grid_orders)
     if df.empty or "fill_price" not in df.columns or "side" not in df.columns:
         return {
@@ -118,8 +114,15 @@ def suggest_tuning(trade_log):
 
 def save_json(data, filepath, **json_kwargs):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w") as f:
+    tmpfile = filepath + ".tmp"
+    with open(tmpfile, "w") as f:
         json.dump(data, f, **json_kwargs)
+    try:
+        os.replace(tmpfile, filepath)
+    except Exception:
+        # fallback for Windows
+        os.remove(filepath)
+        os.rename(tmpfile, filepath)
 
 def load_json(filepath):
     with open(filepath, "r") as f:
@@ -158,7 +161,6 @@ def generate_random_string(length: int = 8):
     return "".join(random.choice(chars) for _ in range(length))
 
 def log_grid_trade(trade_data, log_file="data/logs/grid_trade_logs.json"):
-    """Append a grid trade to a dedicated grid trade log."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     trade_data["timestamp"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     try:
