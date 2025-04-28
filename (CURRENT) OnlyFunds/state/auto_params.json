@@ -1,37 +1,7 @@
 {
-  "BTCUSDT": {
-    "interval": "1d",
-    "lookback": 400,
-    "threshold": 0.55,
-    "sharpe": 0.5288830178621861
-  },
-  "ETHUSDT": {
-    "interval": "1h",
-    "lookback": 400,
-    "threshold": 0.5,
-    "sharpe": 0.5800645341406003
-  },
-  "LTCUSDT": {
-    "interval": "15m",
-    "lookback": 600,
-    "threshold": 0.2,
-    "sharpe": 0.2729749715212478
-  },
-  "SOLUSDT": {
-    "interval": "30m",
-    "lookback": 1600,
-    "threshold": 0.1,
-    "sharpe": 0.3264141113199343
-  },
-  "BNBUSDT": {
-    "interval": "1h",
-    "lookback": 400,
-    "threshold": 0.1,
-    "sharpe": 0.2212358170039421
-  },
-  "global": {
-    "interval": "1h",
-    "lookback": 400,
-    "threshold": 0.5
-  }
+  "BTCUSDT": {},
+  "ETHUSDT": {},
+  "LTCUSDT": {},
+  "SOLUSDT": {},
+  "BNBUSDT": {}
 }
