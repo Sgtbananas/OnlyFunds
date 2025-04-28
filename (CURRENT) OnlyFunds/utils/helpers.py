@@ -5,7 +5,7 @@ import os
 import time
 import string
 import random
-from datetime import datetime
+from datetime import datetime, date
 import threading
 
 def compute_trade_metrics(trade_log, initial_capital):
@@ -185,12 +185,11 @@ def get_auto_pair_params(auto_params, pair, today=None, fallback=None):
     if pair not in auto_params:
         return fallback
     pair_params = auto_params[pair]
-    # Try today's params first
     today_str = str(today)
     if today_str in pair_params:
         return pair_params[today_str]
-    # If not found, use the latest available before today
-    dates = sorted(d for d in pair_params if d <= today_str)
+    # Fallback: get latest available before today
+    dates = sorted([d for d in pair_params if d <= today_str])
     if dates:
         return pair_params[dates[-1]]
     return fallback
