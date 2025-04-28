@@ -618,4 +618,15 @@ def main_loop():
     retrain_ml_background(trade_log)
     write_heartbeat()
 
-main_loop()
+# --- Run/Backtest Buttons in Sidebar ---
+run_trading = st.sidebar.button("▶️ Run Trading Cycle")
+run_backtest = st.sidebar.button("🧪 Run Backtest")
+
+if run_trading:
+    main_loop()
+
+if run_backtest:
+    st.sidebar.info("Backtest started...")
+    bt_results = run_backtest()  # You must define this function
+    st.sidebar.success("Backtest complete!")
+    st.write("Backtest Results", bt_results)

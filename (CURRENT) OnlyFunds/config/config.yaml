@@ -1,86 +1,89 @@
-version: 2
-
 api:
   default_exchange: coinex
   exchanges:
-    coinex:
-      api_base_url: "https://api.coinex.com/v1"
-      api_key: "your_api_key_here"
-      api_secret: "your_api_secret_here"
-      rate_limit: 50
-      timeout: 30
-      api_proxy: null
-      retry_attempts: 5
     binance:
-      api_base_url: "https://api.binance.com/api"
-      api_key: "your_binance_api_key_here"
-      api_secret: "your_binance_api_secret_here"
+      api_base_url: https://api.binance.com/api
+      api_key: your_binance_api_key_here
+      api_proxy: http://proxy.example.com
+      api_secret: your_binance_api_secret_here
       rate_limit: 1200
-      timeout: 30
-      api_proxy: "http://proxy.example.com"
       retry_attempts: 3
+      timeout: 30
+    coinex:
+      api_base_url: https://api.coinex.com/v1
+      api_key: your_api_key_here
+      api_proxy: null
+      api_secret: your_api_secret_here
+      rate_limit: 50
+      retry_attempts: 5
+      timeout: 30
   max_concurrent_requests: 10
-
-trading:
-  pairs: ["BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "BNBUSDT"]
-  default_interval: "5m"
-  backtest_lookback: 500
-  dry_run: true
-  fee: 0.0004
-  default_capital: 10
-  min_size: 0.0001
-  threshold: 0.1
-  max_positions: 2
-  trading_windows:
-    enabled: true
-    start_time: "09:00"
-    end_time: "18:00"
-    timezone: "UTC"
-
-risk:
-  min_size: 0.0001
-  per_trade: 0.01
-  stop_loss_pct: 0.005
-  take_profit_pct: 0.01
-  trailing_stop_pct: 0.008
-  max_drawdown_pct: 0.15
-  max_daily_loss_pct: 0.05
-  # From strategy_config.json, for completeness:
-  max_drawdown: 0.02
-  risk_per_trade: 0.01
-
-strategy:
-  mode: normal
-  autotune: true
-  rsi_period: 14
-  macd_short_period: 12
-  macd_long_period: 26
-  macd_signal_period: 9
-  ema_short_period: 9
-  ema_long_period: 21
-  bollinger_window: 20
-  bollinger_std_dev: 2
-  adaptive_threshold: 0.5
-  target_profit: 0.01
-  ai_tuning_enabled: true
-  dynamic_tuning:
-    enabled: true
-    tuning_period: 30
-    parameter_range:
-      rsi_period: [5, 30]
-      macd_short_period: [5, 20]
-      macd_long_period: [20, 50]
-    optimization_goal: "max_return"
-
+debug: false
+log_level: INFO
 ml:
   enabled: true
   min_signal_conf: 0.5
   retrain_on_start: false
-
 notifications:
-  telegram_bot_token: ""
-  telegram_chat_id: ""
-  webhook_url: ""
-
-debug: false
-log_level: "INFO"
+  telegram_bot_token: ''
+  telegram_chat_id: ''
+  webhook_url: ''
+risk:
+  max_daily_loss_pct: 0.05
+  max_drawdown: 0.02
+  max_drawdown_pct: 0.15
+  min_size: 0.0001
+  per_trade: 0.01
+  risk_per_trade: 0.01
+  stop_loss_pct: 0.005
+  take_profit_pct: 0.015000000000000005
+  trailing_stop_pct: 0.008
+strategy:
+  adaptive_threshold: 0.5
+  ai_tuning_enabled: true
+  autotune: true
+  bollinger_std_dev: 2
+  bollinger_window: 20
+  dynamic_tuning:
+    enabled: true
+    optimization_goal: max_return
+    parameter_range:
+      macd_long_period:
+      - 20
+      - 50
+      macd_short_period:
+      - 5
+      - 20
+      rsi_period:
+      - 5
+      - 30
+    tuning_period: 30
+  ema_long_period: 21
+  ema_short_period: 9
+  macd_long_period: 26
+  macd_short_period: 12
+  macd_signal_period: 9
+  mode: Normal
+  rsi_period: 14
+  target_profit: 0.01
+trading:
+  backtest_lookback: 500
+  default_capital: 10
+  default_interval: 5m
+  dry_run: true
+  fee: 0.001
+  max_positions: 4
+  min_size: 0.0001
+  pairs:
+  - BTCUSDT
+  - ETHUSDT
+  - LTCUSDT
+  - SOLUSDT
+  - BNBUSDT
+  threshold: 0.1
+  trading_windows:
+    enabled: true
+    end_time: '18:00'
+    start_time: 09:00
+    timezone: UTC
+version: 2

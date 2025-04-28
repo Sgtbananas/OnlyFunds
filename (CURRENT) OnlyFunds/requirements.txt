@@ -8,6 +8,7 @@ scikit-learn>=1.0
 websockets>=10.0
 prometheus_client
 python-json-logger
+psutil
 
 # Web App & UI
 streamlit>=1.25
