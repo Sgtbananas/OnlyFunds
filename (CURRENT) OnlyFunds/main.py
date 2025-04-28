@@ -602,6 +602,57 @@ def display_dashboard(current_capital):
     else:
         st.info("No trade history yet.")
 
+    # === Diagnostics Panel ===
+    with st.expander("🛠 Diagnostics Panel"):
+        # P&L summary
+        st.markdown("**P&L Overview**")
+        st.write(f"Starting Capital: {trading_cfg['default_capital']:.2f} USDT")
+        st.write(f"Current Capital: {perf['current_capital']:.2f} USDT")
+        st.write(f"Total Return: {perf['total_return']:.2f}%")
+        st.write(f"Win Rate: {perf['win_rate']:.2f}%")
+        # Trade return distribution
+        df_trades = pd.DataFrame(trade_log)
+        if not df_trades.empty and "return_pct" in df_trades.columns:
+            st.markdown("**Trade Return Distribution**")
+            st.bar_chart(df_trades["return_pct"].dropna())
+        # Trade action distribution
+        if not df_trades.empty and "action" in df_trades.columns:
+            st.markdown("**Trade Action Distribution**")
+            action_counts = df_trades["action"].value_counts()
+            st.bar_chart(action_counts)
+        # Trade durations (if timestamps available)
+        if not df_trades.empty and "timestamp" in df_trades.columns and "action" in df_trades.columns:
+            # Attempt to compute trade durations
+            try:
+                df_trades_sorted = df_trades.sort_values("timestamp")
+                buys = df_trades_sorted[df_trades_sorted["action"].str.contains("BUY")]
+                sells = df_trades_sorted[df_trades_sorted["action"].str.contains("SELL")]
+                if not buys.empty and not sells.empty:
+                    buy_times = pd.to_datetime(buys["timestamp"])
+                    sell_times = pd.to_datetime(sells["timestamp"])
+                    durations = (sell_times.values - buy_times.values[:len(sell_times)]) / np.timedelta64(1, 'm')
+                    st.markdown("**Trade Duration Distribution (min)**")
+                    st.bar_chart(durations)
+            except Exception as e:
+                st.info(f"Could not compute trade durations: {e}")
+        # Feature importance (meta-learner)
+        if META_MODEL is not None:
+            st.markdown("**Meta-Learner Feature Importance**")
+            try:
+                if hasattr(META_MODEL, "feature_importances_"):
+                    # Customize feature_names if needed
+                    feature_names = ["rsi", "macd", "ema_diff", "volatility"]
+                    importances = META_MODEL.feature_importances_
+                    st.bar_chart(pd.Series(importances, index=feature_names))
+                elif hasattr(META_MODEL, "coef_"):
+                    # Linear model
+                    feature_names = ["rsi", "macd", "ema_diff", "volatility"]
+                    st.bar_chart(pd.Series(META_MODEL.coef_, index=feature_names))
+                else:
+                    st.info("Meta-learner does not expose feature importances.")
+            except Exception as e:
+                st.info(f"Could not display feature importances: {e}")
+
 def main_loop():
     global current_capital
     if backtest_mode:
