@@ -352,31 +352,15 @@ def write_heartbeat():
     except Exception:
         pass
 
-def watchdog_loop(main_pid, heartbeat_file=HEARTBEAT_FILE, interval=10, max_stale=30):
-    import psutil
-    while True:
-        try:
-            time.sleep(interval)
-            if not os.path.exists(heartbeat_file):
-                continue
-            with open(heartbeat_file, "r") as f:
-                import json
-                data = json.load(f)
-                last = data.get("last_run", 0)
-                age = time.time() - last
-                if age > max_stale:
-                    logger.critical("Watchdog: Heartbeat stale! Attempting self-restart.")
-                    psutil.Process(main_pid).terminate()
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as e:
-            logger.error(f"Watchdog error: {e}")
-
+# PATCH: Disable the watchdog on Windows to prevent "Press Enter to continue" crash
 def start_watchdog():
-    main_pid = os.getpid()
-    threading.Thread(target=watchdog_loop, args=(main_pid,), daemon=True).start()
-    logger.info("Watchdog started.")
-
-start_watchdog()
+    if os.name != "nt":  # Only start watchdog on non-Windows systems
+        main_pid = os.getpid()
+        threading.Thread(target=watchdog_loop, args=(main_pid,), daemon=True).start()
+        logger.info("Watchdog started.")
+# Do not call start_watchdog() on Windows
+if os.name != "nt":
+    start_watchdog()
 
 def validate_trade(amount, price, current_capital, min_size=0.001):
     if amount < min_size:
