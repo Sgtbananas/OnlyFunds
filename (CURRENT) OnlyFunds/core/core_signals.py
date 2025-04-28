@@ -2,50 +2,69 @@ import pandas as pd
 import numpy as np
 import logging
 from core.backtester import run_backtest
-from core.ml_filter import load_model, ml_confidence, extract_feature_array
 
 COMMON_QUOTES = ["USDT", "BTC", "ETH", "BNB"]
 
+def classify_regime(df, vol_window=20, mom_window=20, vol_thresh=0.01, mom_thresh=0.005):
+    """
+    Classify each row as 'trending' or 'reversion' regime.
+    Trending = high volatility and strong momentum.
+    """
+    df = df.copy()
+    df['volatility'] = df['Close'].pct_change().rolling(vol_window).std()
+    df['momentum'] = df['Close'].pct_change(mom_window)
+    df['regime'] = np.where(
+        (df['volatility'] > vol_thresh) & (df['momentum'].abs() > mom_thresh),
+        'trending', 'reversion'
+    )
+    return df
+
+def signal_trending(df):
+    """Momentum specialist: Simple EMA 20/50 crossover."""
+    ema_fast = df['Close'].ewm(span=20).mean()
+    ema_slow = df['Close'].ewm(span=50).mean()
+    signal = (ema_fast > ema_slow).astype(float)
+    # Optionally: scale by strength of crossover
+    signal *= (ema_fast - ema_slow).abs() / (df['Close'] + 1e-8)
+    return signal
+
+def signal_reversion(df):
+    """Mean reversion specialist: RSI, MACD, price distance to EMA."""
+    signal = pd.Series(0.0, index=df.index)
+    if "rsi" in df.columns:
+        signal += ((df["rsi"] < 30) * 1.0)
+        signal -= ((df["rsi"] > 70) * 1.0)
+    if "macd" in df.columns:
+        signal += ((df["macd"] < 0) * 0.5)
+        signal -= ((df["macd"] > 0) * 0.5)
+    if "ema_diff" in df.columns:
+        signal -= (df["ema_diff"] > 0) * 0.3
+        signal += (df["ema_diff"] < 0) * 0.3
+    return signal
+
+def generate_ensemble_signal(df, meta_model=None):
+    """
+    Regime classifier → specialist models → meta-learner (optional)
+    Returns pd.Series of signal strength (clipped -1..1)
+    """
+    df = classify_regime(df)
+    s_trend = signal_trending(df)
+    s_rev = signal_reversion(df)
+    if meta_model is not None:
+        regime_is_trending = (df['regime'] == 'trending').astype(int)
+        feats = np.stack([regime_is_trending, s_trend, s_rev], axis=1)
+        meta_preds = meta_model.predict(feats)
+        signal = pd.Series(meta_preds * 2 - 1, index=df.index)
+        return signal.clip(-1, 1)
+    else:
+        signal = np.where(df['regime'] == 'trending', s_trend, s_rev)
+        return pd.Series(signal, index=df.index).clip(-1, 1)
+
 def generate_signal(df):
     """
-    Generate ensemble signals from multiple indicators:
-    - RSI breakout
-    - MACD cross
-    - EMA momentum
-    - Bollinger band squeeze & breakout
-    Returns: pd.Series of signal strength (clipped -1..1)
+    Backward-compatible: Use ensemble pipeline.
     """
-    sig = pd.Series(0.0, index=df.index)
-    # RSI breakout: Strong buy when RSI crosses up from below 30, sell on 70 cross down
-    if "rsi" in df.columns:
-        sig += ((df["rsi"] > 30) & (df["rsi"].shift(1) <= 30)) * 0.5
-        sig -= ((df["rsi"] < 70) & (df["rsi"].shift(1) >= 70)) * 0.5
-    # MACD cross
-    if "macd" in df.columns and "macd_signal" in df.columns:
-        sig += (df["macd"] > df["macd_signal"]) * 0.3
-        sig -= (df["macd"] < df["macd_signal"]) * 0.3
-    # EMA momentum
-    if "ema_diff" in df.columns:
-        sig += (df["ema_diff"] > 0) * 0.3
-        sig -= (df["ema_diff"] < 0) * 0.3
-    # Bollinger squeeze & breakout
-    if "bollinger_upper" in df.columns and "bollinger_lower" in df.columns and "Close" in df.columns:
-        width = df["bollinger_upper"] - df["bollinger_lower"]
-        squeeze = width < width.rolling(20).mean() * 0.8
-        breakout = (df["Close"] > df["bollinger_upper"]) | (df["Close"] < df["bollinger_lower"])
-        sig += (squeeze & breakout) * 0.5
-    return sig.clip(-1, 1)
-
-def generate_ml_signal(df, model=None):
-    # Return predicted probability of positive return for each row
-    if model is None:
-        model = load_model()
-    feats = [extract_feature_array(df.iloc[i]) for i in range(len(df))]
-    if hasattr(model, "predict_proba"):
-        preds = model.predict_proba(feats)[:,1]
-    else:
-        preds = model.predict(feats)
-    return pd.Series(preds, index=df.index)
+    return generate_ensemble_signal(df, meta_model=None)
 
 def smooth_signal(signal, smoothing_window=5):
     return signal.rolling(window=smoothing_window).mean().fillna(0)
@@ -81,3 +100,15 @@ def track_trade_result(result, pair, action):
         f"Order ID: {result.get('order_id')}, Amount: {result.get('amount')}, "
         f"Price: {result.get('order_price')}"
     )
+
+# For compatibility with ML filter code that may import this
+def extract_feature_array(row):
+    """
+    Given a row, return np.array([rsi, macd, ema_diff, volatility]).
+    """
+    return np.array([
+        row.get("rsi", 0),
+        row.get("macd", 0),
+        row.get("ema_diff", 0),
+        row.get("volatility", 0)
+    ])

@@ -227,5 +227,71 @@
     "entry_price": 1809.13,
     "exit_price": 1807.01,
     "return_pct": -0.001171833975446827
+  },
+  {
+    "timestamp": "2025-04-27 13:02:52",
+    "pair": "ETHUSDT",
+    "action": "BUY",
+    "amount": 0.0001,
+    "entry_price": 1795.76,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.05
+  },
+  {
+    "timestamp": "2025-04-27 13:02:52",
+    "pair": "LTCUSDT",
+    "action": "BUY",
+    "amount": 0.0011381598998652458,
+    "entry_price": 86.83,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.1
+  },
+  {
+    "timestamp": "2025-04-27 13:02:53",
+    "pair": "SOLUSDT",
+    "action": "BUY",
+    "amount": 0.000667881490202739,
+    "entry_price": 147.97,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.05
+  },
+  {
+    "timestamp": "2025-04-28 01:05:29",
+    "pair": "ETHUSDT",
+    "action": "SELL",
+    "amount": 0.0001,
+    "entry_price": 1795.76,
+    "exit_price": 1778.59,
+    "return_pct": -0.009561411324453198,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.9000000000000001
+  },
+  {
+    "timestamp": "2025-04-28 01:05:30",
+    "pair": "LTCUSDT",
+    "action": "SELL",
+    "amount": 0.0011381598998652458,
+    "entry_price": 86.83,
+    "exit_price": 85.17,
+    "return_pct": -0.019117816422895274,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.6000000000000001
+  },
+  {
+    "timestamp": "2025-04-28 01:05:31",
+    "pair": "SOLUSDT",
+    "action": "SELL",
+    "amount": 0.000667881490202739,
+    "entry_price": 147.97,
+    "exit_price": 147.32,
+    "return_pct": -0.004392782320740729,
+    "interval": "5m",
+    "lookback": 1000,
+    "threshold": 0.8500000000000001
   }
 ]

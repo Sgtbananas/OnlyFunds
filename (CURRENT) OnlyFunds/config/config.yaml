@@ -15,6 +15,7 @@ trading:
   backtest_lookback: 500
 
 risk:
+  min_size: 0.0001
   per_trade: 0.01
   stop_loss_pct: 0.005
   take_profit_pct: 0.01
