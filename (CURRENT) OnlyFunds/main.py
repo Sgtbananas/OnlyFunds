@@ -660,3 +660,664 @@ if run_backtest_btn:
     except Exception as e:
         st.sidebar.error(f"Backtest error: {e}")
         st.write("Backtest failed due to an error. See sidebar for details.")
+import sys
+import logging
+import time
+import threading
+import traceback
+from datetime import datetime, date, timedelta
+
+import streamlit as st
+st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
+
+import pandas as pd
+from dotenv import load_dotenv
+
+from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
+from core.core_signals import (
+    generate_signal, smooth_signal, adaptive_threshold, track_trade_result, generate_ensemble_signal
+)
+from core.trade_execution import place_order
+from core.backtester import run_backtest
+from utils.helpers import (
+    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair, get_auto_pair_params
+)
+from core.ml_filter import load_model, ml_confidence, train_and_save_model
+from core.risk_manager import RiskManager
+from utils.config import load_config
+
+import joblib
+import tempfile
+import shutil
+import yaml
+
+# --- Meta-learner fallback (background thread stub training if missing) ---
+SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
+if SELECTOR_VARIANT == "A":
+    META_MODEL_PATH = "state/meta_model_A.pkl"
+    METRICS_PREFIX = "onlyfunds_A"
+elif SELECTOR_VARIANT == "B":
+    META_MODEL_PATH = "state/meta_model_B.pkl"
+    METRICS_PREFIX = "onlyfunds_B"
+else:
+    META_MODEL_PATH = "state/meta_model.pkl"
+    METRICS_PREFIX = "onlyfunds"
+
+def train_stub_meta_model(meta_model_path):
+    import numpy as np
+    from sklearn.dummy import DummyClassifier
+    X = np.random.rand(20, 4)
+    y = np.random.randint(0, 2, 20)
+    model = DummyClassifier(strategy="most_frequent")
+    model.fit(X, y)
+    joblib.dump(model, meta_model_path)
+    print(f"[INFO] Stub meta-learner saved to {meta_model_path}")
+
+def ensure_meta_model(path):
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        print(f"[WARN] Could not load meta-learner model at {path}: {e}")
+        def _train_and_reload():
+            train_stub_meta_model(path)
+        threading.Thread(target=_train_and_reload, daemon=True).start()
+        return None
+
+META_MODEL = ensure_meta_model(META_MODEL_PATH)
+
+# --- Logging: robust, rotating, JSON, optional console ---
+from logging.handlers import RotatingFileHandler
+from pythonjsonlogger import jsonlogger
+
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
+log_file = os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json")
+handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
+formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+handler.setFormatter(formatter)
+root = logging.getLogger()
+root.handlers = []
+root.addHandler(handler)
+root.setLevel(logging.INFO)
+if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    root.addHandler(stdout_handler)
+
+logger = logging.getLogger(__name__)
+
+# --- Prometheus singleton ---
+from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
+
+def get_prometheus_metrics():
+    module = __import__(__name__)
+    if not hasattr(module, "_PROMETHEUS_METRICS"):
+        try:
+            start_http_server(8000)
+        except Exception:
+            pass
+        metrics = {}
+        name = f"{METRICS_PREFIX}_trades_executed_total"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['trade_counter'] = Counter(name, "Total trades executed")
+        else:
+            metrics['trade_counter'] = REGISTRY._names_to_collectors[name]
+        name = f"{METRICS_PREFIX}_current_pnl"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['pnl_gauge'] = Gauge(name, "Current unrealized PnL (USDT)")
+        else:
+            metrics['pnl_gauge'] = REGISTRY._names_to_collectors[name]
+        name = f"{METRICS_PREFIX}_heartbeat"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['heartbeat_gauge'] = Gauge(name, "Heartbeat timestamp")
+        else:
+            metrics['heartbeat_gauge'] = REGISTRY._names_to_collectors[name]
+        module._PROMETHEUS_METRICS = metrics
+    m = module._PROMETHEUS_METRICS
+    return m['trade_counter'], m['pnl_gauge'], m['heartbeat_gauge']
+
+trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
+
+# --- State + config ---
+CONFIG_PATH = "config/config.yaml"
+
+def load_config_safe(config_path, fallback=None):
+    try:
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("Config is not a dict.")
+        return cfg
+    except Exception as e:
+        st.sidebar.error(f"Error loading config: {e}")
+        return fallback or {}
+
+config = load_config_safe(CONFIG_PATH, fallback={})
+risk_cfg = config.get("risk", {})
+trading_cfg = config.get("trading", {})
+ml_cfg = config.get("ml", {})
+
+def safe_load_json(file, default):
+    import json
+    try:
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                data = json.load(f)
+            return data if data is not None else default
+        return default
+    except Exception as e:
+        st.sidebar.error(f"Failed to load {file}: {e}")
+        return default
+
+POSITIONS_FILE = "state/open_positions.json"
+TRADE_LOG_FILE = "state/trade_log.json"
+CAPITAL_FILE = "state/current_capital.json"
+BACKTEST_RESULTS_FILE = "state/backtest_results.json"
+OPTUNA_BEST_FILE = "state/optuna_best.json"
+AUTO_PARAMS_FILE = "state/auto_params.json"
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
+
+os.makedirs("state", exist_ok=True)
+open_positions = safe_load_json(POSITIONS_FILE, {})
+trade_log = safe_load_json(TRADE_LOG_FILE, [])
+current_capital = safe_load_json(CAPITAL_FILE, trading_cfg.get("default_capital", 100))
+if not isinstance(current_capital, (float, int)):
+    current_capital = trading_cfg.get("default_capital", 100)
+
+risk_manager = RiskManager(config)
+
+st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
+st.sidebar.header("⚙️ Configuration")
+st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
+
+def get_config_defaults():
+    return dict(
+        mode=trading_cfg.get("mode", "Normal").capitalize(),
+        dry_run=trading_cfg.get("dry_run", True),
+        autotune=True,
+        interval=trading_cfg.get("default_interval", "5m"),
+        lookback=trading_cfg.get("backtest_lookback", 1000),
+        threshold=trading_cfg.get("threshold", 0.5),
+        max_positions=trading_cfg.get("max_positions", 5),
+        stop_loss_pct=risk_cfg.get("stop_loss_pct", 0.01),
+        take_profit_pct=risk_cfg.get("take_profit_pct", 0.02),
+        fee=trading_cfg.get("fee", 0.001),
+        atr_stop_mult=1.0,
+        atr_tp_mult=2.0,
+        atr_trail_mult=1.0,
+        partial_exit=True
+    )
+
+if "sidebar" not in st.session_state or not isinstance(st.session_state.sidebar, dict):
+    st.session_state.sidebar = get_config_defaults()
+
+def reset_sidebar():
+    st.session_state.sidebar = get_config_defaults()
+
+try:
+    modes = ["Conservative", "Normal", "Aggressive", "Auto"]
+    mode_idx = 3 if st.session_state.sidebar.get("mode", "Auto") == "Auto" else modes.index(st.session_state.sidebar.get("mode", "Normal"))
+    st.session_state.sidebar["mode"] = st.sidebar.selectbox("Trading Mode", modes, index=mode_idx)
+    st.session_state.sidebar["dry_run"] = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=st.session_state.sidebar.get("dry_run", True))
+    st.session_state.sidebar["autotune"] = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=st.session_state.sidebar.get("autotune", True))
+    with st.sidebar.expander("Advanced", expanded=False):
+        if st.session_state.sidebar["autotune"]:
+            st.write("Entry Threshold is autotuned. Disable to override.")
+        else:
+            st.session_state.sidebar["threshold"] = st.slider(
+                "Entry Threshold", min_value=0.0, max_value=1.0,
+                value=st.session_state.sidebar.get("threshold", 0.5), step=0.01,
+                help="How strong must the signal be before we BUY/SELL?"
+            )
+    if st.session_state.sidebar["mode"] != "Auto":
+        st.session_state.sidebar["interval"] = st.sidebar.selectbox(
+            "Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"],
+            index=["5m", "15m", "30m", "1h", "4h", "1d"].index(st.session_state.sidebar.get("interval", "5m"))
+        )
+        st.session_state.sidebar["lookback"] = st.sidebar.slider(
+            "Historical Lookback", 300, 2000, st.session_state.sidebar.get("lookback", 1000)
+        )
+    st.session_state.sidebar["max_positions"] = st.sidebar.number_input(
+        "Max Open Positions", 1, 30, st.session_state.sidebar.get("max_positions", 5)
+    )
+    st.session_state.sidebar["stop_loss_pct"] = st.sidebar.number_input(
+        "Stop-Loss %", 0.0, 10.0, st.session_state.sidebar.get("stop_loss_pct", 0.01)*100.0, step=0.1
+    ) / 100
+    st.session_state.sidebar["take_profit_pct"] = st.sidebar.number_input(
+        "Take-Profit %", 0.0, 10.0, st.session_state.sidebar.get("take_profit_pct", 0.02)*100.0, step=0.1
+    ) / 100
+    st.session_state.sidebar["fee"] = st.sidebar.number_input(
+        "Trade Fee %", 0.0, 1.0, st.session_state.sidebar.get("fee", 0.001)*100.0, step=0.01
+    ) / 100
+    st.session_state.sidebar["atr_stop_mult"] = st.sidebar.number_input(
+        "ATR Stop Multiplier", 0.1, 5.0, st.session_state.sidebar.get("atr_stop_mult", 1.0), step=0.1
+    )
+    st.session_state.sidebar["atr_tp_mult"] = st.sidebar.number_input(
+        "ATR Take Profit Multiplier", 0.1, 10.0, st.session_state.sidebar.get("atr_tp_mult", 2.0), step=0.1
+    )
+    st.session_state.sidebar["atr_trail_mult"] = st.sidebar.number_input(
+        "ATR Trailing Stop Multiplier", 0.1, 5.0, st.session_state.sidebar.get("atr_trail_mult", 1.0), step=0.1
+    )
+    st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
+        "Enable Partial Exit at TP1", value=st.session_state.sidebar.get("partial_exit", True)
+    )
+except Exception as e:
+    st.sidebar.error(f"Sidebar error: {e}")
+    reset_sidebar()
+
+import threading
+config_lock = threading.Lock()
+
+def persist_sidebar_overrides(sidebar: dict, config_path: str = CONFIG_PATH):
+    try:
+        with config_lock:
+            with open(config_path, "r") as f:
+                data = yaml.safe_load(f)
+            if "trading" in data:
+                data["trading"]["dry_run"] = sidebar["dry_run"]
+                data["trading"]["max_positions"] = sidebar["max_positions"]
+                data["trading"]["fee"] = sidebar["fee"]
+                if "interval" in sidebar:
+                    data["trading"]["default_interval"] = sidebar["interval"]
+                if "lookback" in sidebar:
+                    data["trading"]["backtest_lookback"] = sidebar["lookback"]
+                if "threshold" in sidebar:
+                    data["trading"]["threshold"] = sidebar["threshold"]
+            if "risk" in data:
+                data["risk"]["stop_loss_pct"] = sidebar["stop_loss_pct"]
+                data["risk"]["take_profit_pct"] = sidebar["take_profit_pct"]
+            if "strategy" in data:
+                data["strategy"]["mode"] = sidebar["mode"]
+                data["strategy"]["autotune"] = sidebar["autotune"]
+            dir = os.path.dirname(config_path) or "."
+            tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
+            yaml.safe_dump(data, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            shutil.move(tmp.name, config_path)
+            with open(config_path, "r") as f:
+                yaml.safe_load(f)
+        st.sidebar.success("Preferences saved to config/config.yaml!")
+    except Exception as e:
+        st.sidebar.error(f"Failed to save preferences: {e}")
+
+if st.sidebar.button("💾 Save Preferences"):
+    persist_sidebar_overrides(st.session_state.sidebar, CONFIG_PATH)
+
+if st.sidebar.button("🔄 Reload Sidebar from Config"):
+    try:
+        reset_sidebar()
+        st.sidebar.success("Sidebar reloaded from config.")
+    except Exception as e:
+        st.sidebar.error(f"Failed to reload sidebar: {e}")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "🟢 **Prometheus metrics** are available at [localhost:8000](http://localhost:8000/). "
+    "To enable monitoring, use `config/prometheus.yml` for your Prometheus server."
+)
+
+# --- Hands-free ML Retraining ---
+RETRAIN_TRADE_INTERVAL = 50
+RETRAIN_TIME_INTERVAL = 6*60*60
+LAST_RETRAIN_FILE = "state/last_ml_retrain.txt"
+def read_last_retrain_time():
+    try:
+        with open(LAST_RETRAIN_FILE, "r") as f:
+            return float(f.read().strip())
+    except Exception:
+        return 0.0
+
+def write_last_retrain_time(ts):
+    try:
+        with open(LAST_RETRAIN_FILE, "w") as f:
+            f.write(str(ts))
+    except Exception as e:
+        logger.error(f"Failed to write last retrain time: {e}")
+
+def retrain_ml_if_needed(trade_log):
+    now = time.time()
+    last_ts = read_last_retrain_time()
+    n_since = len(trade_log) % RETRAIN_TRADE_INTERVAL
+    need_time = (now - last_ts) > RETRAIN_TIME_INTERVAL
+    need_trades = len(trade_log) > 0 and n_since == 0
+    if need_time or need_trades:
+        logger.info("Auto ML retrain triggered.")
+        success, msg = train_and_save_model()
+        write_last_retrain_time(now)
+        if success:
+            logger.info(f"ML retrain: {msg}")
+        else:
+            logger.error(f"ML retrain error: {msg}")
+
+def retrain_ml_background(trade_log):
+    threading.Thread(target=retrain_ml_if_needed, args=(trade_log,), daemon=True).start()
+
+def show_last_retrain_sidebar():
+    last_ts = read_last_retrain_time()
+    if last_ts > 0:
+        st.sidebar.markdown(f"**Last ML retrain:** {datetime.fromtimestamp(last_ts).strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        st.sidebar.markdown("**Last ML retrain:** Never")
+
+show_last_retrain_sidebar()
+
+def write_heartbeat():
+    ts = time.time()
+    try:
+        with open(HEARTBEAT_FILE, "w") as f:
+            import json
+            json.dump({"last_run": ts}, f)
+    except Exception as e:
+        logger.error(f"Failed to write heartbeat: {e}")
+    try:
+        heartbeat_gauge.set(ts)
+    except Exception:
+        pass
+
+def watchdog_loop(main_pid, heartbeat_file=HEARTBEAT_FILE, interval=10, max_stale=30):
+    import psutil
+    while True:
+        try:
+            time.sleep(interval)
+            if not os.path.exists(heartbeat_file):
+                continue
+            with open(heartbeat_file, "r") as f:
+                import json
+                data = json.load(f)
+                last = data.get("last_run", 0)
+                age = time.time() - last
+                if age > max_stale:
+                    logger.critical("Watchdog: Heartbeat stale! Attempting self-restart.")
+                    psutil.Process(main_pid).terminate()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            logger.error(f"Watchdog error: {e}")
+
+def start_watchdog():
+    main_pid = os.getpid()
+    threading.Thread(target=watchdog_loop, args=(main_pid,), daemon=True).start()
+    logger.info("Watchdog started.")
+
+start_watchdog()
+
+def validate_trade(amount, price, current_capital, min_size=0.001):
+    if amount < min_size:
+        logger.error(f"Trade validation: amount {amount} < min_size {min_size}")
+        return False
+    if price <= 0:
+        logger.error(f"Trade validation: price {price} <= 0")
+        return False
+    if current_capital <= 0:
+        logger.error(f"Trade validation: current_capital {current_capital} <= 0")
+        return False
+    return True
+
+def self_tune_max_positions(win_rate, max_positions, trade_count, min_pos=1, max_pos=20, tune_every=10):
+    if trade_count == 0 or trade_count % tune_every != 0:
+        return max_positions
+    if win_rate > 60.0 and max_positions < max_pos:
+        logger.info(f"Self-tune: Increasing max_positions to {max_positions+1} (win_rate={win_rate:.1f}%)")
+        return max_positions + 1
+    if win_rate < 40.0 and max_positions > min_pos:
+        logger.info(f"Self-tune: Decreasing max_positions to {max_positions-1} (win_rate={win_rate:.1f}%)")
+        return max_positions - 1
+    return max_positions
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.critical(f"UNHANDLED EXCEPTION:\n{tb}")
+    USER = os.getenv("ALERT_USER")
+    PASS = os.getenv("ALERT_PASS")
+    ALERT_EMAIL = os.getenv("ALERT_EMAIL")
+    if USER and PASS and ALERT_EMAIL:
+        try:
+            import smtplib
+            with smtplib.SMTP("smtp.gmail.com", 587) as s:
+                s.starttls()
+                s.login(USER, PASS)
+                msg = f"Subject: OnlyFunds CRASHED!\n\n{tb}"
+                s.sendmail(USER, ALERT_EMAIL, msg)
+        except Exception as e:
+            logger.error(f"Failed to send alert email: {e}")
+
+sys.excepthook = global_exception_handler
+
+def atomic_save_json(obj, file):
+    dir = os.path.dirname(file) or "."
+    try:
+        tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
+        import json
+        json.dump(obj, tmp, indent=2)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        shutil.move(tmp.name, file)
+    except Exception as e:
+        logger.error(f"Failed to atomically save {file}: {e}")
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
+
+def main_loop():
+    global current_capital, trade_log, open_positions
+    retrain_ml_background(trade_log)
+    for pair in TRADING_PAIRS:
+        perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 100))
+        st.session_state.sidebar["max_positions"] = self_tune_max_positions(
+            perf.get("win_rate", 50), st.session_state.sidebar["max_positions"], len(trade_log)
+        )
+        if st.session_state.sidebar["mode"] == "Auto":
+            p = get_pair_params(pair)
+            interval_used = p["interval"]
+            lookback_used = p["lookback"]
+            threshold_used = p["threshold"]
+        else:
+            interval_used = st.session_state.sidebar["interval"]
+            lookback_used = st.session_state.sidebar["lookback"]
+            threshold_used = st.session_state.sidebar["threshold"]
+
+        df = fetch_klines(pair, interval_used, lookback_used)
+        if df.empty or not validate_df(df):
+            logger.warning(f"Data for {pair} invalid/empty.")
+            continue
+        df = add_indicators(df)
+        try:
+            if META_MODEL is not None:
+                signal = generate_ensemble_signal(df, META_MODEL)
+            else:
+                signal = generate_signal(df)
+        except Exception as e:
+            logger.error(f"Signal gen failed for {pair}: {e}")
+            continue
+
+        if st.session_state.sidebar["autotune"]:
+            try:
+                threshold_final = adaptive_threshold(df, target_profit=0.01)
+            except Exception as e:
+                logger.warning(f"Autotune failed for {pair}, fallback to default threshold: {e}")
+                threshold_final = trading_cfg.get("threshold", 0.5)
+        else:
+            threshold_final = threshold_used
+
+        price = df["Close"].iloc[-1]
+        min_size = 0.001
+
+        if pair in open_positions:
+            pos = open_positions[pair]
+            entry_price = pos["entry_price"]
+            amount = pos["amount"]
+            if price >= entry_price * (1 + st.session_state.sidebar["take_profit_pct"]):
+                logger.info(f"{pair}: Take-profit hit. Closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (TP): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "TP"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"TP close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+            if price <= entry_price * (1 - st.session_state.sidebar["stop_loss_pct"]):
+                logger.info(f"{pair}: Stop-loss hit. Closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (SL): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "SL"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"SL close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+            exit_signal = signal.iloc[-1] if hasattr(signal, 'iloc') else signal[-1]
+            if exit_signal < 0:
+                logger.info(f"{pair}: Negative signal, closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (SIG): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "SIG"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"SIG close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+
+        if pair not in open_positions:
+            if len(open_positions) >= st.session_state.sidebar["max_positions"]:
+                logger.info(f"Max open positions reached ({len(open_positions)}). Skipping {pair}.")
+                continue
+            entry_signal = signal.iloc[-1] if hasattr(signal, 'iloc') else signal[-1]
+            if entry_signal < threshold_final:
+                logger.info(f"{pair}: Signal {entry_signal:.3f} below threshold {threshold_final:.3f}")
+                continue
+            amount = min(current_capital / price, 1.0)
+            if not validate_trade(amount, price, current_capital, min_size=min_size):
+                continue
+            try:
+                trade_result = place_order(pair, "BUY", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                logger.info(f"Placed trade: {trade_result}")
+                open_positions[pair] = {
+                    "amount": amount,
+                    "entry_price": price,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                trade_log.append({
+                    "pair": pair,
+                    "side": "BUY",
+                    "amount": amount,
+                    "price": price,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "result": None
+                })
+                current_capital -= amount * price * (1 + st.session_state.sidebar["fee"])
+                atomic_save_json(open_positions, POSITIONS_FILE)
+                atomic_save_json(trade_log, TRADE_LOG_FILE)
+                atomic_save_json(current_capital, CAPITAL_FILE)
+                trade_counter.inc()
+            except Exception as e:
+                logger.error(f"Trade execution failed for {pair}: {e}")
+        write_heartbeat()
+        pnl_gauge.set(current_capital)
+        time.sleep(0.1)
+    retrain_ml_background(trade_log)
+    write_heartbeat()
+
+run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
+run_backtest_btn = st.sidebar.button("🧪 Run Backtest")
+
+if run_trading_btn:
+    main_loop()
+
+if run_backtest_btn:
+    try:
+        st.sidebar.info("Backtest started...")
+
+        pair = TRADING_PAIRS[0]
+        if st.session_state.sidebar["mode"] == "Auto":
+            p = get_pair_params(pair)
+            interval_used = p["interval"]
+            lookback_used = p["lookback"]
+            threshold_used = p["threshold"]
+        else:
+            interval_used = st.session_state.sidebar["interval"]
+            lookback_used = st.session_state.sidebar["lookback"]
+            threshold_used = st.session_state.sidebar["threshold"]
+
+        df = fetch_klines(pair, interval_used, lookback_used)
+        if df.empty or not validate_df(df):
+            st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
+            bt_results = None
+        else:
+            df = add_indicators(df)
+            if META_MODEL is not None:
+                signal = generate_ensemble_signal(df, META_MODEL)
+            else:
+                signal = generate_signal(df)
+            prices = df["Close"]
+
+            bt_results = run_backtest(
+                signal=signal,
+                prices=prices,
+                threshold=threshold_used,
+                initial_capital=trading_cfg.get("default_capital", 10.0),
+                risk_pct=risk_cfg.get("risk_pct", 0.01),
+                stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
+                take_profit_pct=st.session_state.sidebar["take_profit_pct"],
+                fee_pct=st.session_state.sidebar["fee"],
+                verbose=False,
+                partial_exit=st.session_state.sidebar.get("partial_exit", False),
+                stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
+                take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
+                atr=df["ATR"] if "ATR" in df.columns else None,
+                trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
+            )
+            st.sidebar.success("Backtest complete!")
+
+        if bt_results is not None:
+            st.write("Backtest Results", bt_results)
+        else:
+            st.write("No results to show (backtest failed).")
+    except Exception as e:
+        st.sidebar.error(f"Backtest error: {e}")
+        st.write("Backtest failed due to an error. See sidebar for details.")
