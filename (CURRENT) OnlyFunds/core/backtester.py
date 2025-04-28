@@ -9,8 +9,8 @@ def run_backtest(
     threshold: float = 0.05,
     initial_capital: float = 10.0,
     risk_pct: float = 0.01,
-    stop_loss_pct: float = 0.005,
-    take_profit_pct: float = 0.01,
+    stop_loss_atr_mult: float = 1.0,
+    take_profit_atr_mult: float = 2.0,
     fee_pct: float = 0.0004,
     verbose: bool = False,
     log_every_n: int = 50,
@@ -18,85 +18,132 @@ def run_backtest(
     grid_kwargs: dict = None,
     log_func=None,
     indicator_params: dict = None,
+    high: pd.Series = None,
+    low: pd.Series = None,
+    atr: pd.Series = None,
+    partial_exit: bool = True,
+    trailing_atr_mult: float = 1.0,
 ) -> pd.DataFrame:
     """
-    Backtest with support for stop-loss, take-profit, and fee modeling.
+    Backtest with support for ATR-based stop-loss, take-profit, partial exits, trailing stop and fee modeling.
     If grid_mode, runs a grid strategy simulation instead.
     indicator_params: dict that can be passed through to indicator logic (for multi-param search).
     Returns DataFrame: [summary row, trade rows], summary always includes: 
         type, trades, avg_return, win_rate, capital, total_pnl, max_drawdown, sharpe_ratio
     """
-    # NOTE: indicator_params is for future use/compat with walk-forward hyperopt
     if not grid_mode:
         trades = []
         position = None
         entry_price = None
         capital = initial_capital
         equity_curve = [capital]
+        partial_out = False
+        trailing_stop = None
 
         for i in range(len(signal)):
             sig = signal.iloc[i]
             price = prices.iloc[i]
-
-            adjusted_entry_price = price * (1 + fee_pct) if position is None else entry_price
-            adjusted_exit_price = price * (1 - fee_pct) if position is not None else price
-
-            if verbose and (i % log_every_n == 0):
-                logging.debug(f"Step {i}: Signal={sig:.4f}, Price={price:.2f}, Position={position}, Capital={capital:.2f}")
+            this_atr = atr.iloc[i] if atr is not None else None
 
             # --- LONG entry ---
             if sig > threshold and position is None:
-                position_size = (capital * risk_pct) / adjusted_entry_price
+                position_size = (capital * risk_pct) / price
                 position = {
                     "size": position_size,
-                    "entry_price": adjusted_entry_price,
-                    "bar": i
+                    "entry_price": price,
+                    "bar": i,
                 }
-                entry_price = adjusted_entry_price
-                position_cost = position_size * adjusted_entry_price
+                entry_price = price
+                position_cost = position_size * price
                 capital -= position_cost
-                logging.info(f"Entered LONG at {entry_price:.2f}, Size: {position_size:.4f}, Capital: {capital:.2f}")
-
+                partial_out = False
+                trailing_stop = None
+                stop_loss = price - stop_loss_atr_mult * this_atr if this_atr is not None else price * (1 - 0.01)
+                take_profit = price + take_profit_atr_mult * this_atr if this_atr is not None else price * (1 + 0.02)
+                trades.append({
+                    "type": "open",
+                    "entry_bar": i,
+                    "entry_price": price,
+                    "size": position_size,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit
+                })
             # --- LONG exit conditions ---
             elif position is not None:
-                unrealized = (adjusted_exit_price / entry_price) - 1
-                stop = unrealized <= -stop_loss_pct
-                take = unrealized >= take_profit_pct
-                flip = sig < threshold
-
-                if stop or take or flip:
-                    exit_price = adjusted_exit_price
-                    position_size = position["size"]
-                    return_pct = (exit_price - entry_price) / entry_price
-                    profit = position_size * (exit_price - entry_price)
-                    capital += position_size * exit_price
+                stop_loss = entry_price - stop_loss_atr_mult * this_atr if this_atr is not None else entry_price * (1 - 0.01)
+                take_profit = entry_price + take_profit_atr_mult * this_atr if this_atr is not None else entry_price * (1 + 0.02)
+                # Partial exit at first TP
+                if partial_exit and not partial_out and price >= take_profit:
+                    # Sell half, keep half for trailing
+                    half_size = position["size"] / 2
+                    profit = half_size * (price - entry_price)
+                    capital += half_size * price
                     trades.append({
-                        "type": "trade",
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "reason": (
-                            "stop_loss" if stop
-                            else "take_profit" if take
-                            else "signal_flip"
-                        ),
-                        "return": return_pct,
+                        "type": "partial_exit",
+                        "exit_bar": i,
+                        "exit_price": price,
                         "profit": profit,
-                        "capital": capital,
+                        "return": (price - entry_price) / entry_price,
+                        "amount": half_size,
+                        "capital": capital
+                    })
+                    position["size"] = half_size
+                    partial_out = True
+                    trailing_stop = price - trailing_atr_mult * this_atr if this_atr is not None else price * (1 - 0.01)
+                # Trailing exit for remainder
+                elif partial_exit and partial_out and price <= trailing_stop:
+                    # Sell remainder at trailing stop
+                    profit = position["size"] * (price - entry_price)
+                    capital += position["size"] * price
+                    trades.append({
+                        "type": "trailing_exit",
+                        "exit_bar": i,
+                        "exit_price": price,
+                        "profit": profit,
+                        "return": (price - entry_price) / entry_price,
+                        "amount": position["size"],
+                        "capital": capital
                     })
                     equity_curve.append(capital)
-                    logging.info(f"Exited LONG at {exit_price:.2f} → Return: {return_pct:.2%}, Reason: {trades[-1]['reason']}, Capital: {capital:.2f}")
                     position = None
+                    entry_price = None
+                    partial_out = False
+                    trailing_stop = None
+                # Full exit (SL or signal flip)
+                elif ((not partial_exit) and (price <= stop_loss or sig < threshold)) or (partial_exit and not partial_out and price <= stop_loss):
+                    profit = position["size"] * (price - entry_price)
+                    capital += position["size"] * price
+                    trades.append({
+                        "type": "full_exit",
+                        "exit_bar": i,
+                        "exit_price": price,
+                        "profit": profit,
+                        "return": (price - entry_price) / entry_price,
+                        "amount": position["size"],
+                        "capital": capital,
+                        "reason": "stop_loss" if price <= stop_loss else "signal_flip"
+                    })
+                    equity_curve.append(capital)
+                    position = None
+                    entry_price = None
+                    partial_out = False
+                    trailing_stop = None
+                # Update trailing stop if in partial
+                elif partial_exit and partial_out:
+                    new_trailing = price - trailing_atr_mult * this_atr if this_atr is not None else price * (1 - 0.01)
+                    if new_trailing > trailing_stop:
+                        trailing_stop = new_trailing
 
         trades_df = pd.DataFrame(trades)
         if not trades_df.empty:
-            avg_return = trades_df["return"].mean()
-            win_rate = (trades_df["return"] > 0).mean() * 100
-            total_pnl = trades_df["profit"].sum()
+            avg_return = trades_df.loc[trades_df["type"].str.contains("exit"), "return"].mean()
+            win_rate = (trades_df.loc[trades_df["type"].str.contains("exit"), "return"] > 0).mean() * 100
+            total_pnl = trades_df.loc[trades_df["type"].str.contains("exit"), "profit"].sum()
             curve = np.array(equity_curve)
             peak = np.maximum.accumulate(curve)
             drawdown = (peak - curve) / peak
             max_drawdown = np.max(drawdown) * 100 if len(drawdown) > 0 else 0
-            returns = trades_df["return"]
+            returns = trades_df.loc[trades_df["type"].str.contains("exit"), "return"]
             sharpe_ratio = (returns.mean() / returns.std()) if returns.std() != 0 else 0
         else:
             avg_return = 0
