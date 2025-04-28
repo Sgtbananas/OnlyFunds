@@ -43,3 +43,15 @@ class RiskManager:
                 start_equity *= (1 + t["return_pct"])
         loss = (start_equity - equity) / start_equity if start_equity else 0
         return loss <= -abs(max_loss_pct)
+
+ def position_size(self, capital, price, risk_pct, volatility=None, v_adj=True):
+        """
+        Volatility-adjusted sizing. If v_adj is True, scale risk down as volatility rises.
+        """
+        base_size = capital * risk_pct / price
+        if v_adj and volatility is not None and volatility > 0:
+            # Use some baseline for "normal" volatility, e.g. median of last N bars
+            norm_vol = np.median(volatility[-30:]) if hasattr(volatility, '__getitem__') else volatility
+            adj = min(2.0, max(0.5, norm_vol / volatility[-1]))
+            return base_size * adj
+        return base_size
