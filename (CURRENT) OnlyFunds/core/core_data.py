@@ -123,7 +123,7 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
         # ATR indicator
         df2["atr"] = ta.volatility.AverageTrueRange(
             high=df2["High"], low=df2["Low"], close=df2["Close"], window=atr_window
-        ).average_true_range().fillna(method="bfill")
+        ).average_true_range().bfill()
 
         # Composite z-score indicators for robust ML features
         features = ["rsi", "macd", "ema_diff", "volatility"]
