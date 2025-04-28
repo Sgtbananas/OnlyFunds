@@ -444,9 +444,7 @@ def atomic_save_json(obj, file):
 def main_loop():
     global current_capital, trade_log, open_positions
     retrain_ml_background(trade_log)
-    # For each pair, check for buy/sell/stop/take-profit
     for pair in TRADING_PAIRS:
-        # Self-tune max_positions every 10 trades
         perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
         st.session_state.sidebar["max_positions"] = self_tune_max_positions(
             perf["win_rate"], st.session_state.sidebar["max_positions"], len(trade_log)
@@ -619,14 +617,14 @@ def main_loop():
     write_heartbeat()
 
 # --- Run/Backtest Buttons in Sidebar ---
-run_trading = st.sidebar.button("▶️ Run Trading Cycle")
-run_backtest = st.sidebar.button("🧪 Run Backtest")
+run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
+run_backtest_btn = st.sidebar.button("🧪 Run Backtest")
 
-if run_trading:
+if run_trading_btn:
     main_loop()
 
-if run_backtest:
+if run_backtest_btn:
     st.sidebar.info("Backtest started...")
-    bt_results = run_backtest()  # You must define this function
+    bt_results = run_backtest()  # You must define this function to accept args if needed
     st.sidebar.success("Backtest complete!")
     st.write("Backtest Results", bt_results)
