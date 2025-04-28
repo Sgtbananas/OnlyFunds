@@ -23,8 +23,6 @@ from utils.helpers import (
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
-from utils.config import load_config
-
 import joblib
 import tempfile
 import shutil
@@ -638,6 +636,8 @@ if run_backtest_btn:
             lookback_used = st.session_state.sidebar["lookback"]
             threshold_used = st.session_state.sidebar["threshold"]
 
+        st.write(f"Backtest for {pair}: interval={interval_used}, lookback={lookback_used}, threshold={threshold_used}")
+
         df = fetch_klines(pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
@@ -650,28 +650,37 @@ if run_backtest_btn:
                 signal = generate_signal(df)
             prices = df["Close"]
 
-            bt_results = run_backtest(
-                signal=signal,
-                prices=prices,
-                threshold=threshold_used,
-                initial_capital=trading_cfg.get("default_capital", 10.0),
-                risk_pct=risk_cfg.get("risk_pct", 0.01),
-                stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
-                take_profit_pct=st.session_state.sidebar["take_profit_pct"],
-                fee_pct=st.session_state.sidebar["fee"],
-                verbose=False,
-                partial_exit=st.session_state.sidebar.get("partial_exit", False),
-                stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
-                take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
-                atr=df["ATR"] if "ATR" in df.columns else None,
-                trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
-            )
-            st.sidebar.success("Backtest complete!")
+            try:
+                bt_results = run_backtest(
+                    signal=signal,
+                    prices=prices,
+                    threshold=threshold_used,
+                    initial_capital=trading_cfg.get("default_capital", 10.0),
+                    risk_pct=risk_cfg.get("risk_pct", 0.01),
+                    stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
+                    take_profit_pct=st.session_state.sidebar["take_profit_pct"],
+                    fee_pct=st.session_state.sidebar["fee"],
+                    verbose=False,
+                    partial_exit=st.session_state.sidebar.get("partial_exit", False),
+                    stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
+                    take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
+                    atr=df["ATR"] if "ATR" in df.columns else None,
+                    trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
+                )
+                st.sidebar.success("Backtest complete!")
+            except Exception as e:
+                tb = traceback.format_exc()
+                logger.error(tb)
+                st.error(f"❌ Internal error running backtest: {e}")
+                st.code(tb)
+                bt_results = None
 
         if bt_results is not None:
             st.write("Backtest Results", bt_results)
         else:
             st.write("No results to show (backtest failed).")
     except Exception as e:
-        st.sidebar.error(f"Backtest error: {e}")
-        st.write("Backtest failed due to an error. See sidebar for details.")
+        tb = traceback.format_exc()
+        logger.error(tb)
+        st.error(f"❌ Unexpected error in backtest block: {e}")
+        st.code(tb)
