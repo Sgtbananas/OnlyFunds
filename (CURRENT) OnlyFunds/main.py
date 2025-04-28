@@ -7,7 +7,7 @@ import traceback
 from datetime import datetime, date, timedelta
 
 import streamlit as st
-st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")  # FIRST STREAMLIT CALL
+st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -60,7 +60,7 @@ def ensure_meta_model(path):
         def _train_and_reload():
             train_stub_meta_model(path)
         threading.Thread(target=_train_and_reload, daemon=True).start()
-        return None  # will be available soon
+        return None
 
 META_MODEL = ensure_meta_model(META_MODEL_PATH)
 
@@ -119,19 +119,33 @@ trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
 # --- State + config ---
 CONFIG_PATH = "config/config.yaml"
-config = load_config(CONFIG_PATH)
-risk_cfg = config["risk"]
-trading_cfg = config["trading"]
+
+def load_config_safe(config_path, fallback=None):
+    try:
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("Config is not a dict.")
+        return cfg
+    except Exception as e:
+        st.sidebar.error(f"Error loading config: {e}")
+        return fallback or {}
+
+config = load_config_safe(CONFIG_PATH, fallback={})
+risk_cfg = config.get("risk", {})
+trading_cfg = config.get("trading", {})
 ml_cfg = config.get("ml", {})
 
 def safe_load_json(file, default):
+    import json
     try:
         if os.path.exists(file):
-            data = load_json(file)
+            with open(file, "r") as f:
+                data = json.load(f)
             return data if data is not None else default
         return default
     except Exception as e:
-        logger.error(f"Failed to load {file}: {e}")
+        st.sidebar.error(f"Failed to load {file}: {e}")
         return default
 
 POSITIONS_FILE = "state/open_positions.json"
@@ -145,9 +159,9 @@ HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 os.makedirs("state", exist_ok=True)
 open_positions = safe_load_json(POSITIONS_FILE, {})
 trade_log = safe_load_json(TRADE_LOG_FILE, [])
-current_capital = safe_load_json(CAPITAL_FILE, trading_cfg["default_capital"])
+current_capital = safe_load_json(CAPITAL_FILE, trading_cfg.get("default_capital", 100))
 if not isinstance(current_capital, (float, int)):
-    current_capital = trading_cfg["default_capital"]
+    current_capital = trading_cfg.get("default_capital", 100)
 
 risk_manager = RiskManager(config)
 
@@ -157,96 +171,78 @@ st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
 def get_config_defaults():
     return dict(
-        mode=config.get("strategy", {}).get("mode", "Normal").capitalize(),
-        dry_run=trading_cfg["dry_run"],
+        mode=trading_cfg.get("mode", "Normal").capitalize(),
+        dry_run=trading_cfg.get("dry_run", True),
         autotune=True,
         interval=trading_cfg.get("default_interval", "5m"),
         lookback=trading_cfg.get("backtest_lookback", 1000),
-        threshold=trading_cfg["threshold"],
-        max_positions=trading_cfg["max_positions"],
-        stop_loss_pct=risk_cfg["stop_loss_pct"],
-        take_profit_pct=risk_cfg["take_profit_pct"],
-        fee=trading_cfg["fee"],
+        threshold=trading_cfg.get("threshold", 0.5),
+        max_positions=trading_cfg.get("max_positions", 5),
+        stop_loss_pct=risk_cfg.get("stop_loss_pct", 0.01),
+        take_profit_pct=risk_cfg.get("take_profit_pct", 0.02),
+        fee=trading_cfg.get("fee", 0.001),
         atr_stop_mult=1.0,
         atr_tp_mult=2.0,
         atr_trail_mult=1.0,
         partial_exit=True
     )
 
-if "sidebar" not in st.session_state:
+if "sidebar" not in st.session_state or not isinstance(st.session_state.sidebar, dict):
     st.session_state.sidebar = get_config_defaults()
 
 def reset_sidebar():
     st.session_state.sidebar = get_config_defaults()
 
-modes = ["Conservative", "Normal", "Aggressive", "Auto"]
-mode_idx = 3 if st.session_state.sidebar["mode"] == "Auto" else modes.index(st.session_state.sidebar["mode"])
-st.session_state.sidebar["mode"] = st.sidebar.selectbox("Trading Mode", modes, index=mode_idx)
-st.session_state.sidebar["dry_run"] = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=st.session_state.sidebar["dry_run"])
-st.session_state.sidebar["autotune"] = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=st.session_state.sidebar["autotune"])
-
-with st.sidebar.expander("Advanced", expanded=False):
-    if st.session_state.sidebar["autotune"]:
-        st.write("Entry Threshold is autotuned. Disable to override.")
-    else:
-        st.session_state.sidebar["threshold"] = st.slider(
-            "Entry Threshold", min_value=0.0, max_value=1.0,
-            value=st.session_state.sidebar["threshold"], step=0.01,
-            help="How strong must the signal be before we BUY/SELL?"
+try:
+    modes = ["Conservative", "Normal", "Aggressive", "Auto"]
+    mode_idx = 3 if st.session_state.sidebar.get("mode", "Auto") == "Auto" else modes.index(st.session_state.sidebar.get("mode", "Normal"))
+    st.session_state.sidebar["mode"] = st.sidebar.selectbox("Trading Mode", modes, index=mode_idx)
+    st.session_state.sidebar["dry_run"] = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=st.session_state.sidebar.get("dry_run", True))
+    st.session_state.sidebar["autotune"] = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=st.session_state.sidebar.get("autotune", True))
+    with st.sidebar.expander("Advanced", expanded=False):
+        if st.session_state.sidebar["autotune"]:
+            st.write("Entry Threshold is autotuned. Disable to override.")
+        else:
+            st.session_state.sidebar["threshold"] = st.slider(
+                "Entry Threshold", min_value=0.0, max_value=1.0,
+                value=st.session_state.sidebar.get("threshold", 0.5), step=0.01,
+                help="How strong must the signal be before we BUY/SELL?"
+            )
+    if st.session_state.sidebar["mode"] != "Auto":
+        st.session_state.sidebar["interval"] = st.sidebar.selectbox(
+            "Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"],
+            index=["5m", "15m", "30m", "1h", "4h", "1d"].index(st.session_state.sidebar.get("interval", "5m"))
         )
-
-if st.session_state.sidebar["mode"] == "Auto":
-    try:
-        auto_params = safe_load_json(AUTO_PARAMS_FILE, {})
-    except Exception:
-        auto_params = {}
-    def get_pair_params(pair):
-        default = {
-            "interval": "1h",
-            "lookback": 1000,
-            "threshold": trading_cfg["threshold"]
-        }
-        params = get_auto_pair_params(auto_params, pair, today=date.today(), fallback=default)
-        if "params" in params:
-            return params
-        return {
-            "interval": params.get("interval", "1h"),
-            "lookback": params.get("lookback", 1000),
-            "threshold": params.get("threshold", trading_cfg["threshold"]),
-        }
-else:
-    st.session_state.sidebar["interval"] = st.sidebar.selectbox(
-        "Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"], 
-        index=["5m", "15m", "30m", "1h", "4h", "1d"].index(st.session_state.sidebar["interval"])
+        st.session_state.sidebar["lookback"] = st.sidebar.slider(
+            "Historical Lookback", 300, 2000, st.session_state.sidebar.get("lookback", 1000)
+        )
+    st.session_state.sidebar["max_positions"] = st.sidebar.number_input(
+        "Max Open Positions", 1, 30, st.session_state.sidebar.get("max_positions", 5)
     )
-    st.session_state.sidebar["lookback"] = st.sidebar.slider(
-        "Historical Lookback", 300, 2000, st.session_state.sidebar["lookback"]
+    st.session_state.sidebar["stop_loss_pct"] = st.sidebar.number_input(
+        "Stop-Loss %", 0.0, 10.0, st.session_state.sidebar.get("stop_loss_pct", 0.01)*100.0, step=0.1
+    ) / 100
+    st.session_state.sidebar["take_profit_pct"] = st.sidebar.number_input(
+        "Take-Profit %", 0.0, 10.0, st.session_state.sidebar.get("take_profit_pct", 0.02)*100.0, step=0.1
+    ) / 100
+    st.session_state.sidebar["fee"] = st.sidebar.number_input(
+        "Trade Fee %", 0.0, 1.0, st.session_state.sidebar.get("fee", 0.001)*100.0, step=0.01
+    ) / 100
+    st.session_state.sidebar["atr_stop_mult"] = st.sidebar.number_input(
+        "ATR Stop Multiplier", 0.1, 5.0, st.session_state.sidebar.get("atr_stop_mult", 1.0), step=0.1
     )
-
-st.session_state.sidebar["max_positions"] = st.sidebar.number_input(
-    "Max Open Positions", 1, 30, st.session_state.sidebar["max_positions"]
-)
-st.session_state.sidebar["stop_loss_pct"] = st.sidebar.number_input(
-    "Stop-Loss %", 0.0, 10.0, st.session_state.sidebar["stop_loss_pct"]*100.0, step=0.1
-) / 100
-st.session_state.sidebar["take_profit_pct"] = st.sidebar.number_input(
-    "Take-Profit %", 0.0, 10.0, st.session_state.sidebar["take_profit_pct"]*100.0, step=0.1
-) / 100
-st.session_state.sidebar["fee"] = st.sidebar.number_input(
-    "Trade Fee %", 0.0, 1.0, st.session_state.sidebar["fee"]*100.0, step=0.01
-) / 100
-st.session_state.sidebar["atr_stop_mult"] = st.sidebar.number_input(
-    "ATR Stop Multiplier", 0.1, 5.0, st.session_state.sidebar["atr_stop_mult"], step=0.1
-)
-st.session_state.sidebar["atr_tp_mult"] = st.sidebar.number_input(
-    "ATR Take Profit Multiplier", 0.1, 10.0, st.session_state.sidebar["atr_tp_mult"], step=0.1
-)
-st.session_state.sidebar["atr_trail_mult"] = st.sidebar.number_input(
-    "ATR Trailing Stop Multiplier", 0.1, 5.0, st.session_state.sidebar["atr_trail_mult"], step=0.1
-)
-st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
-    "Enable Partial Exit at TP1", value=st.session_state.sidebar["partial_exit"]
-)
+    st.session_state.sidebar["atr_tp_mult"] = st.sidebar.number_input(
+        "ATR Take Profit Multiplier", 0.1, 10.0, st.session_state.sidebar.get("atr_tp_mult", 2.0), step=0.1
+    )
+    st.session_state.sidebar["atr_trail_mult"] = st.sidebar.number_input(
+        "ATR Trailing Stop Multiplier", 0.1, 5.0, st.session_state.sidebar.get("atr_trail_mult", 1.0), step=0.1
+    )
+    st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
+        "Enable Partial Exit at TP1", value=st.session_state.sidebar.get("partial_exit", True)
+    )
+except Exception as e:
+    st.sidebar.error(f"Sidebar error: {e}")
+    reset_sidebar()
 
 import threading
 config_lock = threading.Lock()
@@ -346,7 +342,6 @@ def show_last_retrain_sidebar():
 
 show_last_retrain_sidebar()
 
-# --- Watchdog/heartbeat for auto-restart ---
 def write_heartbeat():
     ts = time.time()
     try:
@@ -449,9 +444,9 @@ def main_loop():
     global current_capital, trade_log, open_positions
     retrain_ml_background(trade_log)
     for pair in TRADING_PAIRS:
-        perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
+        perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 100))
         st.session_state.sidebar["max_positions"] = self_tune_max_positions(
-            perf["win_rate"], st.session_state.sidebar["max_positions"], len(trade_log)
+            perf.get("win_rate", 50), st.session_state.sidebar["max_positions"], len(trade_log)
         )
         if st.session_state.sidebar["mode"] == "Auto":
             p = get_pair_params(pair)

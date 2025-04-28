@@ -67,7 +67,7 @@ strategy:
   rsi_period: 14
   target_profit: 0.01
 trading:
-  backtest_lookback: 500
+  backtest_lookback: 1132
   default_capital: 10
   default_interval: 5m
   dry_run: true
