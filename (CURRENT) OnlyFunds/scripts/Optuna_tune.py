@@ -1,9 +1,7 @@
-"""
-Optuna hyperparameter search for OnlyFunds.
-- Maximizes total return across all pairs.
-- Saves best params and value to state/optuna_best.json.
-"""
+import sys
 import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import json
 import optuna
 from core.core_data import fetch_klines, add_indicators, TRADING_PAIRS
