@@ -471,7 +471,7 @@ def main_loop():
         # Generate signal
         try:
             if META_MODEL is not None:
-                signal = generate_ensemble_signal(df, model=META_MODEL)
+                signal = generate_ensemble_signal(df, META_MODEL)
             else:
                 signal = generate_signal(df)
         except Exception as e:
@@ -647,7 +647,7 @@ if run_backtest_btn:
 
         # Generate signal for backtest (use meta-model if available)
         if META_MODEL is not None:
-            signal = generate_ensemble_signal(df, model=META_MODEL)
+            signal = generate_ensemble_signal(df, META_MODEL)
         else:
             signal = generate_signal(df)
         prices = df["Close"]
