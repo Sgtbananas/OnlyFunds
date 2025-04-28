@@ -26,6 +26,9 @@ from core.risk_manager import RiskManager
 from utils.config import load_config
 
 import joblib
+import tempfile
+import shutil
+import yaml
 
 # --- Meta-learner fallback (background thread stub training if missing) ---
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
@@ -152,12 +155,11 @@ st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VAR
 st.sidebar.header("⚙️ Configuration")
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
-# --- Sidebar state: idiot-proof, autotune default, advanced threshold slider ---
 def get_config_defaults():
     return dict(
         mode=config.get("strategy", {}).get("mode", "Normal").capitalize(),
         dry_run=trading_cfg["dry_run"],
-        autotune=True,  # Idiot-proof default
+        autotune=True,
         interval=trading_cfg.get("default_interval", "5m"),
         lookback=trading_cfg.get("backtest_lookback", 1000),
         threshold=trading_cfg["threshold"],
@@ -184,7 +186,6 @@ st.session_state.sidebar["dry_run"] = st.sidebar.checkbox("Dry Run Mode (Simulat
 st.session_state.sidebar["autotune"] = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=st.session_state.sidebar["autotune"])
 
 with st.sidebar.expander("Advanced", expanded=False):
-    # Entry Threshold only shown in advanced
     if st.session_state.sidebar["autotune"]:
         st.write("Entry Threshold is autotuned. Disable to override.")
     else:
@@ -195,9 +196,6 @@ with st.sidebar.expander("Advanced", expanded=False):
         )
 
 if st.session_state.sidebar["mode"] == "Auto":
-    interval = None
-    lookback = None
-    threshold = None
     try:
         auto_params = safe_load_json(AUTO_PARAMS_FILE, {})
     except Exception:
@@ -250,42 +248,52 @@ st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
     "Enable Partial Exit at TP1", value=st.session_state.sidebar["partial_exit"]
 )
 
-# --- Save preferences ---
+import threading
+config_lock = threading.Lock()
+
 def persist_sidebar_overrides(sidebar: dict, config_path: str = CONFIG_PATH):
-    import yaml
     try:
-        with open(config_path, "r") as f:
-            data = yaml.safe_load(f)
-        if "trading" in data:
-            data["trading"]["dry_run"] = sidebar["dry_run"]
-            data["trading"]["max_positions"] = sidebar["max_positions"]
-            data["trading"]["fee"] = sidebar["fee"]
-            if "interval" in sidebar:
-                data["trading"]["default_interval"] = sidebar["interval"]
-            if "lookback" in sidebar:
-                data["trading"]["backtest_lookback"] = sidebar["lookback"]
-            if "threshold" in sidebar:
-                data["trading"]["threshold"] = sidebar["threshold"]
-        if "risk" in data:
-            data["risk"]["stop_loss_pct"] = sidebar["stop_loss_pct"]
-            data["risk"]["take_profit_pct"] = sidebar["take_profit_pct"]
-        if "strategy" in data:
-            data["strategy"]["mode"] = sidebar["mode"]
-            data["strategy"]["autotune"] = sidebar["autotune"]
-        with open(config_path, "w") as f:
-            yaml.safe_dump(data, f)
-        with open(config_path, "r") as f:
-            yaml.safe_load(f)
+        with config_lock:
+            with open(config_path, "r") as f:
+                data = yaml.safe_load(f)
+            if "trading" in data:
+                data["trading"]["dry_run"] = sidebar["dry_run"]
+                data["trading"]["max_positions"] = sidebar["max_positions"]
+                data["trading"]["fee"] = sidebar["fee"]
+                if "interval" in sidebar:
+                    data["trading"]["default_interval"] = sidebar["interval"]
+                if "lookback" in sidebar:
+                    data["trading"]["backtest_lookback"] = sidebar["lookback"]
+                if "threshold" in sidebar:
+                    data["trading"]["threshold"] = sidebar["threshold"]
+            if "risk" in data:
+                data["risk"]["stop_loss_pct"] = sidebar["stop_loss_pct"]
+                data["risk"]["take_profit_pct"] = sidebar["take_profit_pct"]
+            if "strategy" in data:
+                data["strategy"]["mode"] = sidebar["mode"]
+                data["strategy"]["autotune"] = sidebar["autotune"]
+            dir = os.path.dirname(config_path) or "."
+            tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
+            yaml.safe_dump(data, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            shutil.move(tmp.name, config_path)
+            with open(config_path, "r") as f:
+                yaml.safe_load(f)
         st.sidebar.success("Preferences saved to config/config.yaml!")
     except Exception as e:
         st.sidebar.error(f"Failed to save preferences: {e}")
 
 if st.sidebar.button("💾 Save Preferences"):
     persist_sidebar_overrides(st.session_state.sidebar, CONFIG_PATH)
-    # Do NOT call reset_sidebar() here!
 
 if st.sidebar.button("🔄 Reload Sidebar from Config"):
-    reset_sidebar()
+    try:
+        reset_sidebar()
+        st.sidebar.success("Sidebar reloaded from config.")
+    except Exception as e:
+        st.sidebar.error(f"Failed to reload sidebar: {e}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -294,8 +302,8 @@ st.sidebar.markdown(
 )
 
 # --- Hands-free ML Retraining ---
-RETRAIN_TRADE_INTERVAL = 50   # retrain after every 50 trades
-RETRAIN_TIME_INTERVAL = 6*60*60  # retrain after every 6 hours (in seconds)
+RETRAIN_TRADE_INTERVAL = 50
+RETRAIN_TIME_INTERVAL = 6*60*60
 LAST_RETRAIN_FILE = "state/last_ml_retrain.txt"
 def read_last_retrain_time():
     try:
@@ -421,10 +429,9 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_exception_handler
 
 def atomic_save_json(obj, file):
-    import tempfile, shutil
     dir = os.path.dirname(file) or "."
-    tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
     try:
+        tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
         import json
         json.dump(obj, tmp, indent=2)
         tmp.flush()
