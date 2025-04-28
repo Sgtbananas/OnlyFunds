@@ -625,6 +625,54 @@ if run_trading_btn:
 
 if run_backtest_btn:
     st.sidebar.info("Backtest started...")
-    bt_results = run_backtest()  # You must define this function to accept args if needed
-    st.sidebar.success("Backtest complete!")
-    st.write("Backtest Results", bt_results)
+
+    # Example: use the first pair and current sidebar params for backtest
+    pair = TRADING_PAIRS[0]
+    if st.session_state.sidebar["mode"] == "Auto":
+        p = get_pair_params(pair)
+        interval_used = p["interval"]
+        lookback_used = p["lookback"]
+        threshold_used = p["threshold"]
+    else:
+        interval_used = st.session_state.sidebar["interval"]
+        lookback_used = st.session_state.sidebar["lookback"]
+        threshold_used = st.session_state.sidebar["threshold"]
+
+    df = fetch_klines(pair, interval_used, lookback_used)
+    if df.empty or not validate_df(df):
+        st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
+        bt_results = None
+    else:
+        df = add_indicators(df)
+
+        # Generate signal for backtest (use meta-model if available)
+        if META_MODEL is not None:
+            signal = generate_ensemble_signal(df, model=META_MODEL)
+        else:
+            signal = generate_signal(df)
+        prices = df["Close"]
+
+        # Advanced risk/ATR/trailing/partial logic
+        bt_results = run_backtest(
+            signal=signal,
+            prices=prices,
+            threshold=threshold_used,
+            initial_capital=trading_cfg.get("default_capital", 10.0),
+            risk_pct=risk_cfg.get("risk_pct", 0.01),
+            stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
+            take_profit_pct=st.session_state.sidebar["take_profit_pct"],
+            fee_pct=st.session_state.sidebar["fee"],
+            verbose=False,
+            partial_exit=st.session_state.sidebar.get("partial_exit", False),
+            stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
+            take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
+            atr=df["ATR"] if "ATR" in df.columns else None,
+            trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
+        )
+
+        st.sidebar.success("Backtest complete!")
+
+    if bt_results is not None:
+        st.write("Backtest Results", bt_results)
+    else:
+        st.write("No results to show (backtest failed).")
