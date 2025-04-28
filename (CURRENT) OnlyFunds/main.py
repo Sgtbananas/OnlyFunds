@@ -487,10 +487,12 @@ def main_loop():
     # Streamlit placeholders for progress and live status
     status_placeholder = st.empty()
     progress_placeholder = st.empty()
-    trade_summary_placeholder = st.empty()
+    summary_table_placeholder = st.empty()
+    trade_table_placeholder = st.empty()
 
     n_pairs = len(TRADING_PAIRS)
     summary_rows = []
+    trades_per_pair = {}
     for idx, pair in enumerate(TRADING_PAIRS):
         progress_placeholder.progress((idx + 1) / n_pairs, text=f"Processing {pair} ({idx+1}/{n_pairs})")
         status_placeholder.info(f"Analyzing {pair}...")
@@ -542,7 +544,6 @@ def main_loop():
 
         # TRIANGULAR ARB STRATEGY
         try:
-            # For real arb: gather required symbols here!
             arb_prices = {"DUMMY": prices}
             arb_params = optuna_best.get("arb", {})
             arb_trades = run_triangular_arb(arb_prices, arb_params)
@@ -564,12 +565,15 @@ def main_loop():
         if chosen_strategy == "signal":
             chosen_trades = trade_log
             chosen_perf = signal_perf
+            recent_trades = pd.DataFrame(trade_log[-3:]) if trade_log else pd.DataFrame()
         elif chosen_strategy == "grid":
             chosen_trades = grid_trades.to_dict("records")
             chosen_perf = grid_perf
+            recent_trades = grid_trades.tail(3) if not grid_trades.empty else pd.DataFrame()
         elif chosen_strategy == "arb":
             chosen_trades = arb_trades.to_dict("records")
             chosen_perf = arb_perf
+            recent_trades = arb_trades.tail(3) if not arb_trades.empty else pd.DataFrame()
         else:
             logger.error(f"Unknown strategy selected: {chosen_strategy}")
             status_placeholder.error(f"Unknown strategy selected for {pair}: {chosen_strategy}")
@@ -580,15 +584,6 @@ def main_loop():
         drawdown_gauge.set(chosen_perf.get("max_drawdown", 0))
 
         # Show summary in the UI for each pair
-        trade_summary_placeholder.info(
-            f"Pair: {pair} | Strategy: {chosen_strategy} | "
-            f"Win Rate: {chosen_perf.get('win_rate',0):.1f}% | Drawdown: {chosen_perf.get('max_drawdown',0):.1f}%"
-        )
-        # Optionally show last 3 trades
-        if chosen_trades and isinstance(chosen_trades, list) and len(chosen_trades) > 0:
-            st.write(f"Recent trades for {pair} ({chosen_strategy}):", chosen_trades[-3:])
-
-        # Collect for final summary
         summary_rows.append({
             "pair": pair,
             "strategy": chosen_strategy,
@@ -596,6 +591,7 @@ def main_loop():
             "drawdown": chosen_perf.get("max_drawdown", 0),
             "total_pnl": chosen_perf.get("total_pnl", 0),
         })
+        trades_per_pair[pair] = (chosen_strategy, recent_trades)
 
         write_heartbeat()
         pnl_gauge.set(current_capital)
@@ -604,9 +600,18 @@ def main_loop():
     progress_placeholder.empty()
     status_placeholder.success("Trading cycle complete!")
     if summary_rows:
-        st.write("Cycle Summary", pd.DataFrame(summary_rows))
+        summary_df = pd.DataFrame(summary_rows)
+        summary_table_placeholder.write("Trading Cycle Summary Table")
+        summary_table_placeholder.dataframe(summary_df)
     st.write("Summary Capital:", current_capital)
-    st.write("Recent Trades (last 5):", trade_log[-5:])
+    st.write("Recent Trades (last 5):", pd.DataFrame(trade_log[-5:]) if trade_log else "None")
+    # Show trades per pair in a table, nicely formatted
+    for pair, (strategy, trades_df) in trades_per_pair.items():
+        st.subheader(f"Recent trades for {pair} ({strategy})")
+        if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+            st.dataframe(trades_df)
+        else:
+            st.write("No recent trades.")
     retrain_ml_background(trade_log)
     write_heartbeat()
 
@@ -639,7 +644,6 @@ if run_backtest_btn:
             bt_results = None
         else:
             df = add_indicators(df)
-            # Multi-strategy backtest: run all, show results
             results = {}
             prices = df["Close"]
             try:
@@ -677,8 +681,15 @@ if run_backtest_btn:
                 st.code(tb)
                 results = {}
 
+            # Pretty DataFrame display for each strategy
             if results:
-                st.write("Backtest Results", results)
+                st.write("Backtest Results")
+                for strat, df_out in results.items():
+                    st.subheader(f"Strategy: {strat}")
+                    if isinstance(df_out, pd.DataFrame):
+                        st.dataframe(df_out)
+                    else:
+                        st.write(df_out)
             else:
                 st.write("No results to show (backtest failed).")
     except Exception as e:
