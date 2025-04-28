@@ -253,33 +253,39 @@ st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
 # --- Save preferences ---
 def persist_sidebar_overrides(sidebar: dict, config_path: str = CONFIG_PATH):
     import yaml
-    with open(config_path, "r") as f:
-        data = yaml.safe_load(f)
-    if "trading" in data:
-        data["trading"]["dry_run"] = sidebar["dry_run"]
-        data["trading"]["max_positions"] = sidebar["max_positions"]
-        data["trading"]["fee"] = sidebar["fee"]
-        if "interval" in sidebar:
-            data["trading"]["default_interval"] = sidebar["interval"]
-        if "lookback" in sidebar:
-            data["trading"]["backtest_lookback"] = sidebar["lookback"]
-        if "threshold" in sidebar:
-            data["trading"]["threshold"] = sidebar["threshold"]
-    if "risk" in data:
-        data["risk"]["stop_loss_pct"] = sidebar["stop_loss_pct"]
-        data["risk"]["take_profit_pct"] = sidebar["take_profit_pct"]
-    if "strategy" in data:
-        data["strategy"]["mode"] = sidebar["mode"]
-        data["strategy"]["autotune"] = sidebar["autotune"]
-    with open(config_path, "w") as f:
-        yaml.safe_dump(data, f)
-    st.sidebar.success("Preferences saved to config/config.yaml!")
+    try:
+        with open(config_path, "r") as f:
+            data = yaml.safe_load(f)
+        if "trading" in data:
+            data["trading"]["dry_run"] = sidebar["dry_run"]
+            data["trading"]["max_positions"] = sidebar["max_positions"]
+            data["trading"]["fee"] = sidebar["fee"]
+            if "interval" in sidebar:
+                data["trading"]["default_interval"] = sidebar["interval"]
+            if "lookback" in sidebar:
+                data["trading"]["backtest_lookback"] = sidebar["lookback"]
+            if "threshold" in sidebar:
+                data["trading"]["threshold"] = sidebar["threshold"]
+        if "risk" in data:
+            data["risk"]["stop_loss_pct"] = sidebar["stop_loss_pct"]
+            data["risk"]["take_profit_pct"] = sidebar["take_profit_pct"]
+        if "strategy" in data:
+            data["strategy"]["mode"] = sidebar["mode"]
+            data["strategy"]["autotune"] = sidebar["autotune"]
+        with open(config_path, "w") as f:
+            yaml.safe_dump(data, f)
+        with open(config_path, "r") as f:
+            yaml.safe_load(f)
+        st.sidebar.success("Preferences saved to config/config.yaml!")
+    except Exception as e:
+        st.sidebar.error(f"Failed to save preferences: {e}")
 
 if st.sidebar.button("💾 Save Preferences"):
     persist_sidebar_overrides(st.session_state.sidebar, CONFIG_PATH)
-    reset_sidebar()  # Reset to new config
+    # Do NOT call reset_sidebar() here!
 
-st.sidebar.button("🔃 Reset Sidebar to Config Defaults", on_click=reset_sidebar)
+if st.sidebar.button("🔄 Reload Sidebar from Config"):
+    reset_sidebar()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
@@ -347,7 +353,6 @@ def write_heartbeat():
         pass
 
 def watchdog_loop(main_pid, heartbeat_file=HEARTBEAT_FILE, interval=10, max_stale=30):
-    # This runs in the background and will forcibly restart the process if heartbeat is stale
     import psutil
     while True:
         try:
@@ -361,7 +366,6 @@ def watchdog_loop(main_pid, heartbeat_file=HEARTBEAT_FILE, interval=10, max_stal
                 age = time.time() - last
                 if age > max_stale:
                     logger.critical("Watchdog: Heartbeat stale! Attempting self-restart.")
-                    # In production, use supervisor/systemd to restart. Here, self-exec for dev.
                     psutil.Process(main_pid).terminate()
                     os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:
@@ -374,7 +378,6 @@ def start_watchdog():
 
 start_watchdog()
 
-# --- Parameter validation before placing trade ---
 def validate_trade(amount, price, current_capital, min_size=0.001):
     if amount < min_size:
         logger.error(f"Trade validation: amount {amount} < min_size {min_size}")
@@ -387,9 +390,7 @@ def validate_trade(amount, price, current_capital, min_size=0.001):
         return False
     return True
 
-# --- Self-tuning max positions ---
 def self_tune_max_positions(win_rate, max_positions, trade_count, min_pos=1, max_pos=20, tune_every=10):
-    # Increase if >60% win, decrease if <40% win, every tune_every trades
     if trade_count == 0 or trade_count % tune_every != 0:
         return max_positions
     if win_rate > 60.0 and max_positions < max_pos:
@@ -400,7 +401,6 @@ def self_tune_max_positions(win_rate, max_positions, trade_count, min_pos=1, max
         return max_positions - 1
     return max_positions
 
-# --- Global error handler for email alerts ---
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
     logger.critical(f"UNHANDLED EXCEPTION:\n{tb}")
@@ -438,7 +438,6 @@ def atomic_save_json(obj, file):
         except Exception:
             pass
 
-# --- Main trading loop with buy, sell/close, stop-loss, take-profit ---
 def main_loop():
     global current_capital, trade_log, open_positions
     retrain_ml_background(trade_log)
@@ -447,8 +446,6 @@ def main_loop():
         st.session_state.sidebar["max_positions"] = self_tune_max_positions(
             perf["win_rate"], st.session_state.sidebar["max_positions"], len(trade_log)
         )
-
-        # Get trade params
         if st.session_state.sidebar["mode"] == "Auto":
             p = get_pair_params(pair)
             interval_used = p["interval"]
@@ -459,14 +456,11 @@ def main_loop():
             lookback_used = st.session_state.sidebar["lookback"]
             threshold_used = st.session_state.sidebar["threshold"]
 
-        # Fetch/validate data
         df = fetch_klines(pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Data for {pair} invalid/empty.")
             continue
         df = add_indicators(df)
-
-        # Generate signal
         try:
             if META_MODEL is not None:
                 signal = generate_ensemble_signal(df, META_MODEL)
@@ -488,12 +482,10 @@ def main_loop():
         price = df["Close"].iloc[-1]
         min_size = 0.001
 
-        # --- SELL/CLOSE logic: If we have an open position, check for TP/SL or exit signal
         if pair in open_positions:
             pos = open_positions[pair]
             entry_price = pos["entry_price"]
             amount = pos["amount"]
-            # Take-profit
             if price >= entry_price * (1 + st.session_state.sidebar["take_profit_pct"]):
                 logger.info(f"{pair}: Take-profit hit. Closing position.")
                 if validate_trade(amount, price, current_capital, min_size=min_size):
@@ -518,7 +510,6 @@ def main_loop():
                         logger.error(f"TP close failed for {pair}: {e}")
                 write_heartbeat()
                 continue
-            # Stop-loss
             if price <= entry_price * (1 - st.session_state.sidebar["stop_loss_pct"]):
                 logger.info(f"{pair}: Stop-loss hit. Closing position.")
                 if validate_trade(amount, price, current_capital, min_size=min_size):
@@ -543,7 +534,6 @@ def main_loop():
                         logger.error(f"SL close failed for {pair}: {e}")
                 write_heartbeat()
                 continue
-            # Exit on negative signal
             exit_signal = signal.iloc[-1] if hasattr(signal, 'iloc') else signal[-1]
             if exit_signal < 0:
                 logger.info(f"{pair}: Negative signal, closing position.")
@@ -570,9 +560,7 @@ def main_loop():
                 write_heartbeat()
                 continue
 
-        # --- BUY/OPEN logic: If not currently open and eligible
         if pair not in open_positions:
-            # Only open if under max positions and positive signal
             if len(open_positions) >= st.session_state.sidebar["max_positions"]:
                 logger.info(f"Max open positions reached ({len(open_positions)}). Skipping {pair}.")
                 continue
@@ -580,7 +568,6 @@ def main_loop():
             if entry_signal < threshold_final:
                 logger.info(f"{pair}: Signal {entry_signal:.3f} below threshold {threshold_final:.3f}")
                 continue
-            # Position sizing (idiot-proof, never more than 1 unit for safety)
             amount = min(current_capital / price, 1.0)
             if not validate_trade(amount, price, current_capital, min_size=min_size):
                 continue
@@ -610,11 +597,9 @@ def main_loop():
         write_heartbeat()
         pnl_gauge.set(current_capital)
         time.sleep(0.1)
-
     retrain_ml_background(trade_log)
     write_heartbeat()
 
-# --- Run/Backtest Buttons in Sidebar ---
 run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
 run_backtest_btn = st.sidebar.button("🧪 Run Backtest")
 
