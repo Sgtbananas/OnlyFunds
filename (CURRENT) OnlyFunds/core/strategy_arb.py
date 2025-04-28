@@ -1,4 +1,4 @@
-strategy_arb.pyimport pandas as pd
+import pandas as pd
 
 def run_triangular_arb(prices_dict: dict, params: dict) -> pd.DataFrame:
     """
