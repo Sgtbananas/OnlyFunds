@@ -1,4 +1,3 @@
- OnlyFunds/core/core_data.py
 import logging
 import os
 import requests
