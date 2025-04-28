@@ -483,7 +483,18 @@ def main_loop():
             optuna_best = json.load(f)
     except Exception:
         optuna_best = {}
-    for pair in TRADING_PAIRS:
+
+    # Streamlit placeholders for progress and live status
+    status_placeholder = st.empty()
+    progress_placeholder = st.empty()
+    trade_summary_placeholder = st.empty()
+
+    n_pairs = len(TRADING_PAIRS)
+    summary_rows = []
+    for idx, pair in enumerate(TRADING_PAIRS):
+        progress_placeholder.progress((idx + 1) / n_pairs, text=f"Processing {pair} ({idx+1}/{n_pairs})")
+        status_placeholder.info(f"Analyzing {pair}...")
+
         perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 100))
         st.session_state.sidebar["max_positions"] = self_tune_max_positions(
             perf.get("win_rate", 50), st.session_state.sidebar["max_positions"], len(trade_log)
@@ -501,6 +512,7 @@ def main_loop():
         df = fetch_klines(pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Data for {pair} invalid/empty.")
+            status_placeholder.warning(f"Skipping {pair}: Data invalid/empty.")
             continue
         df = add_indicators(df)
         prices = df["Close"]
@@ -515,6 +527,7 @@ def main_loop():
             signal_perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 100))
         except Exception as e:
             logger.error(f"Signal strategy failed: {e}")
+            status_placeholder.error(f"Signal strategy failed for {pair}: {e}")
             signal_perf = {"win_rate": 0, "sharpe_ratio": 0, "max_drawdown": 0, "total_pnl": 0}
 
         # GRID STRATEGY
@@ -524,6 +537,7 @@ def main_loop():
             grid_perf = compute_trade_metrics(grid_trades.to_dict("records"), trading_cfg.get("default_capital", 100))
         except Exception as e:
             logger.error(f"Grid strategy failed: {e}")
+            status_placeholder.error(f"Grid strategy failed for {pair}: {e}")
             grid_perf = {"win_rate": 0, "sharpe_ratio": 0, "max_drawdown": 0, "total_pnl": 0}
 
         # TRIANGULAR ARB STRATEGY
@@ -535,6 +549,7 @@ def main_loop():
             arb_perf = compute_trade_metrics(arb_trades.to_dict("records"), trading_cfg.get("default_capital", 100))
         except Exception as e:
             logger.error(f"Arb strategy failed: {e}")
+            status_placeholder.error(f"Arb strategy failed for {pair}: {e}")
             arb_perf = {"win_rate": 0, "sharpe_ratio": 0, "max_drawdown": 0, "total_pnl": 0}
 
         # --- Strategy selection ---
@@ -546,9 +561,7 @@ def main_loop():
         chosen_strategy = select_strategy(perf_dict, meta_model)
         logger.info(f"Meta-learner selected strategy: {chosen_strategy}")
 
-        # --- Execute chosen strategy ---
         if chosen_strategy == "signal":
-            # Use previous trade logic for signal
             chosen_trades = trade_log
             chosen_perf = signal_perf
         elif chosen_strategy == "grid":
@@ -559,17 +572,41 @@ def main_loop():
             chosen_perf = arb_perf
         else:
             logger.error(f"Unknown strategy selected: {chosen_strategy}")
+            status_placeholder.error(f"Unknown strategy selected for {pair}: {chosen_strategy}")
             continue
 
         # Update observability metrics
         win_rate_gauge.set(chosen_perf.get("win_rate", 0))
         drawdown_gauge.set(chosen_perf.get("max_drawdown", 0))
 
-        # --- (You can insert here the actual trade execution logic per chosen strategy if desired) ---
+        # Show summary in the UI for each pair
+        trade_summary_placeholder.info(
+            f"Pair: {pair} | Strategy: {chosen_strategy} | "
+            f"Win Rate: {chosen_perf.get('win_rate',0):.1f}% | Drawdown: {chosen_perf.get('max_drawdown',0):.1f}%"
+        )
+        # Optionally show last 3 trades
+        if chosen_trades and isinstance(chosen_trades, list) and len(chosen_trades) > 0:
+            st.write(f"Recent trades for {pair} ({chosen_strategy}):", chosen_trades[-3:])
+
+        # Collect for final summary
+        summary_rows.append({
+            "pair": pair,
+            "strategy": chosen_strategy,
+            "win_rate": chosen_perf.get("win_rate", 0),
+            "drawdown": chosen_perf.get("max_drawdown", 0),
+            "total_pnl": chosen_perf.get("total_pnl", 0),
+        })
 
         write_heartbeat()
         pnl_gauge.set(current_capital)
         time.sleep(0.1)
+
+    progress_placeholder.empty()
+    status_placeholder.success("Trading cycle complete!")
+    if summary_rows:
+        st.write("Cycle Summary", pd.DataFrame(summary_rows))
+    st.write("Summary Capital:", current_capital)
+    st.write("Recent Trades (last 5):", trade_log[-5:])
     retrain_ml_background(trade_log)
     write_heartbeat()
 
