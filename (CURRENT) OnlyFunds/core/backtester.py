@@ -16,16 +16,18 @@ def run_backtest(
     log_every_n: int = 50,
     grid_mode: bool = False,
     grid_kwargs: dict = None,
-    log_func=None
+    log_func=None,
+    indicator_params: dict = None,
 ) -> pd.DataFrame:
     """
     Backtest with support for stop-loss, take-profit, and fee modeling.
     If grid_mode, runs a grid strategy simulation instead.
+    indicator_params: dict that can be passed through to indicator logic (for multi-param search).
     Returns DataFrame: [summary row, trade rows], summary always includes: 
         type, trades, avg_return, win_rate, capital, total_pnl, max_drawdown, sharpe_ratio
     """
+    # NOTE: indicator_params is for future use/compat with walk-forward hyperopt
     if not grid_mode:
-        # Standard signal backtest as before
         trades = []
         position = None
         entry_price = None
@@ -86,17 +88,14 @@ def run_backtest(
                     position = None
 
         trades_df = pd.DataFrame(trades)
-        # --- Robust summary with all key metrics ---
         if not trades_df.empty:
             avg_return = trades_df["return"].mean()
             win_rate = (trades_df["return"] > 0).mean() * 100
             total_pnl = trades_df["profit"].sum()
-            # Max Drawdown
             curve = np.array(equity_curve)
             peak = np.maximum.accumulate(curve)
             drawdown = (peak - curve) / peak
             max_drawdown = np.max(drawdown) * 100 if len(drawdown) > 0 else 0
-            # Sharpe ratio
             returns = trades_df["return"]
             sharpe_ratio = (returns.mean() / returns.std()) if returns.std() != 0 else 0
         else:
@@ -127,7 +126,6 @@ def run_backtest(
         return combined_df
 
     else:
-        # --- Grid backtest ---
         if grid_kwargs is None:
             raise ValueError("grid_kwargs must be provided for grid_mode backtest.")
         grid = GridTrader(**grid_kwargs)

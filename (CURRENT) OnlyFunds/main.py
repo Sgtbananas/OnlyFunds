@@ -152,7 +152,16 @@ if mode == "Auto":
             "lookback": 1000,
             "threshold": trading_cfg["threshold"]
         }
-        return get_auto_pair_params(auto_params, pair, today=date.today(), fallback=default)
+        params = get_auto_pair_params(auto_params, pair, today=date.today(), fallback=default)
+        # If full param dict is present (from patched walkforward), unpack
+        if "params" in params:
+            return params
+        # Legacy fallback
+        return {
+            "interval": params.get("interval", "1h"),
+            "lookback": params.get("lookback", 1000),
+            "threshold": params.get("threshold", trading_cfg["threshold"]),
+        }
 else:
     interval = st.sidebar.selectbox("Candle Interval",
                                     ["5m", "15m", "30m", "1h", "4h", "1d"],
@@ -282,11 +291,38 @@ def write_heartbeat():
         json.dump({"last_run": ts}, f)
 
 def trade_logic(pair: str, current_capital):
+    # --- Get per-pair, per-day param dict ---
     if mode == "Auto":
         p = get_pair_params(pair)
+        # Unpack all params from walkforward_optuna (or fallback)
         pair_interval = p.get("interval", "1h")
         pair_lookback = p.get("lookback", 1000)
-        pair_threshold = p.get("threshold", trading_cfg["threshold"])
+        # Multi-param: threshold and indicator/signal settings (from walkforward param dict)
+        best_params = p.get("params", {}) if "params" in p else {}
+        pair_threshold = best_params.get("threshold", p.get("threshold", trading_cfg["threshold"]))
+        indicator_params = {
+            k: v for k, v in best_params.items() if k in [
+                "rsi_window", "macd_fast", "macd_slow", "macd_signal", "boll_window",
+                "boll_std", "ema_span", "volatility_window"
+            ]
+        }
+        signal_params = {
+            "regime_kwargs": {
+                "vol_window": best_params.get("regime_vol_window"),
+                "mom_window": best_params.get("regime_mom_window"),
+                "vol_thresh": best_params.get("regime_vol_thresh"),
+                "mom_thresh": best_params.get("regime_mom_thresh"),
+            },
+            "trend_kwargs": {
+                "ema_fast_window": best_params.get("trend_ema_fast_window"),
+                "ema_slow_window": best_params.get("trend_ema_slow_window"),
+            },
+            "reversion_kwargs": {
+                "rsi_low": best_params.get("reversion_rsi_low"),
+                "rsi_high": best_params.get("reversion_rsi_high"),
+            }
+        }
+        smoothing_window = best_params.get("smoothing_window", 5)
         interval_used = pair_interval
         lookback_used = pair_lookback
         threshold_used = pair_threshold
@@ -294,6 +330,9 @@ def trade_logic(pair: str, current_capital):
         interval_used = interval
         lookback_used = lookback
         threshold_used = threshold
+        indicator_params = {}
+        signal_params = {}
+        smoothing_window = 5
 
     try:
         base, quote = validate_pair(pair)
@@ -307,12 +346,17 @@ def trade_logic(pair: str, current_capital):
         logger.warning(f"⚠️ Invalid/empty data for {pair}")
         return None, current_capital
 
-    df = add_indicators(df)
+    df = add_indicators(df, indicator_params=indicator_params)
+    if df.empty:
+        logger.warning(f"⚠️ add_indicators produced empty df for {pair}")
+        return None, current_capital
+
+    # Multi-param signals
     if META_MODEL is not None:
-        raw_signal = generate_ensemble_signal(df, meta_model=META_MODEL)
+        raw_signal = generate_ensemble_signal(df, meta_model=META_MODEL, **signal_params)
     else:
-        raw_signal = generate_signal(df)
-    smoothed = smooth_signal(raw_signal)
+        raw_signal = generate_signal(df, indicator_params=signal_params)
+    smoothed = smooth_signal(raw_signal, smoothing_window=smoothing_window)
 
     if autotune and mode != "Auto":
         threshold_final = adaptive_threshold(df, target_profit=0.01)

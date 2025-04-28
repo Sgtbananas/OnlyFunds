@@ -19,21 +19,20 @@ def classify_regime(df, vol_window=20, mom_window=20, vol_thresh=0.01, mom_thres
     )
     return df
 
-def signal_trending(df):
-    """Momentum specialist: Simple EMA 20/50 crossover."""
-    ema_fast = df['Close'].ewm(span=20).mean()
-    ema_slow = df['Close'].ewm(span=50).mean()
+def signal_trending(df, ema_fast_window=20, ema_slow_window=50):
+    """Momentum specialist: EMA fast/slow crossover."""
+    ema_fast = df['Close'].ewm(span=ema_fast_window).mean()
+    ema_slow = df['Close'].ewm(span=ema_slow_window).mean()
     signal = (ema_fast > ema_slow).astype(float)
-    # Optionally: scale by strength of crossover
     signal *= (ema_fast - ema_slow).abs() / (df['Close'] + 1e-8)
     return signal
 
-def signal_reversion(df):
+def signal_reversion(df, rsi_low=30, rsi_high=70):
     """Mean reversion specialist: RSI, MACD, price distance to EMA."""
     signal = pd.Series(0.0, index=df.index)
     if "rsi" in df.columns:
-        signal += ((df["rsi"] < 30) * 1.0)
-        signal -= ((df["rsi"] > 70) * 1.0)
+        signal += ((df["rsi"] < rsi_low) * 1.0)
+        signal -= ((df["rsi"] > rsi_high) * 1.0)
     if "macd" in df.columns:
         signal += ((df["macd"] < 0) * 0.5)
         signal -= ((df["macd"] > 0) * 0.5)
@@ -42,14 +41,21 @@ def signal_reversion(df):
         signal += (df["ema_diff"] < 0) * 0.3
     return signal
 
-def generate_ensemble_signal(df, meta_model=None):
+def generate_ensemble_signal(
+    df, meta_model=None,
+    regime_kwargs=None,
+    trend_kwargs=None,
+    reversion_kwargs=None
+):
     """
-    Regime classifier → specialist models → meta-learner (optional)
-    Returns pd.Series of signal strength (clipped -1..1)
+    Regime classifier (parametric) → specialist models (parametric) → meta-learner (optional)
     """
-    df = classify_regime(df)
-    s_trend = signal_trending(df)
-    s_rev = signal_reversion(df)
+    regime_kwargs = regime_kwargs or {}
+    trend_kwargs = trend_kwargs or {}
+    reversion_kwargs = reversion_kwargs or {}
+    df = classify_regime(df, **regime_kwargs)
+    s_trend = signal_trending(df, **trend_kwargs)
+    s_rev = signal_reversion(df, **reversion_kwargs)
     if meta_model is not None:
         regime_is_trending = (df['regime'] == 'trending').astype(int)
         feats = np.stack([regime_is_trending, s_trend, s_rev], axis=1)
@@ -60,20 +66,32 @@ def generate_ensemble_signal(df, meta_model=None):
         signal = np.where(df['regime'] == 'trending', s_trend, s_rev)
         return pd.Series(signal, index=df.index).clip(-1, 1)
 
-def generate_signal(df):
+def generate_signal(df, indicator_params=None):
     """
-    Backward-compatible: Use ensemble pipeline.
+    Use ensemble pipeline with param dict for indicators.
+    indicator_params: dict with possible keys:
+      - regime_kwargs
+      - trend_kwargs
+      - reversion_kwargs
     """
-    return generate_ensemble_signal(df, meta_model=None)
+    indicator_params = indicator_params or {}
+    return generate_ensemble_signal(
+        df,
+        meta_model=None,
+        regime_kwargs=indicator_params.get("regime_kwargs", {}),
+        trend_kwargs=indicator_params.get("trend_kwargs", {}),
+        reversion_kwargs=indicator_params.get("reversion_kwargs", {}),
+    )
 
 def smooth_signal(signal, smoothing_window=5):
     return signal.rolling(window=smoothing_window).mean().fillna(0)
 
-def adaptive_threshold(df, target_profit=0.01):
+def adaptive_threshold(df, target_profit=0.01, indicator_params=None):
     """
     Adaptive threshold selection based on expected value.
     """
-    sig = smooth_signal(generate_signal(df))
+    indicator_params = indicator_params or {}
+    sig = smooth_signal(generate_signal(df, indicator_params=indicator_params))
     best_t, best_ev = 0.5, -float("inf")
     prices = df.get("Close") if "Close" in df.columns else pd.Series(0, index=df.index)
     for t in np.arange(0.05, 1.0, 0.05):
@@ -101,7 +119,6 @@ def track_trade_result(result, pair, action):
         f"Price: {result.get('order_price')}"
     )
 
-# For compatibility with ML filter code that may import this
 def extract_feature_array(row):
     """
     Given a row, return np.array([rsi, macd, ema_diff, volatility]).
