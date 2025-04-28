@@ -1,4 +1,3 @@
-# Ignore runtime and state
 state/
 logs/
 *.log
@@ -9,8 +8,6 @@ __pycache__/
 data/logs/
 data/models/
 signals_log.json
-
-# VSCode and PyCharm
 .vscode/
 .idea/
 Thumbs.db
