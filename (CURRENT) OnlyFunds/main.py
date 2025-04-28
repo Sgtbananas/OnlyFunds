@@ -158,7 +158,6 @@ def get_config_defaults():
         mode=config.get("strategy", {}).get("mode", "Normal").capitalize(),
         dry_run=trading_cfg["dry_run"],
         autotune=True,  # Idiot-proof default
-        backtest_mode=False,
         interval=trading_cfg.get("default_interval", "5m"),
         lookback=trading_cfg.get("backtest_lookback", 1000),
         threshold=trading_cfg["threshold"],
@@ -183,7 +182,6 @@ mode_idx = 3 if st.session_state.sidebar["mode"] == "Auto" else modes.index(st.s
 st.session_state.sidebar["mode"] = st.sidebar.selectbox("Trading Mode", modes, index=mode_idx)
 st.session_state.sidebar["dry_run"] = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=st.session_state.sidebar["dry_run"])
 st.session_state.sidebar["autotune"] = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=st.session_state.sidebar["autotune"])
-st.session_state.sidebar["backtest_mode"] = st.sidebar.checkbox("Enable Backtesting", value=st.session_state.sidebar["backtest_mode"])
 
 with st.sidebar.expander("Advanced", expanded=False):
     # Entry Threshold only shown in advanced
@@ -624,55 +622,54 @@ if run_trading_btn:
     main_loop()
 
 if run_backtest_btn:
-    st.sidebar.info("Backtest started...")
+    try:
+        st.sidebar.info("Backtest started...")
 
-    # Example: use the first pair and current sidebar params for backtest
-    pair = TRADING_PAIRS[0]
-    if st.session_state.sidebar["mode"] == "Auto":
-        p = get_pair_params(pair)
-        interval_used = p["interval"]
-        lookback_used = p["lookback"]
-        threshold_used = p["threshold"]
-    else:
-        interval_used = st.session_state.sidebar["interval"]
-        lookback_used = st.session_state.sidebar["lookback"]
-        threshold_used = st.session_state.sidebar["threshold"]
-
-    df = fetch_klines(pair, interval_used, lookback_used)
-    if df.empty or not validate_df(df):
-        st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
-        bt_results = None
-    else:
-        df = add_indicators(df)
-
-        # Generate signal for backtest (use meta-model if available)
-        if META_MODEL is not None:
-            signal = generate_ensemble_signal(df, META_MODEL)
+        pair = TRADING_PAIRS[0]
+        if st.session_state.sidebar["mode"] == "Auto":
+            p = get_pair_params(pair)
+            interval_used = p["interval"]
+            lookback_used = p["lookback"]
+            threshold_used = p["threshold"]
         else:
-            signal = generate_signal(df)
-        prices = df["Close"]
+            interval_used = st.session_state.sidebar["interval"]
+            lookback_used = st.session_state.sidebar["lookback"]
+            threshold_used = st.session_state.sidebar["threshold"]
 
-        # Advanced risk/ATR/trailing/partial logic
-        bt_results = run_backtest(
-            signal=signal,
-            prices=prices,
-            threshold=threshold_used,
-            initial_capital=trading_cfg.get("default_capital", 10.0),
-            risk_pct=risk_cfg.get("risk_pct", 0.01),
-            stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
-            take_profit_pct=st.session_state.sidebar["take_profit_pct"],
-            fee_pct=st.session_state.sidebar["fee"],
-            verbose=False,
-            partial_exit=st.session_state.sidebar.get("partial_exit", False),
-            stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
-            take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
-            atr=df["ATR"] if "ATR" in df.columns else None,
-            trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
-        )
+        df = fetch_klines(pair, interval_used, lookback_used)
+        if df.empty or not validate_df(df):
+            st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
+            bt_results = None
+        else:
+            df = add_indicators(df)
+            if META_MODEL is not None:
+                signal = generate_ensemble_signal(df, META_MODEL)
+            else:
+                signal = generate_signal(df)
+            prices = df["Close"]
 
-        st.sidebar.success("Backtest complete!")
+            bt_results = run_backtest(
+                signal=signal,
+                prices=prices,
+                threshold=threshold_used,
+                initial_capital=trading_cfg.get("default_capital", 10.0),
+                risk_pct=risk_cfg.get("risk_pct", 0.01),
+                stop_loss_pct=st.session_state.sidebar["stop_loss_pct"],
+                take_profit_pct=st.session_state.sidebar["take_profit_pct"],
+                fee_pct=st.session_state.sidebar["fee"],
+                verbose=False,
+                partial_exit=st.session_state.sidebar.get("partial_exit", False),
+                stop_loss_atr_mult=st.session_state.sidebar.get("atr_stop_mult", None),
+                take_profit_atr_mult=st.session_state.sidebar.get("atr_tp_mult", None),
+                atr=df["ATR"] if "ATR" in df.columns else None,
+                trailing_atr_mult=st.session_state.sidebar.get("atr_trail_mult", None)
+            )
+            st.sidebar.success("Backtest complete!")
 
-    if bt_results is not None:
-        st.write("Backtest Results", bt_results)
-    else:
-        st.write("No results to show (backtest failed).")
+        if bt_results is not None:
+            st.write("Backtest Results", bt_results)
+        else:
+            st.write("No results to show (backtest failed).")
+    except Exception as e:
+        st.sidebar.error(f"Backtest error: {e}")
+        st.write("Backtest failed due to an error. See sidebar for details.")
