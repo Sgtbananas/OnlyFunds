@@ -2,11 +2,12 @@ import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")  # FIRST STREAMLIT CALL
 
 import os
+import sys
 import logging
 import time
-from datetime import datetime, date
 import threading
-
+import traceback
+from datetime import datetime, date
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -25,7 +26,7 @@ from utils.config import load_config
 
 import joblib
 
-# -- Meta-learner config and fallback logic --
+# --- Robust meta-learner fallback ---
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
@@ -38,7 +39,6 @@ else:
     METRICS_PREFIX = "onlyfunds"
 
 def train_stub_meta_model(meta_model_path):
-    """Train a trivial meta-model (e.g., a dummy classifier) and save it so the app doesn't fail."""
     import numpy as np
     from sklearn.dummy import DummyClassifier
     X = np.random.rand(20, 4)
@@ -48,28 +48,38 @@ def train_stub_meta_model(meta_model_path):
     joblib.dump(model, meta_model_path)
     print(f"[INFO] Stub meta-learner saved to {meta_model_path}")
 
-try:
-    META_MODEL = joblib.load(META_MODEL_PATH)
-except Exception as e:
-    META_MODEL = None
-    print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
-    def _ensure_stub():
-        train_stub_meta_model(META_MODEL_PATH)
-        global META_MODEL
-        META_MODEL = joblib.load(META_MODEL_PATH)
-        print("[INFO] Fallback stub meta-learner loaded.")
-    threading.Thread(target=_ensure_stub, daemon=True).start()
+def robust_load_meta_model(path):
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        print(f"[WARN] Could not load meta-learner model at {path}: {e}")
+        train_stub_meta_model(path)
+        return joblib.load(path)
 
+META_MODEL = robust_load_meta_model(META_MODEL_PATH)
+
+# --- Logging: both file and (optional) console, with JSON formatting, rotation, and error notification ---
+from logging.handlers import RotatingFileHandler
 from pythonjsonlogger import jsonlogger
+
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
-handler = logging.FileHandler(os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json"))
+log_file = os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json")
+handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
 formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 handler.setFormatter(formatter)
 root = logging.getLogger()
+root.handlers = []
 root.addHandler(handler)
 root.setLevel(logging.INFO)
+if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    root.addHandler(stdout_handler)
 
+logger = logging.getLogger(__name__)
+
+# --- Prometheus singleton, must come before any metric use ---
 from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
 
 def get_prometheus_metrics():
@@ -101,15 +111,24 @@ def get_prometheus_metrics():
 
 trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
+# --- Load config, with runtime override support ---
 CONFIG_PATH = "config/config.yaml"
 config = load_config(CONFIG_PATH)
 risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
-logger = logging.getLogger(__name__)
+# --- State init (atomic, with data validation) ---
+def safe_load_json(file, default):
+    try:
+        if os.path.exists(file):
+            data = load_json(file)
+            return data if data is not None else default
+        return default
+    except Exception as e:
+        logger.error(f"Failed to load {file}: {e}")
+        return default
 
-# --- State init ---
 POSITIONS_FILE = "state/open_positions.json"
 TRADE_LOG_FILE = "state/trade_log.json"
 CAPITAL_FILE = "state/current_capital.json"
@@ -119,9 +138,9 @@ AUTO_PARAMS_FILE = "state/auto_params.json"
 HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 
 os.makedirs("state", exist_ok=True)
-open_positions = load_json(POSITIONS_FILE) if os.path.exists(POSITIONS_FILE) else {}
-trade_log = load_json(TRADE_LOG_FILE) if os.path.exists(TRADE_LOG_FILE) else []
-current_capital = load_json(CAPITAL_FILE) if os.path.exists(CAPITAL_FILE) else trading_cfg["default_capital"]
+open_positions = safe_load_json(POSITIONS_FILE, {})
+trade_log = safe_load_json(TRADE_LOG_FILE, [])
+current_capital = safe_load_json(CAPITAL_FILE, trading_cfg["default_capital"])
 if not isinstance(current_capital, (float, int)):
     current_capital = trading_cfg["default_capital"]
 
@@ -131,9 +150,7 @@ st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VAR
 st.sidebar.header("⚙️ Configuration")
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
-# --- Sidebar state helper ---
 def get_config_defaults():
-    # Return sidebar widget defaults (from config)
     return dict(
         mode=config.get("strategy", {}).get("mode", "Normal").capitalize(),
         dry_run=trading_cfg["dry_run"],
@@ -158,7 +175,6 @@ if "sidebar" not in st.session_state:
 def reset_sidebar():
     st.session_state.sidebar = get_config_defaults()
 
-# --- Sidebar widgets (restores state from session or config) ---
 modes = ["Conservative", "Normal", "Aggressive", "Auto"]
 mode_idx = 3 if st.session_state.sidebar["mode"] == "Auto" else modes.index(st.session_state.sidebar["mode"])
 st.session_state.sidebar["mode"] = st.sidebar.selectbox("Trading Mode", modes, index=mode_idx)
@@ -171,7 +187,7 @@ if st.session_state.sidebar["mode"] == "Auto":
     lookback = None
     threshold = None
     try:
-        auto_params = load_json(AUTO_PARAMS_FILE)
+        auto_params = safe_load_json(AUTO_PARAMS_FILE, {})
     except Exception:
         auto_params = {}
     def get_pair_params(pair):
@@ -227,12 +243,10 @@ st.session_state.sidebar["partial_exit"] = st.sidebar.checkbox(
     "Enable Partial Exit at TP1", value=st.session_state.sidebar["partial_exit"]
 )
 
-# --- Save preferences ---
 def persist_sidebar_overrides(sidebar: dict, config_path: str = CONFIG_PATH):
     import yaml
     with open(config_path, "r") as f:
         data = yaml.safe_load(f)
-    # Write only specific fields (avoiding session-only or per-run toggles)
     if "trading" in data:
         data["trading"]["dry_run"] = sidebar["dry_run"]
         data["trading"]["max_positions"] = sidebar["max_positions"]
@@ -273,4 +287,42 @@ st.sidebar.markdown(
     "To enable monitoring, use `config/prometheus.yml` for your Prometheus server."
 )
 
-# ... rest of your main logic continues, unchanged ...
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.critical(f"UNHANDLED EXCEPTION:\n{tb}")
+    USER = os.getenv("ALERT_USER")
+    PASS = os.getenv("ALERT_PASS")
+    ALERT_EMAIL = os.getenv("ALERT_EMAIL")
+    if USER and PASS and ALERT_EMAIL:
+        try:
+            import smtplib
+            with smtplib.SMTP("smtp.gmail.com", 587) as s:
+                s.starttls()
+                s.login(USER, PASS)
+                msg = f"Subject: OnlyFunds CRASHED!\n\n{tb}"
+                s.sendmail(USER, ALERT_EMAIL, msg)
+        except Exception as e:
+            logger.error(f"Failed to send alert email: {e}")
+
+sys.excepthook = global_exception_handler
+
+def atomic_save_json(obj, file):
+    import tempfile, shutil
+    dir = os.path.dirname(file) or "."
+    tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
+    try:
+        import json
+        json.dump(obj, tmp, indent=2)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        shutil.move(tmp.name, file)
+    except Exception as e:
+        logger.error(f"Failed to atomically save {file}: {e}")
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
+
+# --- The rest of your main logic goes here ---
+# (trading loop, dashboard, etc., using the above robust utilities and patterns)
