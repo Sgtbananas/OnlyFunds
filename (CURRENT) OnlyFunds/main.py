@@ -4,7 +4,7 @@ import logging
 import time
 import threading
 import traceback
-from datetime import datetime, date, timedelta
+from datetime import datetime
 
 import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
