@@ -1,28 +1,36 @@
 import datetime
+import numpy as np
 
 class RiskManager:
     def __init__(self, config):
         self.config = config
 
-    def position_size(self, equity, price, risk_pct=None):
-        """Determine position size, capping per-trade risk."""
+    def position_size(self, equity, price, risk_pct=None, volatility=None, v_adj=True):
+        """
+        Volatility-adjusted sizing. If v_adj is True, scale risk down as volatility rises.
+        """
         risk_pct = risk_pct or self.config.per_trade_risk
         usd_to_risk = equity * risk_pct
-        amount = usd_to_risk / price
-        min_size = self.config.min_size
-        return max(amount, min_size)
+        base_size = usd_to_risk / price
+        min_size = getattr(self.config, "min_size", 0.001)
+        if v_adj and volatility is not None and volatility > 0:
+            # Use some baseline for "normal" volatility, e.g. median of last N bars
+            norm_vol = np.median(volatility[-30:]) if hasattr(volatility, '__getitem__') else volatility
+            adj = min(2.0, max(0.5, norm_vol / volatility))
+            return max(base_size * adj, min_size)
+        return max(base_size, min_size)
 
-    def check_stop_loss(self, entry, current, stop_loss_pct):
+    def check_stop_loss(self, entry, current, stop_loss):
         """Return True if stop loss hit."""
-        return (current - entry) / entry <= -abs(stop_loss_pct)
+        return current <= stop_loss
 
-    def check_take_profit(self, entry, current, tp_pct):
+    def check_take_profit(self, entry, current, take_profit):
         """Return True if take profit hit."""
-        return (current - entry) / entry >= abs(tp_pct)
+        return current >= take_profit
 
-    def check_trailing_stop(self, entry, peak, current, trail_pct):
+    def check_trailing_stop(self, trailing_stop, current):
         """Return True if trailing stop hit (from peak)."""
-        return (current - peak) / peak <= -abs(trail_pct)
+        return current <= trailing_stop
 
     def check_max_drawdown(self, equity_curve, max_dd_pct):
         """Return True if global drawdown exceeded."""
@@ -43,15 +51,3 @@ class RiskManager:
                 start_equity *= (1 + t["return_pct"])
         loss = (start_equity - equity) / start_equity if start_equity else 0
         return loss <= -abs(max_loss_pct)
-
- def position_size(self, capital, price, risk_pct, volatility=None, v_adj=True):
-        """
-        Volatility-adjusted sizing. If v_adj is True, scale risk down as volatility rises.
-        """
-        base_size = capital * risk_pct / price
-        if v_adj and volatility is not None and volatility > 0:
-            # Use some baseline for "normal" volatility, e.g. median of last N bars
-            norm_vol = np.median(volatility[-30:]) if hasattr(volatility, '__getitem__') else volatility
-            adj = min(2.0, max(0.5, norm_vol / volatility[-1]))
-            return base_size * adj
-        return base_size
