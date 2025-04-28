@@ -40,7 +40,7 @@ def walkforward_optimize(pair, interval="1h"):
         test_day = train_end + timedelta(days=1)
         df_train = df[(df.index >= train_start) & (df.index < train_end)]
         df_test = df[(df.index >= test_day) & (df.index < test_day + timedelta(days=1))]
-        if len(df_train) < TRAIN_DAYS*12:  # Skip if not enough data
+        if len(df_train) < TRAIN_DAYS*12:
             continue
         study = optuna.create_study(direction="maximize")
         study.optimize(lambda t: objective(t, df_train), n_trials=30, show_progress_bar=False)
