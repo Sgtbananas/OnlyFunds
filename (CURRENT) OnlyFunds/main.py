@@ -1,7 +1,7 @@
 import os
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 import streamlit as st
 import pandas as pd
@@ -14,13 +14,12 @@ from core.core_signals import (
 from core.trade_execution import place_order
 from core.backtester import run_backtest
 from utils.helpers import (
-    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
+    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair, get_auto_pair_params
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
 from utils.config import load_config
 
-# === NEW: A/B meta-learner selector support ===
 import joblib
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
@@ -39,7 +38,6 @@ except Exception as e:
     META_MODEL = None
     print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
 
-# === Structured JSON logging ===
 from pythonjsonlogger import jsonlogger
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -50,7 +48,6 @@ root = logging.getLogger()
 root.addHandler(handler)
 root.setLevel(logging.INFO)
 
-# === Prometheus metrics server (A/B aware naming) ===
 from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
 
 def get_prometheus_metrics():
@@ -59,7 +56,7 @@ def get_prometheus_metrics():
         try:
             start_http_server(8000)
         except Exception:
-            pass  # if already running, ignore
+            pass
         metrics = {}
         name = f"{METRICS_PREFIX}_trades_executed_total"
         if name not in REGISTRY._names_to_collectors:
@@ -82,14 +79,12 @@ def get_prometheus_metrics():
 
 trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
-# --- Load config ---
 config = load_config()
 risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
 st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
-
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = "state/open_positions.json"
@@ -98,7 +93,7 @@ CAPITAL_FILE = "state/current_capital.json"
 BACKTEST_RESULTS_FILE = "state/backtest_results.json"
 OPTUNA_BEST_FILE = "state/optuna_best.json"
 AUTO_PARAMS_FILE = "state/auto_params.json"
-HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"  # If running A/B, separate heartbeat files
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
 
 os.makedirs("state", exist_ok=True)
 try:
@@ -130,7 +125,6 @@ except Exception as e:
     logger.warning(f"Failed to load {CAPITAL_FILE}: {e}")
     current_capital = trading_cfg["default_capital"]
 
-# --- Instantiate Risk Manager ---
 risk_manager = RiskManager(config)
 
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
@@ -153,19 +147,12 @@ if mode == "Auto":
     except Exception:
         auto_params = {}
     def get_pair_params(pair):
-        pair_params = auto_params.get(pair)
-        if pair_params:
-            return pair_params
-        # Global best in auto_params.json (key "global" or "GLOBAL")
-        if "global" in auto_params:
-            return auto_params["global"]
-        if "GLOBAL" in auto_params:
-            return auto_params["GLOBAL"]
-        return {
+        default = {
             "interval": "1h",
             "lookback": 1000,
             "threshold": trading_cfg["threshold"]
         }
+        return get_auto_pair_params(auto_params, pair, today=date.today(), fallback=default)
 else:
     interval = st.sidebar.selectbox("Candle Interval",
                                     ["5m", "15m", "30m", "1h", "4h", "1d"],
@@ -321,7 +308,6 @@ def trade_logic(pair: str, current_capital):
         return None, current_capital
 
     df = add_indicators(df)
-    # Use regime ensemble signal pipeline with meta-learner option
     if META_MODEL is not None:
         raw_signal = generate_ensemble_signal(df, meta_model=META_MODEL)
     else:
