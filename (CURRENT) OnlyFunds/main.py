@@ -1,9 +1,12 @@
+import streamlit as st
+st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")  # FIRST STREAMLIT CALL
+
 import os
 import logging
 import time
 from datetime import datetime, date
+import threading
 
-import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -22,6 +25,7 @@ from utils.config import load_config
 
 import joblib
 
+# -- Meta-learner config and fallback logic --
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
@@ -33,11 +37,28 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
+def train_stub_meta_model(meta_model_path):
+    """Train a trivial meta-model (e.g., a dummy classifier) and save it so the app doesn't fail."""
+    import numpy as np
+    from sklearn.dummy import DummyClassifier
+    X = np.random.rand(20, 4)
+    y = np.random.randint(0, 2, 20)
+    model = DummyClassifier(strategy="most_frequent")
+    model.fit(X, y)
+    joblib.dump(model, meta_model_path)
+    print(f"[INFO] Stub meta-learner saved to {meta_model_path}")
+
 try:
     META_MODEL = joblib.load(META_MODEL_PATH)
 except Exception as e:
     META_MODEL = None
     print(f"[WARN] Could not load meta-learner model at {META_MODEL_PATH}: {e}")
+    def _ensure_stub():
+        train_stub_meta_model(META_MODEL_PATH)
+        global META_MODEL
+        META_MODEL = joblib.load(META_MODEL_PATH)
+        print("[INFO] Fallback stub meta-learner loaded.")
+    threading.Thread(target=_ensure_stub, daemon=True).start()
 
 from pythonjsonlogger import jsonlogger
 LOGS_DIR = "logs"
@@ -86,7 +107,6 @@ risk_cfg = config["risk"]
 trading_cfg = config["trading"]
 ml_cfg = config.get("ml", {})
 
-st.set_page_config(page_title=f"CryptoTrader AI ({SELECTOR_VARIANT})", layout="wide")
 logger = logging.getLogger(__name__)
 
 # --- State init ---
@@ -253,6 +273,4 @@ st.sidebar.markdown(
     "To enable monitoring, use `config/prometheus.yml` for your Prometheus server."
 )
 
-# --- Remainder of sidebar and app logic unchanged from here ---
-# (rest of your code continues as before, using st.session_state.sidebar values in main logic)
-# Replace any use of e.g. `backtest_mode` or `autotune` with `st.session_state.sidebar["backtest_mode"]` etc.
+# ... rest of your main logic continues, unchanged ...
