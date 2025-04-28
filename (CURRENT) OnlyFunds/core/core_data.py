@@ -78,7 +78,8 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
         "boll_window": int,
         "boll_std": float,
         "ema_span": int,
-        "volatility_window": int
+        "volatility_window": int,
+        "atr_window": int
     }
     """
     df2 = df.copy()
@@ -92,6 +93,7 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
     boll_std = indicator_params.get("boll_std", 2)
     ema_span = indicator_params.get("ema_span", 20)
     volatility_window = indicator_params.get("volatility_window", 10)
+    atr_window = indicator_params.get("atr_window", 14)
 
     try:
         df2["rsi"] = (
@@ -117,6 +119,11 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
         df2["ema_diff"] = (close - ema).fillna(0)
 
         df2["volatility"] = close.rolling(volatility_window, min_periods=1).std().fillna(0)
+
+        # ATR indicator
+        df2["atr"] = ta.volatility.AverageTrueRange(
+            high=df2["High"], low=df2["Low"], close=df2["Close"], window=atr_window
+        ).average_true_range().fillna(method="bfill")
 
         # Composite z-score indicators for robust ML features
         features = ["rsi", "macd", "ema_diff", "volatility"]
