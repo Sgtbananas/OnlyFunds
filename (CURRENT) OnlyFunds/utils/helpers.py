@@ -174,3 +174,23 @@ def log_grid_trade(trade_data, log_file="data/logs/grid_trade_logs.json"):
             json.dump(logs, f, indent=2)
     except Exception as e:
         print(f"Error logging grid trade: {e}")
+
+def get_auto_pair_params(auto_params, pair, today=None, fallback=None):
+    """
+    Find the most recent available params for a given pair and date in auto_params.json.
+    If today's params not found, fallback to the latest available or default.
+    """
+    if today is None:
+        today = date.today()
+    if pair not in auto_params:
+        return fallback
+    pair_params = auto_params[pair]
+    # Try today's params first
+    today_str = str(today)
+    if today_str in pair_params:
+        return pair_params[today_str]
+    # If not found, use the latest available before today
+    dates = sorted(d for d in pair_params if d <= today_str)
+    if dates:
+        return pair_params[dates[-1]]
+    return fallback
