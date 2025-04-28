@@ -178,6 +178,12 @@ stop_loss_pct = st.sidebar.number_input("Stop-Loss %", 0.0, 10.0, risk_cfg["stop
 take_profit_pct = st.sidebar.number_input("Take-Profit %", 0.0, 10.0, risk_cfg["take_profit_pct"]*100.0, step=0.1) / 100
 fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, trading_cfg["fee"]*100.0, step=0.01) / 100
 
+# --- New risk management config for ATR/trailing ---
+atr_stop_mult = st.sidebar.number_input("ATR Stop Multiplier", 0.1, 5.0, 1.0, step=0.1)
+atr_tp_mult = st.sidebar.number_input("ATR Take Profit Multiplier", 0.1, 10.0, 2.0, step=0.1)
+atr_trail_mult = st.sidebar.number_input("ATR Trailing Stop Multiplier", 0.1, 5.0, 1.0, step=0.1)
+partial_exit = st.sidebar.checkbox("Enable Partial Exit at TP1", value=True)
+
 if st.sidebar.button("🔄 Retrain ML Model from Trade Log"):
     with st.spinner("Retraining ML model..."):
         success, msg = train_and_save_model()
@@ -303,7 +309,7 @@ def trade_logic(pair: str, current_capital):
         indicator_params = {
             k: v for k, v in best_params.items() if k in [
                 "rsi_window", "macd_fast", "macd_slow", "macd_signal", "boll_window",
-                "boll_std", "ema_span", "volatility_window"
+                "boll_std", "ema_span", "volatility_window", "atr_window"
             ]
         }
         signal_params = {
@@ -394,9 +400,12 @@ def trade_logic(pair: str, current_capital):
             smoothed, df["Close"], threshold_final,
             initial_capital=trading_cfg["default_capital"],
             risk_pct=risk_pct,
-            stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct,
+            stop_loss_atr_mult=atr_stop_mult,
+            take_profit_atr_mult=atr_tp_mult,
             fee_pct=fee_pct,
+            atr=df["atr"] if "atr" in df else None,
+            partial_exit=partial_exit,
+            trailing_atr_mult=atr_trail_mult
         )
         summary_df = (
             combined_df
@@ -405,7 +414,7 @@ def trade_logic(pair: str, current_capital):
         )
         trades_df = (
             combined_df
-            .loc[combined_df["type"] == "trade"]
+            .loc[combined_df["type"] != "summary"]
             .drop(columns=["type"])
         )
         st.write(f"📊 Backtest Summary for {pair}:")
@@ -414,15 +423,13 @@ def trade_logic(pair: str, current_capital):
         st.dataframe(trades_df)
         return None, current_capital
 
+    # --- LIVE TRADING LOGIC with ATR/partial exit/trailing stop ---
     action = None
-    if latest_signal > threshold_final and pair not in open_positions:
-        action = "buy"
-    elif pair in open_positions:
-        action = "sell"
-    else:
-        return None, current_capital
+    price = df["Close"].iloc[-1]
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    atr_value = df["atr"].iloc[-1] if "atr" in df else None
+    volatility = df["volatility"].iloc[-30:].values if "volatility" in df else None
 
-    # --- RISK MANAGER ENFORCEMENT ---
     perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
     equity_curve = [trading_cfg["default_capital"]]
     for trade in trade_log:
@@ -437,21 +444,21 @@ def trade_logic(pair: str, current_capital):
         st.error("Max daily loss exceeded! Trading halted.")
         return None, current_capital
 
-    price = df["Close"].iloc[-1]
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    amount = risk_manager.position_size(perf["current_capital"], price, risk_pct)
-
-    min_size = risk_cfg.get("min_size", 0.001)
-    if amount < min_size:
-        logger.warning(f"Calculated amount {amount:.6f} below min size {min_size} → skipping BUY")
-        return None, current_capital
-
-    prev_trades = len(trade_log)
-
-    if action == "buy":
+    # --- Entry logic ---
+    if latest_signal > threshold_final and pair not in open_positions:
         if len(open_positions) >= max_positions:
             logger.info("🚫 Max open positions reached → skipping BUY")
             return None, current_capital
+        # Volatility-adjusted position sizing
+        amount = risk_manager.position_size(
+            perf["current_capital"], price, risk_pct, volatility=volatility, v_adj=True
+        )
+        min_size = risk_cfg.get("min_size", 0.001)
+        if amount < min_size:
+            logger.warning(f"Calculated amount {amount:.6f} below min size {min_size} → skipping BUY")
+            return None, current_capital
+        stop_loss = price - atr_stop_mult * atr_value if atr_value else price * (1 - stop_loss_pct)
+        take_profit = price + atr_tp_mult * atr_value if atr_value else price * (1 + take_profit_pct)
         record = {
             "timestamp": now,
             "pair": pair,
@@ -460,41 +467,113 @@ def trade_logic(pair: str, current_capital):
             "entry_price": price,
             "interval": interval_used,
             "lookback": lookback_used,
-            "threshold": threshold_final
+            "threshold": threshold_final,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "partial_exit": False,
+            "trailing_stop": None
         }
         trade_log.append(record)
-        open_positions[pair] = {"amount": amount, "entry_price": price}
-        logger.info(f"📥 BUY {pair} at {price:.2f} (amount={amount:.6f})")
+        open_positions[pair] = {
+            "amount": amount,
+            "entry_price": price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "partial_exit": False,
+            "trailing_stop": None
+        }
+        logger.info(f"📥 BUY {pair} at {price:.2f} (amount={amount:.6f}) SL={stop_loss:.2f} TP={take_profit:.2f}")
         save_json(open_positions, POSITIONS_FILE, indent=2)
         save_json(trade_log, TRADE_LOG_FILE, indent=2)
-        new_trades = len(trade_log) - prev_trades
+        new_trades = 1
         trade_counter.inc(new_trades)
         return None, current_capital
 
-    if action == "sell":
-        position = open_positions.pop(pair)
+    # --- Exit logic for open positions (partial exit & trailing stop) ---
+    if pair in open_positions:
+        position = open_positions[pair]
+        entry_price = position["entry_price"]
+        amount = position["amount"]
+        stop_loss = position.get("stop_loss", entry_price * (1 - stop_loss_pct))
+        take_profit = position.get("take_profit", entry_price * (1 + take_profit_pct))
+        trailing_stop = position.get("trailing_stop")
+        is_partial = position.get("partial_exit", False)
         exit_price = price
-        return_pct = (exit_price - position["entry_price"]) / position["entry_price"]
-        record = {
-            "timestamp": now,
-            "pair": pair,
-            "action": "SELL",
-            "amount": position["amount"],
-            "entry_price": position["entry_price"],
-            "exit_price": exit_price,
-            "return_pct": return_pct,
-            "interval": interval_used,
-            "lookback": lookback_used,
-            "threshold": threshold_final
-        }
-        trade_log.append(record)
-        logger.info(f"📤 SELL {pair} at {exit_price:.2f} → Return: {return_pct:.4%}")
-        save_json(open_positions, POSITIONS_FILE, indent=2)
-        save_json(trade_log, TRADE_LOG_FILE, indent=2)
-        save_json(compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"], CAPITAL_FILE, indent=2)
-        new_trades = len(trade_log) - prev_trades
-        trade_counter.inc(new_trades)
-        return None, compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"]
+        exit_amount = 0
+        # ATR for trailing logic
+        atr_this = atr_value if atr_value else (entry_price * take_profit_pct)
+        # Partial exit at TP1
+        if partial_exit and not is_partial and price >= take_profit:
+            exit_amount = amount / 2
+            record = {
+                "timestamp": now,
+                "pair": pair,
+                "action": "SELL_PARTIAL",
+                "amount": exit_amount,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "return_pct": (exit_price - entry_price) / entry_price,
+                "reason": "partial_take_profit"
+            }
+            trade_log.append(record)
+            # Let remainder ride with trailing stop
+            open_positions[pair]["amount"] = amount - exit_amount
+            open_positions[pair]["partial_exit"] = True
+            open_positions[pair]["trailing_stop"] = price - atr_trail_mult * atr_this
+            logger.info(f"🟡 PARTIAL SELL {pair} at {exit_price:.2f} (amount={exit_amount:.6f}); trailing stop set at {open_positions[pair]['trailing_stop']:.2f}")
+            save_json(open_positions, POSITIONS_FILE, indent=2)
+            save_json(trade_log, TRADE_LOG_FILE, indent=2)
+            trade_counter.inc(1)
+            return None, current_capital
+        # Trailing stop for remainder after partial
+        if partial_exit and is_partial:
+            # Dynamically update trailing stop
+            new_trailing = price - atr_trail_mult * atr_this
+            if trailing_stop is None or new_trailing > trailing_stop:
+                open_positions[pair]["trailing_stop"] = new_trailing
+                trailing_stop = new_trailing
+            if price <= trailing_stop:
+                exit_amount = amount
+                record = {
+                    "timestamp": now,
+                    "pair": pair,
+                    "action": "SELL_TRAILING",
+                    "amount": exit_amount,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "return_pct": (exit_price - entry_price) / entry_price,
+                    "reason": "trailing_stop"
+                }
+                trade_log.append(record)
+                open_positions.pop(pair)
+                logger.info(f"🔴 TRAILING SELL {pair} at {exit_price:.2f} (amount={exit_amount:.6f}); trailing stop hit")
+                save_json(open_positions, POSITIONS_FILE, indent=2)
+                save_json(trade_log, TRADE_LOG_FILE, indent=2)
+                save_json(compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"], CAPITAL_FILE, indent=2)
+                trade_counter.inc(1)
+                return None, compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"]
+        # Full exit: stop loss or signal reversal
+        if (price <= stop_loss) or (not partial_exit and price >= take_profit) or (latest_signal < threshold_final):
+            exit_amount = amount
+            reason = "stop_loss" if price <= stop_loss else "take_profit" if price >= take_profit else "signal_flip"
+            record = {
+                "timestamp": now,
+                "pair": pair,
+                "action": "SELL",
+                "amount": exit_amount,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "return_pct": (exit_price - entry_price) / entry_price,
+                "reason": reason
+            }
+            trade_log.append(record)
+            open_positions.pop(pair)
+            logger.info(f"📤 SELL {pair} at {exit_price:.2f} (amount={exit_amount:.6f}) → Return: {(exit_price-entry_price)/entry_price:.4%} [{reason}]")
+            save_json(open_positions, POSITIONS_FILE, indent=2)
+            save_json(trade_log, TRADE_LOG_FILE, indent=2)
+            save_json(compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"], CAPITAL_FILE, indent=2)
+            trade_counter.inc(1)
+            return None, compute_trade_metrics(trade_log, trading_cfg["default_capital"])["current_capital"]
 
     return None, current_capital
 
@@ -510,7 +589,7 @@ def display_dashboard(current_capital):
     if open_positions:
         st.write("🟢 Open Positions")
         df_open = pd.DataFrame(open_positions).T.reset_index(drop=True)
-        desired_cols = ["amount", "entry_price"]
+        desired_cols = ["amount", "entry_price", "stop_loss", "take_profit", "trailing_stop", "partial_exit"]
         cols = [c for c in desired_cols if c in df_open.columns]
         st.dataframe(df_open[cols].iloc[::-1])
     else:
