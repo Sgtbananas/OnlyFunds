@@ -440,17 +440,19 @@ def atomic_save_json(obj, file):
         except Exception:
             pass
 
-# --- Example: using all robust features in a trade logic stub ---
+# --- Main trading loop with buy, sell/close, stop-loss, take-profit ---
 def main_loop():
     global current_capital, trade_log, open_positions
     retrain_ml_background(trade_log)
-    for i, pair in enumerate(TRADING_PAIRS):
+    # For each pair, check for buy/sell/stop/take-profit
+    for pair in TRADING_PAIRS:
         # Self-tune max_positions every 10 trades
         perf = compute_trade_metrics(trade_log, trading_cfg["default_capital"])
         st.session_state.sidebar["max_positions"] = self_tune_max_positions(
             perf["win_rate"], st.session_state.sidebar["max_positions"], len(trade_log)
         )
-        # --- Get trade parameters
+
+        # Get trade params
         if st.session_state.sidebar["mode"] == "Auto":
             p = get_pair_params(pair)
             interval_used = p["interval"]
@@ -460,13 +462,24 @@ def main_loop():
             interval_used = st.session_state.sidebar["interval"]
             lookback_used = st.session_state.sidebar["lookback"]
             threshold_used = st.session_state.sidebar["threshold"]
-        # --- Data fetch and validation
+
+        # Fetch/validate data
         df = fetch_klines(pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Data for {pair} invalid/empty.")
             continue
         df = add_indicators(df)
-        # --- Signal + threshold
+
+        # Generate signal
+        try:
+            if META_MODEL is not None:
+                signal = generate_ensemble_signal(df, model=META_MODEL)
+            else:
+                signal = generate_signal(df)
+        except Exception as e:
+            logger.error(f"Signal gen failed for {pair}: {e}")
+            continue
+
         if st.session_state.sidebar["autotune"]:
             try:
                 threshold_final = adaptive_threshold(df, target_profit=0.01)
@@ -475,14 +488,134 @@ def main_loop():
                 threshold_final = trading_cfg.get("threshold", 0.5)
         else:
             threshold_final = threshold_used
-        # --- Trade simulation
-        amount = 1.0  # stub: replace with real calculation
+
         price = df["Close"].iloc[-1]
-        if not validate_trade(amount, price, current_capital):
-            continue
-        # ... continue with trade logic ...
-        # Save heartbeat
+        min_size = 0.001
+
+        # --- SELL/CLOSE logic: If we have an open position, check for TP/SL or exit signal
+        if pair in open_positions:
+            pos = open_positions[pair]
+            entry_price = pos["entry_price"]
+            amount = pos["amount"]
+            # Take-profit
+            if price >= entry_price * (1 + st.session_state.sidebar["take_profit_pct"]):
+                logger.info(f"{pair}: Take-profit hit. Closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (TP): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "TP"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"TP close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+            # Stop-loss
+            if price <= entry_price * (1 - st.session_state.sidebar["stop_loss_pct"]):
+                logger.info(f"{pair}: Stop-loss hit. Closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (SL): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "SL"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"SL close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+            # Exit on negative signal
+            exit_signal = signal.iloc[-1] if hasattr(signal, 'iloc') else signal[-1]
+            if exit_signal < 0:
+                logger.info(f"{pair}: Negative signal, closing position.")
+                if validate_trade(amount, price, current_capital, min_size=min_size):
+                    try:
+                        result = place_order(pair, "SELL", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                        logger.info(f"Closed (SIG): {result}")
+                        trade_log.append({
+                            "pair": pair,
+                            "side": "SELL",
+                            "amount": amount,
+                            "price": price,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "result": "SIG"
+                        })
+                        current_capital += amount * price * (1 - st.session_state.sidebar["fee"])
+                        del open_positions[pair]
+                        atomic_save_json(open_positions, POSITIONS_FILE)
+                        atomic_save_json(trade_log, TRADE_LOG_FILE)
+                        atomic_save_json(current_capital, CAPITAL_FILE)
+                        trade_counter.inc()
+                    except Exception as e:
+                        logger.error(f"SIG close failed for {pair}: {e}")
+                write_heartbeat()
+                continue
+
+        # --- BUY/OPEN logic: If not currently open and eligible
+        if pair not in open_positions:
+            # Only open if under max positions and positive signal
+            if len(open_positions) >= st.session_state.sidebar["max_positions"]:
+                logger.info(f"Max open positions reached ({len(open_positions)}). Skipping {pair}.")
+                continue
+            entry_signal = signal.iloc[-1] if hasattr(signal, 'iloc') else signal[-1]
+            if entry_signal < threshold_final:
+                logger.info(f"{pair}: Signal {entry_signal:.3f} below threshold {threshold_final:.3f}")
+                continue
+            # Position sizing (idiot-proof, never more than 1 unit for safety)
+            amount = min(current_capital / price, 1.0)
+            if not validate_trade(amount, price, current_capital, min_size=min_size):
+                continue
+            try:
+                trade_result = place_order(pair, "BUY", amount, price, dry_run=st.session_state.sidebar["dry_run"])
+                logger.info(f"Placed trade: {trade_result}")
+                open_positions[pair] = {
+                    "amount": amount,
+                    "entry_price": price,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                trade_log.append({
+                    "pair": pair,
+                    "side": "BUY",
+                    "amount": amount,
+                    "price": price,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "result": None
+                })
+                current_capital -= amount * price * (1 + st.session_state.sidebar["fee"])
+                atomic_save_json(open_positions, POSITIONS_FILE)
+                atomic_save_json(trade_log, TRADE_LOG_FILE)
+                atomic_save_json(current_capital, CAPITAL_FILE)
+                trade_counter.inc()
+            except Exception as e:
+                logger.error(f"Trade execution failed for {pair}: {e}")
         write_heartbeat()
+        pnl_gauge.set(current_capital)
+        time.sleep(0.1)
+
     retrain_ml_background(trade_log)
+    write_heartbeat()
 
 main_loop()
