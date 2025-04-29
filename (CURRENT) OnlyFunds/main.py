@@ -1,35 +1,47 @@
-# ─── Imports and Initial Setup ─────────────────────────────────────────────────
 import os
 import sys
 import time
 import threading
 import traceback
-import logging
+import tempfile
+import shutil
+import json
 from datetime import datetime
 
+# --- Early folder creation
+os.makedirs("state", exist_ok=True)
+os.makedirs("logs", exist_ok=True)
+
+# --- Streamlit First Call (must be before any other Streamlit stuff)
 import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 import pandas as pd
-import numpy as np
+from dotenv import load_dotenv
 import yaml
 import joblib
-from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
+from pythonjsonlogger import jsonlogger
+import logging
 
+# --- Core App Imports
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
-    generate_signal, smooth_signal, adaptive_threshold, generate_ensemble_signal
+    generate_signal, smooth_signal, adaptive_threshold, track_trade_result, generate_ensemble_signal
 )
 from core.trade_execution import place_order
 from core.backtester import run_backtest
-from core.ml_filter import load_model, ml_confidence, train_and_save_model
-from core.risk_manager import RiskManager
 from utils.helpers import (
     compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair, get_auto_pair_params
 )
+from core.ml_filter import load_model, ml_confidence, train_and_save_model
+from core.risk_manager import RiskManager
 from utils.config import load_config
 
-# ─── Meta-learner (Auto Ensemble Model) ────────────────────────────────────────
+# --- Prometheus Metrics
+from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
+
+# --- ENV Meta Model Selector
 SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
 if SELECTOR_VARIANT == "A":
     META_MODEL_PATH = "state/meta_model_A.pkl"
@@ -41,40 +53,44 @@ else:
     META_MODEL_PATH = "state/meta_model.pkl"
     METRICS_PREFIX = "onlyfunds"
 
-def load_or_stub_meta_model(path):
+# --- Meta Model Loading (stub fallback)
+def train_stub_meta_model(meta_model_path):
+    from sklearn.dummy import DummyClassifier
+    import numpy as np
+    X = np.random.rand(50, 4)
+    y = np.random.randint(0, 2, 50)
+    model = DummyClassifier(strategy="most_frequent")
+    model.fit(X, y)
+    joblib.dump(model, meta_model_path)
+    print(f"[INFO] Stub meta-learner saved to {meta_model_path}")
+
+def ensure_meta_model(path):
     try:
         return joblib.load(path)
-    except Exception:
-        # Train dummy fallback
-        from sklearn.dummy import DummyClassifier
-        model = DummyClassifier(strategy="most_frequent")
-        X = np.random.rand(10, 4)
-        y = np.random.randint(0, 2, 10)
-        model.fit(X, y)
-        joblib.dump(model, path)
-        return model
+    except Exception as e:
+        print(f"[WARN] Could not load meta-learner model at {path}: {e}")
+        threading.Thread(target=lambda: train_stub_meta_model(path), daemon=True).start()
+        return None
 
-META_MODEL = load_or_stub_meta_model(META_MODEL_PATH)
+META_MODEL = ensure_meta_model(META_MODEL_PATH)
 
-# ─── Logging Setup ─────────────────────────────────────────────────────────────
-from logging.handlers import RotatingFileHandler
-from pythonjsonlogger import jsonlogger
-
+# --- Logging Setup
 LOGS_DIR = "logs"
-os.makedirs(LOGS_DIR, exist_ok=True)
 log_file = os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json")
 handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
 formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 handler.setFormatter(formatter)
 root = logging.getLogger()
-root.handlers.clear()
+root.handlers = []
 root.addHandler(handler)
 root.setLevel(logging.INFO)
+if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    root.addHandler(stdout_handler)
 
 logger = logging.getLogger(__name__)
-# ─── Prometheus Metrics Setup ───────────────────────────────────────────────────
-from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
-
+# --- Prometheus Metrics Setup (safe singleton)
 def get_prometheus_metrics():
     module = __import__(__name__)
     if not hasattr(module, "_PROMETHEUS_METRICS"):
@@ -83,18 +99,23 @@ def get_prometheus_metrics():
         except Exception:
             pass
         metrics = {}
-        def safe_counter(name, doc):
-            if name not in REGISTRY._names_to_collectors:
-                return Counter(name, doc)
-            return REGISTRY._names_to_collectors[name]
-        def safe_gauge(name, doc):
-            if name not in REGISTRY._names_to_collectors:
-                return Gauge(name, doc)
-            return REGISTRY._names_to_collectors[name]
+        name = f"{METRICS_PREFIX}_trades_executed_total"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['trade_counter'] = Counter(name, "Total trades executed")
+        else:
+            metrics['trade_counter'] = REGISTRY._names_to_collectors[name]
 
-        metrics['trade_counter'] = safe_counter(f"{METRICS_PREFIX}_trades_executed_total", "Total trades executed")
-        metrics['pnl_gauge'] = safe_gauge(f"{METRICS_PREFIX}_current_pnl", "Current unrealized PnL (USDT)")
-        metrics['heartbeat_gauge'] = safe_gauge(f"{METRICS_PREFIX}_heartbeat", "Heartbeat timestamp")
+        name = f"{METRICS_PREFIX}_current_pnl"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['pnl_gauge'] = Gauge(name, "Current unrealized PnL (USDT)")
+        else:
+            metrics['pnl_gauge'] = REGISTRY._names_to_collectors[name]
+
+        name = f"{METRICS_PREFIX}_heartbeat"
+        if name not in REGISTRY._names_to_collectors:
+            metrics['heartbeat_gauge'] = Gauge(name, "Heartbeat timestamp")
+        else:
+            metrics['heartbeat_gauge'] = REGISTRY._names_to_collectors[name]
 
         module._PROMETHEUS_METRICS = metrics
     m = module._PROMETHEUS_METRICS
@@ -102,7 +123,7 @@ def get_prometheus_metrics():
 
 trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
 
-# ─── Config and Persistent State ───────────────────────────────────────────────
+# --- Load Main Config
 CONFIG_PATH = "config/config.yaml"
 
 def load_config_safe(config_path, fallback=None):
@@ -121,88 +142,163 @@ risk_cfg = config.get("risk", {})
 trading_cfg = config.get("trading", {})
 ml_cfg = config.get("ml", {})
 
-def safe_load_json(file, default):
-    import json
-    try:
-        if os.path.exists(file):
-            with open(file, "r") as f:
-                data = json.load(f)
-            return data if data is not None else default
-        return default
-    except Exception as e:
-        st.sidebar.error(f"Failed to load {file}: {e}")
-        return default
-
-POSITIONS_FILE = "state/open_positions.json"
-TRADE_LOG_FILE = "state/trade_log.json"
-CAPITAL_FILE = "state/current_capital.json"
-BACKTEST_RESULTS_FILE = "state/backtest_results.json"
-AUTO_PARAMS_FILE = "state/auto_params.json"
-
-os.makedirs("state", exist_ok=True)
-open_positions = safe_load_json(POSITIONS_FILE, {})
-trade_log = safe_load_json(TRADE_LOG_FILE, [])
-current_capital = safe_load_json(CAPITAL_FILE, trading_cfg.get("default_capital", 10))
-if not isinstance(current_capital, (float, int)):
-    current_capital = trading_cfg.get("default_capital", 10)
-
-risk_manager = RiskManager(config)
-
-# ─── Sidebar (with Dynamic ATR Setting Placeholder) ─────────────────────────────
+# --- Sidebar Setup (no manual ATR multipliers anymore)
+st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
 st.sidebar.header("⚙️ Configuration")
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
-MODES = ["Conservative", "Normal", "Aggressive", "Auto"]
-mode_idx = 3 if trading_cfg.get("mode", "Auto") == "Auto" else MODES.index(trading_cfg.get("mode", "Normal").capitalize())
-mode = st.sidebar.selectbox("Trading Mode", MODES, index=mode_idx)
+# --- Trading Mode
+mode = st.sidebar.selectbox(
+    "Trading Mode",
+    ["Conservative", "Normal", "Aggressive", "Auto"],
+    index=["Conservative", "Normal", "Aggressive", "Auto"].index(trading_cfg.get("mode", "Normal").capitalize())
+)
 
-dry_run = st.sidebar.checkbox("Dry Run Mode (Simulated)", value=trading_cfg.get("dry_run", True))
+# --- Other sidebar toggles
+dry_run = st.sidebar.checkbox("Dry Run Mode", value=trading_cfg.get("dry_run", True))
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=True)
 
-interval = st.sidebar.selectbox("Candle Interval", ["5m", "15m", "30m", "1h", "4h", "1d"], index=0)
-lookback = st.sidebar.slider("Historical Lookback", 300, 2000, trading_cfg.get("backtest_lookback", 1000))
+# --- Only if Manual (not AI)
+if mode != "Auto":
+    interval = st.sidebar.selectbox(
+        "Candle Interval",
+        ["5m", "15m", "30m", "1h", "4h", "1d"],
+        index=["5m", "15m", "30m", "1h", "4h", "1d"].index(trading_cfg.get("default_interval", "5m"))
+    )
+    lookback = st.sidebar.slider("Lookback Candles", 300, 2000, trading_cfg.get("backtest_lookback", 1000))
+    threshold = st.sidebar.slider(
+        "Entry Threshold", min_value=0.0, max_value=1.0,
+        value=trading_cfg.get("threshold", 0.5), step=0.01
+    )
+else:
+    interval = None
+    lookback = None
+    threshold = None
 
-max_positions = st.sidebar.number_input("Max Open Positions", 1, 30, trading_cfg.get("max_positions", 5))
-stop_loss_pct = st.sidebar.number_input("Static Stop Loss %", 0.0, 10.0, risk_cfg.get("stop_loss_pct", 0.01)*100.0, step=0.1) / 100
-take_profit_pct = st.sidebar.number_input("Static Take Profit %", 0.0, 10.0, risk_cfg.get("take_profit_pct", 0.02)*100.0, step=0.1) / 100
-fee_pct = st.sidebar.number_input("Trade Fee %", 0.0, 1.0, trading_cfg.get("fee", 0.001)*100.0, step=0.01) / 100
+# --- Max open positions stays user-configurable
+max_positions = st.sidebar.number_input("Max Open Positions", 1, 50, trading_cfg.get("max_positions", 5))
 
-# New ATR MULTIPLIERS (automated later)
-atr_stop_mult = st.sidebar.number_input("ATR Stop Multiplier", 0.1, 5.0, 1.0, step=0.1)
-atr_tp_mult = st.sidebar.number_input("ATR Take Profit Multiplier", 0.1, 10.0, 2.0, step=0.1)
-atr_trail_mult = st.sidebar.number_input("ATR Trailing Stop Multiplier", 0.1, 5.0, 1.0, step=0.1)
+# --- (✅) NO manual ATR Multiplier inputs anymore
+st.sidebar.info("ATR-based Stop-Loss, TP, Trailing is AI-optimized.")
 
-partial_exit = st.sidebar.checkbox("Enable Partial Exit at TP1", value=True)
-# ─── Utility Functions ──────────────────────────────────────────────────────────
-def atomic_save_json(obj, file):
-    dir = os.path.dirname(file) or "."
+# --- Save Preferences button
+save_prefs = st.sidebar.button("💾 Save Config (Optional)")
+if save_prefs:
     try:
-        tmp = tempfile.NamedTemporaryFile("w", dir=dir, delete=False)
-        import json
-        json.dump(obj, tmp, indent=2)
+        with open(CONFIG_PATH, "r") as f:
+            data = yaml.safe_load(f)
+        data["trading"]["dry_run"] = dry_run
+        data["trading"]["max_positions"] = max_positions
+        data["strategy"]["mode"] = mode
+        if interval:
+            data["trading"]["default_interval"] = interval
+        if lookback:
+            data["trading"]["backtest_lookback"] = lookback
+        if threshold is not None:
+            data["trading"]["threshold"] = threshold
+        tmp = tempfile.NamedTemporaryFile("w", dir="config", delete=False)
+        yaml.safe_dump(data, tmp)
         tmp.flush()
-        os.fsync(tmp.fileno())
         tmp.close()
-        shutil.move(tmp.name, file)
+        shutil.move(tmp.name, CONFIG_PATH)
+        st.sidebar.success("Preferences saved successfully.")
     except Exception as e:
-        logger.error(f"Failed to atomically save {file}: {e}")
-        try:
-            os.remove(tmp.name)
-        except Exception:
-            pass
+        st.sidebar.error(f"Failed to save preferences: {e}")
 
-def validate_trade(amount, price, current_capital, min_size=0.001):
-    if amount < min_size:
-        logger.error(f"Trade validation failed: amount={amount:.6f} min_size={min_size}")
-        return False
-    if price <= 0:
-        logger.error(f"Trade validation failed: price={price:.6f}")
-        return False
-    if current_capital <= 0:
-        logger.error(f"Trade validation failed: current_capital={current_capital:.6f}")
-        return False
-    return True
+# --- Show Heartbeat Info
+HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
+def write_heartbeat():
+    ts = time.time()
+    try:
+        with open(HEARTBEAT_FILE, "w") as f:
+            json.dump({"last_run": ts}, f)
+        heartbeat_gauge.set(ts)
+    except Exception as e:
+        logger.error(f"Failed to write heartbeat: {e}")
+# --- State Files and Safety Loaders
+POSITIONS_FILE = "state/open_positions.json"
+TRADE_LOG_FILE = "state/trade_log.json"
+CAPITAL_FILE = "state/current_capital.json"
 
+def safe_load_json(file_path, default):
+    import json
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            if data is None:
+                return default
+            return data
+    except Exception as e:
+        logger.error(f"Failed to load {file_path}: {e}")
+    return default
+
+open_positions = safe_load_json(POSITIONS_FILE, {})
+trade_log = safe_load_json(TRADE_LOG_FILE, [])
+current_capital = safe_load_json(CAPITAL_FILE, trading_cfg.get("default_capital", 10.0))
+if not isinstance(current_capital, (float, int)):
+    current_capital = trading_cfg.get("default_capital", 10.0)
+
+# --- Risk Manager
+risk_manager = RiskManager(config)
+
+# --- ML Retraining & Meta Model Watchdog
+from core.ml_filter import load_model, ml_confidence, train_and_save_model
+
+RETRAIN_TRADE_INTERVAL = 50
+RETRAIN_TIME_INTERVAL = 6*60*60
+LAST_RETRAIN_FILE = "state/last_ml_retrain.txt"
+
+def read_last_retrain_time():
+    try:
+        with open(LAST_RETRAIN_FILE, "r") as f:
+            return float(f.read().strip())
+    except Exception:
+        return 0.0
+
+def write_last_retrain_time(ts):
+    try:
+        with open(LAST_RETRAIN_FILE, "w") as f:
+            f.write(str(ts))
+    except Exception as e:
+        logger.error(f"Failed to write retrain time: {e}")
+
+def retrain_ml_if_needed(trade_log):
+    now = time.time()
+    last = read_last_retrain_time()
+    need_time = (now - last) > RETRAIN_TIME_INTERVAL
+    need_trades = (len(trade_log) > 0 and len(trade_log) % RETRAIN_TRADE_INTERVAL == 0)
+    if need_time or need_trades:
+        logger.info("Triggering ML model retrain.")
+        success, msg = train_and_save_model()
+        write_last_retrain_time(now)
+        if success:
+            logger.info(f"ML retrain success: {msg}")
+        else:
+            logger.error(f"ML retrain failed: {msg}")
+
+def retrain_ml_background(trade_log):
+    threading.Thread(target=retrain_ml_if_needed, args=(trade_log,), daemon=True).start()
+
+# --- Dynamic ATR Automation Functions
+def estimate_dynamic_atr_multipliers(df):
+    """Based on ATR/Price ratios, optimize SL/TP/Trailing multipliers."""
+    try:
+        # Dynamic target bands
+        atr_avg = df["ATR"].rolling(50).mean().iloc[-1]
+        close_price = df["Close"].iloc[-1]
+        atr_pct = atr_avg / close_price if close_price > 0 else 0.01
+
+        # Heuristics (can replace later with model prediction if wanted)
+        stop_mult = max(0.8, min(2.0, atr_pct * 50))    # adapt SL around volatility
+        tp_mult   = max(1.5, min(5.0, atr_pct * 100))   # TP further out
+        trail_mult = max(0.5, min(2.0, atr_pct * 30))   # trailing in-between
+
+        return stop_mult, tp_mult, trail_mult
+    except Exception as e:
+        logger.error(f"ATR tuning failed: {e}")
+        return 1.0, 2.0, 1.0  # fallback safe values
+# --- Heartbeat Writing for Watchdog ---
 def write_heartbeat():
     ts = time.time()
     try:
@@ -216,22 +312,34 @@ def write_heartbeat():
     except Exception:
         pass
 
-# ─── Main Trading Logic ─────────────────────────────────────────────────────────
+# --- Trade Execution Guardrails ---
+def validate_trade(amount, price, capital, min_size=0.001):
+    if amount < min_size or price <= 0 or capital <= 0:
+        return False
+    return True
+
+# --- Main Trading Function ---
 def main_loop():
     global current_capital, trade_log, open_positions
+
     retrain_ml_background(trade_log)
 
     for pair in TRADING_PAIRS:
-        perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 100))
+        perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
 
-        df = fetch_klines(pair, interval, lookback)
+        # Fetch Auto params
+        interval_used = trading_cfg.get("default_interval", "5m")
+        lookback_used = trading_cfg.get("backtest_lookback", 1000)
+
+        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
         if df.empty or not validate_df(df):
-            logger.warning(f"Data for {pair} invalid/empty.")
+            logger.warning(f"Invalid data for {pair}")
             continue
+
         df = add_indicators(df)
 
         try:
-            if META_MODEL is not None:
+            if META_MODEL:
                 signal = generate_ensemble_signal(df, META_MODEL)
             else:
                 signal = generate_signal(df)
@@ -239,221 +347,202 @@ def main_loop():
             logger.error(f"Signal generation failed for {pair}: {e}")
             continue
 
-        # --- Autotune Threshold or Use Manual ---
-        if autotune:
-            try:
-                threshold_final = adaptive_threshold(df, target_profit=0.01)
-            except Exception as e:
-                logger.warning(f"Autotune failed for {pair}: {e}")
-                threshold_final = 0.5
-        else:
-            threshold_final = st.session_state.sidebar.get("threshold", 0.5)
+        # Dynamic ATR Stop/TP/Trail tuning per pair
+        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-        # --- ATR-Based Dynamic Settings (Overriding fixed stop_loss / tp) ---
-        latest_atr = df["ATR"].iloc[-1] if "ATR" in df.columns else 0.001
-
-        stop_loss_value = latest_atr * atr_stop_mult
-        take_profit_value = latest_atr * atr_tp_mult
-        trailing_stop_value = latest_atr * atr_trail_mult
-
+        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
         price = df["Close"].iloc[-1]
-        min_size = 0.001
+        atr_val = df["ATR"].iloc[-1]
 
-        # --- Managing Open Positions ---
-        if pair in open_positions:
-            pos = open_positions[pair]
-            entry_price = pos["entry_price"]
-            amount = pos["amount"]
-
-            # Check if TP hit
-            if price >= entry_price + take_profit_value:
-                if partial_exit and "partial_exited" not in pos:
-                    logger.info(f"{pair}: Partial Take Profit triggered.")
-                    partial_amount = amount / 2
-                    if validate_trade(partial_amount, price, current_capital, min_size):
-                        result = place_order(pair, "SELL", partial_amount, price, dry_run)
-                        logger.info(f"Partial exit: {result}")
-                        pos["amount"] -= partial_amount
-                        pos["partial_exited"] = True
-                        current_capital += partial_amount * price * (1 - fee_pct)
-                        atomic_save_json(open_positions, POSITIONS_FILE)
-                        atomic_save_json(current_capital, CAPITAL_FILE)
-                        trade_counter.inc()
-                    continue
-                else:
-                    logger.info(f"{pair}: Full Take Profit triggered.")
-                    if validate_trade(amount, price, current_capital, min_size):
-                        result = place_order(pair, "SELL", amount, price, dry_run)
-                        logger.info(f"Closed TP: {result}")
-                        trade_log.append({
-                            "pair": pair,
-                            "side": "SELL",
-                            "amount": amount,
-                            "price": price,
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "result": "TP"
-                        })
-                        current_capital += amount * price * (1 - fee_pct)
-                        del open_positions[pair]
-                        atomic_save_json(open_positions, POSITIONS_FILE)
-                        atomic_save_json(trade_log, TRADE_LOG_FILE)
-                        atomic_save_json(current_capital, CAPITAL_FILE)
-                        trade_counter.inc()
-                    continue
-
-            # Check if SL hit
-            if price <= entry_price - stop_loss_value:
-                logger.info(f"{pair}: Stop Loss triggered.")
-                if validate_trade(amount, price, current_capital, min_size):
-                    result = place_order(pair, "SELL", amount, price, dry_run)
-                    logger.info(f"Closed SL: {result}")
-                    trade_log.append({
-                        "pair": pair,
-                        "side": "SELL",
-                        "amount": amount,
-                        "price": price,
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "result": "SL"
-                    })
-                    current_capital += amount * price * (1 - fee_pct)
-                    del open_positions[pair]
-                    atomic_save_json(open_positions, POSITIONS_FILE)
-                    atomic_save_json(trade_log, TRADE_LOG_FILE)
-                    atomic_save_json(current_capital, CAPITAL_FILE)
-                    trade_counter.inc()
-                continue
-
-        # --- Managing New Entries ---
-        if pair not in open_positions:
-            if len(open_positions) >= max_positions:
-                continue
-            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-            if latest_signal < threshold_final:
+        # BUY Condition
+        if pair not in open_positions and latest_signal > 0.5:
+            if len(open_positions) >= trading_cfg.get("max_positions", 5):
                 continue
 
             amount = min(current_capital / price, 1.0)
-            if validate_trade(amount, price, current_capital, min_size):
-                result = place_order(pair, "BUY", amount, price, dry_run)
-                logger.info(f"Placed BUY order: {result}")
+            if not validate_trade(amount, price, current_capital):
+                continue
+
+            try:
+                _ = place_order(pair, "BUY", amount, price, dry_run=True)
                 open_positions[pair] = {
                     "amount": amount,
                     "entry_price": price,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "atr_val": atr_val
                 }
                 trade_log.append({
+                    "timestamp": datetime.utcnow().isoformat(),
                     "pair": pair,
                     "side": "BUY",
                     "amount": amount,
                     "price": price,
-                    "timestamp": datetime.utcnow().isoformat(),
                     "result": None
                 })
-                current_capital -= amount * price * (1 + fee_pct)
-                atomic_save_json(open_positions, POSITIONS_FILE)
-                atomic_save_json(trade_log, TRADE_LOG_FILE)
-                atomic_save_json(current_capital, CAPITAL_FILE)
+                current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
                 trade_counter.inc()
+                logger.info(f"Opened BUY for {pair} at {price:.4f}")
+            except Exception as e:
+                logger.error(f"Buy execution failed for {pair}: {e}")
 
-        pnl_gauge.set(current_capital)
-        write_heartbeat()
-        time.sleep(0.1)
+            write_heartbeat()
+            continue
 
+        # SELL Condition
+        if pair in open_positions:
+            pos = open_positions[pair]
+            amount = pos["amount"]
+            entry_price = pos["entry_price"]
+            atr_entry = pos.get("atr_val", atr_val)
+
+            # Partial Exit Handling
+            if st.session_state.sidebar.get("partial_exit", True):
+                tp1 = entry_price + (atr_entry * tp_mult / 2)
+                if price >= tp1 and pos.get("partial_exit_done") != True:
+                    logger.info(f"{pair}: Partial TP1 reached!")
+                    sell_amount = amount * 0.5
+                    try:
+                        _ = place_order(pair, "SELL", sell_amount, price, dry_run=True)
+                        trade_log.append({
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "pair": pair,
+                            "side": "SELL_PARTIAL",
+                            "amount": sell_amount,
+                            "price": price,
+                            "result": "TP1"
+                        })
+                        pos["amount"] -= sell_amount
+                        pos["partial_exit_done"] = True
+                        current_capital += sell_amount * price * (1 - trading_cfg.get("fee", 0.001))
+                        logger.info(f"Partial exit at TP1 for {pair}")
+                    except Exception as e:
+                        logger.error(f"Partial TP1 exit failed: {e}")
+                    continue
+
+            # Full Exit Conditions (TP or SL)
+            tp_price = entry_price + atr_entry * tp_mult
+            sl_price = entry_price - atr_entry * stop_mult
+            trail_price = max(entry_price, price - atr_entry * trail_mult)
+
+            if price >= tp_price:
+                reason = "TP"
+            elif price <= sl_price:
+                reason = "SL"
+            elif price <= trail_price:
+                reason = "TRAIL"
+            else:
+                continue
+
+            try:
+                _ = place_order(pair, "SELL", amount, price, dry_run=True)
+                trade_log.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "pair": pair,
+                    "side": "SELL",
+                    "amount": amount,
+                    "price": price,
+                    "result": reason
+                })
+                current_capital += amount * price * (1 - trading_cfg.get("fee", 0.001))
+                del open_positions[pair]
+                trade_counter.inc()
+                logger.info(f"Closed position {pair} due to {reason}")
+            except Exception as e:
+                logger.error(f"Closing failed for {pair}: {e}")
+
+            write_heartbeat()
+
+    # Save session
+    atomic_save_json(open_positions, POSITIONS_FILE)
+    atomic_save_json(trade_log, TRADE_LOG_FILE)
+    atomic_save_json(current_capital, CAPITAL_FILE)
+
+    pnl_gauge.set(current_capital)
     retrain_ml_background(trade_log)
-    write_heartbeat()
-# ─── Trading and Backtesting Buttons ───────────────────────────────────────────
+# --- Sidebar Controls for Execution ---
 run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
 run_backtest_btn = st.sidebar.button("🧪 Run Backtest")
 
-# === Trading Mode ===
+# --- Main App Logic Entrypoint ---
 if run_trading_btn:
     try:
+        st.success("Trading cycle running...")
         main_loop()
     except Exception as e:
-        tb = traceback.format_exc()
-        logger.critical(f"Trading loop crashed:\n{tb}")
-        st.error(f"Trading crashed: {e}")
-        write_heartbeat()
+        st.error(f"Trading loop failed: {e}")
+        logger.error(f"Trading loop error: {e}")
 
-# === Backtest Mode ===
 if run_backtest_btn:
     try:
-        st.sidebar.info("Backtest started...")
+        st.sidebar.success("Backtest started...")
 
-        pair = TRADING_PAIRS[0]  # You could loop or select specific pair if needed
-        df = fetch_klines(pair, interval, lookback)
+        # Pick first trading pair (or extend later to multi-pair backtest)
+        pair = TRADING_PAIRS[0]
+
+        # Auto params per pair (interval, lookback, threshold) if available
+        if st.session_state.sidebar["mode"] == "Auto":
+            params = get_pair_params(pair)
+            interval_used = params.get("interval", "5m")
+            lookback_used = params.get("lookback", 1000)
+            threshold_used = params.get("threshold", 0.5)
+        else:
+            interval_used = st.session_state.sidebar.get("interval", "5m")
+            lookback_used = st.session_state.sidebar.get("lookback", 1000)
+            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+
+        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+
         if df.empty or not validate_df(df):
-            st.sidebar.error(f"Backtest failed: Data for {pair} invalid or empty.")
+            st.sidebar.error(f"Backtest failed: No valid data for {pair}")
         else:
             df = add_indicators(df)
 
-            # Decide which signal generator to use
-            if META_MODEL is not None:
+            # Use Ensemble or base signal
+            if META_MODEL:
                 signal = generate_ensemble_signal(df, META_MODEL)
             else:
                 signal = generate_signal(df)
 
-            prices = df["Close"]
+            # === NEW: Estimate ATR multipliers dynamically
+            stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-            # Fetch latest ATR
-            latest_atr = df["ATR"].iloc[-1] if "ATR" in df.columns else 0.001
-
-            stop_mult = st.session_state.sidebar.get("atr_stop_mult", 1.0)
-            tp_mult = st.session_state.sidebar.get("atr_tp_mult", 2.0)
-            trail_mult = st.session_state.sidebar.get("atr_trail_mult", 1.0)
-
-            # Calculate realistic dynamic stops
-            stop_loss_value = latest_atr * stop_mult
-            take_profit_value = latest_atr * tp_mult
-            trailing_stop_value = latest_atr * trail_mult
-
-            bt_results = run_backtest(
+            # Run backtest
+            backtest_result = run_backtest(
                 signal=signal,
-                prices=prices,
-                threshold=threshold_slider,
-                initial_capital=trading_cfg.get("default_capital", 10.0),
+                prices=df["Close"],
+                threshold=threshold_used,
+                initial_capital=trading_cfg.get("default_capital", 10),
                 risk_pct=risk_cfg.get("risk_pct", 0.01),
-                stop_loss_pct=stop_loss_value,
-                take_profit_pct=take_profit_value,
-                fee_pct=st.session_state.sidebar.get("fee", 0.001),
-                verbose=True,
-                partial_exit=st.session_state.sidebar.get("partial_exit", False),
                 stop_loss_atr_mult=stop_mult,
                 take_profit_atr_mult=tp_mult,
-                atr=df["ATR"] if "ATR" in df.columns else None,
                 trailing_atr_mult=trail_mult,
+                fee_pct=trading_cfg.get("fee", 0.001),
+                partial_exit=True,  # Always enable partial exits in AI backtest
+                atr=df.get("ATR"),
             )
 
-            if bt_results is not None:
-                st.success("Backtest Completed!")
-                st.subheader(f"📈 Backtest Results for {pair}")
-                st.dataframe(bt_results)
-            else:
-                st.error("Backtest failed: No valid results.")
+            # Show backtest results
+            st.write("📊 Backtest Results", backtest_result)
+
+            try:
+                atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+                st.sidebar.success("✅ Backtest results saved!")
+            except Exception as e:
+                logger.error(f"Saving backtest results failed: {e}")
+                st.sidebar.error("Saving backtest results failed!")
 
     except Exception as e:
-        tb = traceback.format_exc()
-        logger.error(f"Backtest crashed:\n{tb}")
-        st.sidebar.error(f"Backtest crash: {e}")
-# ─── Global Exception Handler ──────────────────────────────────────────────────
+        logger.exception("Backtest execution error")
+        st.error(f"Backtest error: {e}")
+
+
+# --- Global Error Catching for Crash Recovery ---
+import sys
 def global_exception_handler(exc_type, exc_value, exc_traceback):
-    tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logger.critical(f"UNHANDLED EXCEPTION:\n{tb}")
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
+    st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
-    USER = os.getenv("ALERT_USER")
-    PASS = os.getenv("ALERT_PASS")
-    ALERT_EMAIL = os.getenv("ALERT_EMAIL")
-
-    if USER and PASS and ALERT_EMAIL:
-        try:
-            import smtplib
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                server.starttls()
-                server.login(USER, PASS)
-                message = f"Subject: OnlyFunds CRASHED!\n\n{tb}"
-                server.sendmail(USER, ALERT_EMAIL, message)
-            logger.info("Crash alert email sent.")
-        except Exception as email_error:
-            logger.error(f"Failed to send alert email: {email_error}")
-
-# Attach to sys
 sys.excepthook = global_exception_handler
