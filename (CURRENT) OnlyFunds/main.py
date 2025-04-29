@@ -403,38 +403,44 @@ def main_loop():
         price = df["Close"].iloc[-1]
         atr_val = df["ATR"].iloc[-1]
 
-        # BUY Condition
-        if pair not in open_positions and latest_signal > 0.5:
-            if len(open_positions) >= trading_cfg.get("max_positions", 5):
-                continue
+# BUY Condition
+if pair not in open_positions and latest_signal > 0.5:
+    if len(open_positions) >= trading_cfg.get("max_positions", 5):
+        continue
 
-            amount = min(current_capital / price, 1.0)
-            if not validate_trade(amount, price, current_capital):
-                continue
+    # === Dynamic position sizing based on capital allocation ===
+    capital_alloc = max(
+        1.0,
+        current_capital * st.session_state.sidebar["capital_alloc_pct"]
+    )
+    amount = capital_alloc / price
 
-            try:
-                _ = place_order(pair, "BUY", amount, price, dry_run=True)
-                open_positions[pair] = {
-                    "amount": amount,
-                    "entry_price": price,
-                    "atr_val": atr_val
-                }
-                trade_log.append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "pair": pair,
-                    "side": "BUY",
-                    "amount": amount,
-                    "price": price,
-                    "result": None
-                })
-                current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
-                trade_counter.inc()
-                logger.info(f"Opened BUY for {pair} at {price:.4f}")
-            except Exception as e:
-                logger.error(f"Buy execution failed for {pair}: {e}")
+    if not validate_trade(amount, price, current_capital):
+        continue
 
-            write_heartbeat()
-            continue
+    try:
+        _ = place_order(pair, "BUY", amount, price, dry_run=True)
+        open_positions[pair] = {
+            "amount": amount,
+            "entry_price": price,
+            "atr_val": atr_val  # <-- Assuming you calculate atr_val earlier!
+        }
+        trade_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "pair": pair,
+            "side": "BUY",
+            "amount": amount,
+            "price": price,
+            "result": None
+        })
+        current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
+        trade_counter.inc()
+        logger.info(f"Opened BUY for {pair} at {price:.4f}")
+    except Exception as e:
+        logger.error(f"Buy execution failed for {pair}: {e}")
+
+    write_heartbeat()
+    continue
 
         # SELL Condition
         if pair in open_positions:
