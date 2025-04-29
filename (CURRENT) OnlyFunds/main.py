@@ -651,9 +651,10 @@ if run_backtest_btn:
         st.sidebar.success("📊 Backtest running on ALL pairs...")
 
         all_results = []
-        starting_capital = trading_cfg.get("default_capital", 10)
-        capital = starting_capital
+        starting_capital = trading_cfg.get("default_capital", 10.0)
+        current_capital = starting_capital
         day_returns = []
+        total_trades = 0
 
         for pair in TRADING_PAIRS:
             if st.session_state.sidebar["mode"] == "Auto":
@@ -664,7 +665,7 @@ if run_backtest_btn:
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5")
 
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
@@ -685,7 +686,7 @@ if run_backtest_btn:
                 signal=signal,
                 prices=df["Close"],
                 threshold=threshold_used,
-                initial_capital=capital,
+                initial_capital=current_capital,
                 risk_pct=risk_cfg.get("risk_pct", 0.01),
                 stop_loss_atr_mult=stop_mult,
                 take_profit_atr_mult=tp_mult,
@@ -697,16 +698,24 @@ if run_backtest_btn:
 
             if not backtest_df.empty:
                 all_results.append(backtest_df)
-                day_return = backtest_df.loc[backtest_df["type"] == "summary", "daily_return_pct"].mean()
-                day_returns.append(day_return)
-                # Compound capital
-                capital *= (1 + (day_return/100))
+
+                # Update running capital
+                summaries = backtest_df[backtest_df["type"] == "summary"]
+                for _, row in summaries.iterrows():
+                    day_return = row.get("daily_return_pct", 0.0)
+                    current_capital *= (1 + day_return / 100.0)
+                    day_returns.append(day_return)
+                    total_trades += row.get("trades", 0)
 
         if all_results:
             final_df = pd.concat(all_results, ignore_index=True)
-            st.success(f"✅ Backtest complete across {len(TRADING_PAIRS)} pairs!")
-            st.write(f"📈 Final Capital: ${capital:.2f}")
-            st.write(f"⚡ Average Daily Return: {sum(day_returns)/len(day_returns):.2f}%")
+
+            avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
+
+            st.success(f"✅ Backtest complete across {len(all_results)} pairs!")
+            st.metric("Final Capital", f"${current_capital:.2f}")
+            st.metric("Average Daily Return", f"{avg_day_return:.2f}%")
+            st.metric("Total Trades Executed", f"{total_trades}")
 
             st.dataframe(final_df)
 
@@ -714,21 +723,13 @@ if run_backtest_btn:
                 atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
             except Exception as e:
                 logger.error(f"Saving backtest results failed: {e}")
+
         else:
             st.warning("❗ No valid backtest results to display.")
 
     except Exception as e:
         logger.exception("Backtest execution error")
         st.error(f"Backtest error: {e}")
-
-            except Exception as e:
-                logger.error(f"Saving backtest results failed: {e}")
-                st.sidebar.error("Saving backtest results failed!")
-
-    except Exception as e:
-        logger.exception("Backtest execution error")
-        st.error(f"Backtest error: {e}")
-
 
 # --- Global Error Catching for Crash Recovery ---
 import sys
