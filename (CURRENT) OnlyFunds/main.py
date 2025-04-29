@@ -440,18 +440,18 @@ if st.session_state.sidebar["mode"] == "Auto":
 
 else:
     interval_used = st.session_state.sidebar.get("interval", "5m")
-    lookback_used = st.session_state.sidebar.get("lookback", 1000)
+    lookback_used = st.session_state.sidebar.get("lookback", "1000")
 
-    if st.session_state.sidebar.get("autotune", True):
-        threshold_used = dynamic_threshold(df)
-    else:
-        threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+if st.session_state.sidebar.get("autotune", True):
+    threshold_used = dynamic_threshold(df)
+else:
+    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-        if df.empty or not validate_df(df):
-            logger.warning(f"Invalid or empty data for {pair}")
-            continue
+if df.empty or not validate_df(df):
+    logger.warning(f"Invalid or empty data for {pair}")
+    continue
 
 df = add_indicators(df)
 
@@ -473,16 +473,16 @@ if st.session_state.sidebar.get("mode") == "Aggressive":
             stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
             tp_mult = tp_mult * 1.2                 # stretch take profits
             trail_mult = trail_mult * 1.1            # loosen trailing stop
-        elif st.session_state.sidebar.get("mode") == "Conservative":
+elif st.session_state.sidebar.get("mode") == "Conservative":
             stop_mult = stop_mult * 1.2              # looser stops
             tp_mult = tp_mult * 0.9                  # smaller take profits
             trail_mult = trail_mult * 1.0             # trailing unchanged
 
         # Get latest signal value
-        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
         ### BUY CONDITION
-        if pair not in open_positions and latest_signal > threshold_used:
+if pair not in open_positions and latest_signal > threshold_used:
             if len(open_positions) >= st.session_state.sidebar["max_positions"]:
                 continue
 
@@ -518,7 +518,7 @@ if st.session_state.sidebar.get("mode") == "Aggressive":
             continue
 
         ### SELL CONDITION
-        if pair in open_positions:
+if pair in open_positions:
             position = open_positions[pair]
             amount = position["amount"]
             entry_price = position["entry_price"]
@@ -563,12 +563,12 @@ if st.session_state.sidebar.get("mode") == "Aggressive":
             continue
 
     # Save all
-    atomic_save_json(open_positions, POSITIONS_FILE)
-    atomic_save_json(trade_log, TRADE_LOG_FILE)
-    atomic_save_json(current_capital, CAPITAL_FILE)
+atomic_save_json(open_positions, POSITIONS_FILE)
+atomic_save_json(trade_log, TRADE_LOG_FILE)
+atomic_save_json(current_capital, CAPITAL_FILE)
 
-    pnl_gauge.set(current_capital)
-    retrain_ml_background(trade_log)
+pnl_gauge.set(current_capital)
+retrain_ml_background(trade_log)
 
 # --- Sidebar Controls for Execution ---
 run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
@@ -608,7 +608,7 @@ if run_backtest_btn:
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
             if df.empty or not validate_df(df):
-                logger.warning(f⚠️ Skipping {pair}: no valid data")
+                logger.warning(f"⚠️ Skipping {pair}: no valid data")
                 continue
 
             df = add_indicators(df)
