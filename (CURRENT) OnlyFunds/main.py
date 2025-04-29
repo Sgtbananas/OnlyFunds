@@ -16,8 +16,16 @@ os.makedirs("logs", exist_ok=True)
 import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
-# --- Safe Sidebar State Init (must come early) ---
-def get_config_defaults():
+# --- Safe Sidebar State Init ---
+def sidebar(key, default=None, set_value=None):
+    if "sidebar" not in st.session_state:
+        st.session_state.sidebar = {}
+
+    if set_value is not None:
+        st.session_state.sidebar[key] = set_value
+        return set_value
+    return st.session_state.sidebar.get(key, default)
+
 # --- Sidebar Safe Access Helper ---
 def sidebar(key, default=None, set_value=None):
     if "sidebar" not in st.session_state:
