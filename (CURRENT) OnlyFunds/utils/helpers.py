@@ -127,6 +127,19 @@ def save_json(data, filepath, **json_kwargs):
 def load_json(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
+def get_pair_params(pair):
+    """
+    Load dynamic params (interval, lookback, threshold) for a given trading pair.
+    Fallback to default if not found.
+    """
+    params = load_json("state/auto_params.json", default={})
+    if pair in params:
+        return params[pair]
+    return dict(
+        interval="5m",
+        lookback=1000,
+        threshold=0.5
+    )
 
 def validate_pair(pair: str):
     if not isinstance(pair, str):
