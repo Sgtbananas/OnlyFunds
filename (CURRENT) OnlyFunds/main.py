@@ -367,6 +367,29 @@ def validate_trade(amount, price, capital, min_size=0.001):
         return False
     return True
 
+def dynamic_capital_allocation(performance: dict, base_alloc_pct=0.05, min_alloc=1.0, max_alloc_pct=0.2):
+    """
+    Adjust capital allocation based on recent performance.
+    If winning, increase allocation slightly. If losing, decrease.
+    """
+    win_rate = performance.get("win_rate", 50.0)
+    current_balance = performance.get("current_capital", 10)
+
+    if win_rate > 70:
+        alloc_pct = min(base_alloc_pct * 1.5, max_alloc_pct)
+    elif win_rate > 55:
+        alloc_pct = min(base_alloc_pct * 1.2, max_alloc_pct)
+    elif win_rate < 45:
+        alloc_pct = max(base_alloc_pct * 0.8, 0.01)
+    elif win_rate < 30:
+        alloc_pct = max(base_alloc_pct * 0.5, 0.005)
+    else:
+        alloc_pct = base_alloc_pct
+
+    capital_to_use = max(current_balance * alloc_pct, min_alloc)
+
+    return capital_to_use
+
 # --- Main Trading Function ---
 def main_loop():
     global current_capital, trade_log, open_positions
@@ -408,12 +431,10 @@ if pair not in open_positions and latest_signal > 0.5:
     if len(open_positions) >= trading_cfg.get("max_positions", 5):
         continue
 
-    # === Dynamic position sizing based on capital allocation ===
-    capital_alloc = max(
-        1.0,
-        current_capital * st.session_state.sidebar["capital_alloc_pct"]
-    )
-    amount = capital_alloc / price
+# Dynamic capital allocation based on performance
+performance = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
+capital_alloc = dynamic_capital_allocation(performance)
+amount = capital_alloc / price
 
     if not validate_trade(amount, price, current_capital):
         continue
