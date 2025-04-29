@@ -586,7 +586,19 @@ if run_backtest_btn:
                 p = get_pair_params(pair)
                 interval_used = p.get("interval", "5m")
                 lookback_used = p.get("lookback", 1000)
-                threshold_used = p.get("threshold", 0.5)
+# Estimate threshold dynamically using AI/ML if autotune is enabled
+if st.session_state.sidebar.get("autotune", True):
+    try:
+        threshold_used = estimate_optimal_threshold(
+            df=df,
+            signal=signal,
+            prices=df["Close"]
+        )
+    except Exception as e:
+        logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
+        threshold_used = p.get("threshold", 0.5)
+else:
+    threshold_used = p.get("threshold", 0.5)
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)

@@ -311,11 +311,12 @@ def estimate_dynamic_atr_multipliers(df):
     except Exception as e:
         print(f"[WARN] ATR estimation failed: {e}")
         return 1.0, 2.0, 1.0  # Safe default
+import numpy as np
+
 def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fee_pct=0.001):
     """
-    Smartly find the best entry threshold based on historical profit per trade.
-    - signal: Series of signals.
-    - prices: Series of close prices.
+    AI-driven: Automatically finds the best entry threshold for signal strength.
+    Based on max average profit per trade.
     """
     try:
         thresholds = np.linspace(0.3, 0.8, n_steps)
@@ -325,31 +326,30 @@ def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fe
         for thr in thresholds:
             buys = (signal > thr)
             sells = (signal < -thr)
-
             profits = []
+
             for i in range(1, len(prices)):
-                if buys.iloc[i-1]:
-                    entry = prices.iloc[i-1]
+                if buys.iloc[i - 1]:
+                    entry = prices.iloc[i - 1]
                     exit = prices.iloc[i]
                     ret = (exit - entry) / entry - fee_pct
                     profits.append(ret * risk_pct)
-                elif sells.iloc[i-1]:
-                    entry = prices.iloc[i-1]
+                elif sells.iloc[i - 1]:
+                    entry = prices.iloc[i - 1]
                     exit = prices.iloc[i]
                     ret = (entry - exit) / entry - fee_pct
                     profits.append(ret * risk_pct)
 
             avg_profit = np.mean(profits) if profits else -999
-
             if avg_profit > best_profit:
                 best_profit = avg_profit
                 best_thr = thr
 
         return best_thr
-
     except Exception as e:
         print(f"[WARN] estimate_optimal_threshold fallback: {e}")
         return 0.5
+
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
