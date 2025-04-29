@@ -211,3 +211,68 @@ def get_auto_pair_params(auto_params, pair, today=None, fallback=None):
     if dates:
         return pair_params[dates[-1]]
     return fallback
+
+def get_pair_params(pair):
+    """
+    Load dynamic params (interval, lookback, threshold) for a trading pair.
+    Fallback: auto-tune interval based on volatility.
+    """
+    try:
+        params = load_json("state/auto_params.json")
+    except Exception:
+        params = {}
+
+    if params and pair in params:
+        return params[pair]
+
+    # --- Volatility-based fallback ---
+    try:
+        df = fetch_klines(pair, interval="5m", limit=300)
+        if df.empty:
+            raise ValueError("Empty dataframe")
+
+        df["returns"] = df["Close"].pct_change()
+        volatility = df["returns"].std()
+
+        # More volatile pairs = slower intervals
+        if volatility > 0.02:
+            interval = "15m"
+            lookback = 800
+        elif volatility > 0.01:
+            interval = "5m"
+            lookback = 1000
+        else:
+            interval = "1m"
+            lookback = 1200
+
+        return dict(
+            interval=interval,
+            lookback=lookback,
+            threshold=0.5  # fallback default threshold
+        )
+
+    except Exception as e:
+        print(f"[WARN] Auto fallback get_pair_params failed for {pair}: {e}")
+        return dict(
+            interval="5m",
+            lookback=1000,
+            threshold=0.5
+        )
+def dynamic_threshold(df):
+    """
+    Estimate a dynamic buy threshold based on recent volatility.
+    Higher volatility → require stronger signals.
+    Lower volatility → accept weaker signals.
+    """
+    try:
+        returns = df["Close"].pct_change()
+        vol = returns.std()
+
+        if vol > 0.02:
+            return 0.7
+        elif vol > 0.01:
+            return 0.6
+        else:
+            return 0.5
+    except Exception:
+        return 0.5  # fallback safe default
