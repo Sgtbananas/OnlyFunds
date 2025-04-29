@@ -585,7 +585,7 @@ if run_trading_btn:
 
 if run_backtest_btn:
     try:
-        st.sidebar.success("📊 Backtest running on ALL pairs...")
+        st.sidebar.success("📈 Backtest running on ALL pairs...")
 
         all_results = []
         starting_capital = trading_cfg.get("default_capital", 10.0)
@@ -593,82 +593,34 @@ if run_backtest_btn:
         day_returns = []
         total_trades = 0
 
-for pair in TRADING_PAIRS:
-    # Fetch parameters
-    if st.session_state.sidebar["mode"] == "Auto":
-        p = get_pair_params(pair)
-        interval_used = p.get("interval", "5m")
-        lookback_used = p.get("lookback", 1000)
-        threshold_used = p.get("threshold", 0.5)
-    else:
-        interval_used = st.session_state.sidebar.get("interval", "5m")
-        lookback_used = st.session_state.sidebar.get("lookback", 1000)
-        threshold_used = st.session_state.sidebar.get("threshold", 0.5")
+        for pair in TRADING_PAIRS:
+            if st.session_state.sidebar["mode"] == "Auto":
+                p = get_pair_params(pair)
+                interval_used = p.get("interval", "5m")
+                lookback_used = p.get("lookback", 1000)
+                threshold_used = p.get("threshold", 0.5)
+            else:
+                interval_used = st.session_state.sidebar.get("interval", "5m")
+                lookback_used = st.session_state.sidebar.get("lookback", 1000)
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-    df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-    if df.empty or not validate_df(df):
-        logger.warning(f⚠️ Skipping {pair}: no valid data")
-        continue
+            if df.empty or not validate_df(df):
+                logger.warning(f⚠️ Skipping {pair}: no valid data")
+                continue
 
-    df = add_indicators(df)
+            df = add_indicators(df)
 
-    try:
-        if META_MODEL:
-            signal = generate_ensemble_signal(df, META_MODEL)
-        else:
-            signal = generate_signal(df)
-    except Exception as e:
-        logger.error(f"Signal generation failed for {pair}: {e}")
-        continue
+            try:
+                if META_MODEL:
+                    signal = generate_ensemble_signal(df, META_MODEL)
+                else:
+                    signal = generate_signal(df)
+            except Exception as e:
+                logger.error(f"Signal generation failed for {pair}: {e}")
+                continue
 
-    stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)  # <--- INDENTED correctly
-
-        # --- Correct placement of ATR Multiplier Estimation ---
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-
-        # Bias Tuning based on Mode
-        if st.session_state.sidebar.get("mode") == "Aggressive":
-            stop_mult = max(0.7, stop_mult * 0.8)
-            tp_mult = tp_mult * 1.2
-            trail_mult = trail_mult * 1.1
-        elif st.session_state.sidebar.get("mode") == "Conservative":
-            stop_mult = stop_mult * 1.2
-            tp_mult = tp_mult * 0.9
-            trail_mult = trail_mult * 1.0
-
-        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-        price = df["Close"].iloc[-1]
-
-        backtest_df = run_backtest(
-            signal=signal,
-            prices=df["Close"],
-            threshold=threshold_used,
-            initial_capital=current_capital,
-            risk_pct=risk_cfg.get("risk_pct", 0.01),
-            stop_loss_atr_mult=stop_mult,
-            take_profit_atr_mult=tp_mult,
-            trailing_atr_mult=trail_mult,
-            fee_pct=trading_cfg.get("fee", 0.001),
-            partial_exit=st.session_state.sidebar.get("partial_exit", True),
-            atr=df.get("ATR")
-        )
-
-        if not backtest_df.empty:
-            all_results.append(backtest_df)
-
-            # Update running capital
-            summaries = backtest_df[backtest_df["type"] == "summary"]
-            for _, row in summaries.iterrows():
-                day_return = row.get("daily_return_pct", 0.0)
-                current_capital *= (1 + day_return / 100.0)
-                day_returns.append(day_return)
-                total_trades += row.get("trades", 0)
-
-    except Exception as e:
-        logger.error(f"Error processing {pair}: {e}")
-
-            # --- Autotune threshold based on AI/ML ---
             if st.session_state.sidebar.get("autotune", True):
                 try:
                     threshold_used = estimate_optimal_threshold(
@@ -678,16 +630,10 @@ for pair in TRADING_PAIRS:
                     )
                 except Exception as e:
                     logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-                    threshold_used = 0.5  # fallback
-            else:
-                threshold_used = threshold_used
-
-            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-            price = df["Close"].iloc[-1]
+                    threshold_used = p.get("threshold", 0.5)
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-            # Bias tuning based on Trading Mode
             if st.session_state.sidebar.get("mode") == "Aggressive":
                 stop_mult = max(0.7, stop_mult * 0.8)
                 tp_mult = tp_mult * 1.2
@@ -714,7 +660,6 @@ for pair in TRADING_PAIRS:
             if not backtest_df.empty:
                 all_results.append(backtest_df)
 
-                # Update running capital
                 summaries = backtest_df[backtest_df["type"] == "summary"]
                 for _, row in summaries.iterrows():
                     day_return = row.get("daily_return_pct", 0.0)
@@ -738,7 +683,6 @@ for pair in TRADING_PAIRS:
                 atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
             except Exception as e:
                 logger.error(f"Saving backtest results failed: {e}")
-
         else:
             st.warning("❗ No valid backtest results to display.")
 
@@ -748,6 +692,7 @@ for pair in TRADING_PAIRS:
 
 # --- Global Error Catching for Crash Recovery ---
 import sys
+
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
