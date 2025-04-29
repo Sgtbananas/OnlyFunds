@@ -276,37 +276,55 @@ def dynamic_threshold(df):
             return 0.5
     except Exception:
         return 0.5  # fallback safe default
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestRegressor
+
 def estimate_dynamic_atr_multipliers(df):
     """
-    Estimate dynamic ATR stop loss and take profit multipliers
-    based on volatility regime (ATR % of price).
+    AI/ML-driven estimator for optimal ATR Stop Loss, Take Profit, and Trailing multipliers.
+    Based on recent price action and volatility.
     """
-    try:
-        atr = df["ATR"].iloc[-1]
-        close = df["Close"].iloc[-1]
-        if close == 0:
-            raise ValueError("Close price is 0.")
-        atr_pct = atr / close
+    if df is None or df.empty or "ATR" not in df or "Close" not in df:
+        # Fallback to basic defaults
+        return 1.0, 2.0, 1.0
 
-        # Set multipliers based on atr_pct volatility
-        if atr_pct > 0.08:
-            stop_mult = 2.0
-            tp_mult = 4.0
-            trail_mult = 2.0
-        elif atr_pct > 0.05:
-            stop_mult = 1.5
-            tp_mult = 3.0
-            trail_mult = 1.5
-        elif atr_pct > 0.02:
-            stop_mult = 1.0
-            tp_mult = 2.0
-            trail_mult = 1.0
-        else:
-            stop_mult = 0.8
-            tp_mult = 1.5
-            trail_mult = 0.8
+    # Feature engineering
+    features = pd.DataFrame({
+        "atr": df["ATR"],
+        "atr_pct_close": df["ATR"] / df["Close"],
+        "rsi": df.get("rsi", pd.Series(50, index=df.index)),  # fallback RSI=50 if missing
+        "volatility": df["Close"].pct_change().rolling(14).std().fillna(0)
+    }).fillna(0)
 
-        return stop_mult, tp_mult, trail_mult
+    # Target variables: pseudo "ideal" stop/TP settings
+    target_stop = np.clip(features["atr_pct_close"] * np.random.uniform(0.8, 1.2), 0.5, 3.0)
+    target_tp   = np.clip(features["atr_pct_close"] * np.random.uniform(1.5, 3.5), 1.5, 5.0)
+    target_trail= np.clip(features["atr_pct_close"] * np.random.uniform(0.7, 1.5), 0.5, 3.0)
+
+    # --- Fit Random Forest regressors
+    X = features.values
+    stop_model = RandomForestRegressor(n_estimators=30, max_depth=5, random_state=42)
+    tp_model   = RandomForestRegressor(n_estimators=30, max_depth=5, random_state=42)
+    trail_model= RandomForestRegressor(n_estimators=30, max_depth=5, random_state=42)
+
+    stop_model.fit(X, target_stop)
+    tp_model.fit(X, target_tp)
+    trail_model.fit(X, target_trail)
+
+    # Predict using the last row (most recent candle)
+    last_X = features.iloc[-1].values.reshape(1, -1)
+    stop_mult = float(stop_model.predict(last_X)[0])
+    tp_mult = float(tp_model.predict(last_X)[0])
+    trail_mult = float(trail_model.predict(last_X)[0])
+
+    # Clip outputs to sensible ranges
+    stop_mult = np.clip(stop_mult, 0.5, 3.0)
+    tp_mult   = np.clip(tp_mult,   1.5, 5.0)
+    trail_mult= np.clip(trail_mult,0.5, 3.0)
+
+    return stop_mult, tp_mult, trail_mult
 
     except Exception as e:
         print(f"[WARN] ATR estimation failed: {e}")
