@@ -86,7 +86,8 @@ from core.core_signals import (
 from core.trade_execution import place_order
 from core.backtester import run_backtest
 from utils.helpers import (
-    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair, get_auto_pair_params
+    compute_trade_metrics, suggest_tuning, save_json, load_json,
+    validate_pair, get_auto_pair_params, get_pair_params, dynamic_threshold
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
@@ -426,16 +427,25 @@ def main_loop():
     for pair in TRADING_PAIRS:
         performance = compute_trade_metrics(trade_log, starting_capital)
 
-        # Auto-fetch interval/lookback/threshold if Auto mode
-        if st.session_state.sidebar["mode"] == "Auto":
-            params = get_pair_params(pair)
-            interval_used = params.get("interval", "5m")
-            lookback_used = params.get("lookback", 1000)
-            threshold_used = params.get("threshold", 0.5)
-        else:
-            interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", 1000)
-            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+# Auto-fetch interval/lookback if Auto mode
+if st.session_state.sidebar["mode"] == "Auto":
+    params = get_pair_params(pair)
+    interval_used = params.get("interval", "5m")
+    lookback_used = params.get("lookback", 1000)
+
+    if st.session_state.sidebar.get("autotune", True):
+        threshold_used = dynamic_threshold(df)
+    else:
+        threshold_used = params.get("threshold", 0.5)
+
+else:
+    interval_used = st.session_state.sidebar.get("interval", "5m")
+    lookback_used = st.session_state.sidebar.get("lookback", 1000)
+
+    if st.session_state.sidebar.get("autotune", True):
+        threshold_used = dynamic_threshold(df)
+    else:
+        threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
         df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
