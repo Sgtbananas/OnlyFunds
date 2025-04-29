@@ -466,19 +466,20 @@ except Exception as e:
 
 latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
-stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-# Bias tuning based on Trading Mode
-if st.session_state.sidebar.get("mode") == "Aggressive":
-    stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
-    tp_mult = tp_mult * 1.2                 # stretch take profits
-    trail_mult = trail_mult * 1.1            # loosen trailing stop
-elif st.session_state.sidebar.get("mode") == "Conservative":
-    stop_mult = stop_mult * 1.2              # looser stops
-    tp_mult = tp_mult * 0.9                  # smaller take profits
-    trail_mult = trail_mult * 1.0             # trailing unchanged
-        price = df["Close"].iloc[-1]
-        atr_val = df["ATR"].iloc[-1]
+        # Bias tuning based on Trading Mode
+        if st.session_state.sidebar.get("mode") == "Aggressive":
+            stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
+            tp_mult = tp_mult * 1.2                 # stretch take profits
+            trail_mult = trail_mult * 1.1            # loosen trailing stop
+        elif st.session_state.sidebar.get("mode") == "Conservative":
+            stop_mult = stop_mult * 1.2              # looser stops
+            tp_mult = tp_mult * 0.9                  # smaller take profits
+            trail_mult = trail_mult * 1.0             # trailing unchanged
+
+        # Get latest signal value
+        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
         ### BUY CONDITION
         if pair not in open_positions and latest_signal > threshold_used:
@@ -540,24 +541,23 @@ elif st.session_state.sidebar.get("mode") == "Conservative":
             elif latest_signal < -threshold_used:
                 sell_reason = "SIGNAL-EXIT"
 
-if sell_reason:
-    try:
-        _ = place_order(pair, "SELL", amount, current_price, dry_run=True)
-        trade_log.append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "pair": pair,
-            "side": "SELL",
-            "amount": amount,
-            "price": current_price,
-            "result": sell_reason
-        })
-        current_capital += amount * current_price * (1 - trading_cfg.get("fee", 0.001))
-        atomic_save_json(current_capital, CAPITAL_FILE)  # <--- Add this line!
-        del open_positions[pair]
-        trade_counter.inc()
-        logger.info(f"Closed SELL {pair} at {current_price:.4f} by {sell_reason}")
-    except Exception as e:
-        logger.error(f"Sell execution failed for {pair}: {e}")
+            if sell_reason:
+                try:
+                    _ = place_order(pair, "SELL", amount, current_price, dry_run=True)
+                    trade_log.append({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "pair": pair,
+                        "side": "SELL",
+                        "amount": amount,
+                        "price": current_price,
+                        "result": sell_reason
+                    })
+                    current_capital += amount * current_price * (1 - trading_cfg.get("fee", 0.001))
+                    del open_positions[pair]
+                    trade_counter.inc()
+                    logger.info(f"Closed SELL {pair} at {current_price:.4f} by {sell_reason}")
+                except Exception as e:
+                    logger.error(f"Sell execution failed for {pair}: {e}")
 
             write_heartbeat()
             continue
