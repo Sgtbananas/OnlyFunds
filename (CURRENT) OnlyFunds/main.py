@@ -442,69 +442,53 @@ if pair not in open_positions and latest_signal > 0.5:
     write_heartbeat()
     continue
 
-        # SELL Condition
-        if pair in open_positions:
-            pos = open_positions[pair]
-            amount = pos["amount"]
-            entry_price = pos["entry_price"]
-            atr_entry = pos.get("atr_val", atr_val)
+# SELL Condition
+if pair in open_positions:
+    position = open_positions[pair]
+    amount = position["amount"]
+    entry_price = position["entry_price"]
+    atr_val = position.get("atr_val", None)
 
-            # Partial Exit Handling
-            if st.session_state.sidebar.get("partial_exit", True):
-                tp1 = entry_price + (atr_entry * tp_mult / 2)
-                if price >= tp1 and pos.get("partial_exit_done") != True:
-                    logger.info(f"{pair}: Partial TP1 reached!")
-                    sell_amount = amount * 0.5
-                    try:
-                        _ = place_order(pair, "SELL", sell_amount, price, dry_run=True)
-                        trade_log.append({
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "pair": pair,
-                            "side": "SELL_PARTIAL",
-                            "amount": sell_amount,
-                            "price": price,
-                            "result": "TP1"
-                        })
-                        pos["amount"] -= sell_amount
-                        pos["partial_exit_done"] = True
-                        current_capital += sell_amount * price * (1 - trading_cfg.get("fee", 0.001))
-                        logger.info(f"Partial exit at TP1 for {pair}")
-                    except Exception as e:
-                        logger.error(f"Partial TP1 exit failed: {e}")
-                    continue
+    if atr_val is None:
+        logger.warning(f"No ATR value recorded for {pair}, skipping sell logic.")
+        continue
 
-            # Full Exit Conditions (TP or SL)
-            tp_price = entry_price + atr_entry * tp_mult
-            sl_price = entry_price - atr_entry * stop_mult
-            trail_price = max(entry_price, price - atr_entry * trail_mult)
+    stop_loss_price = entry_price - (atr_val * st.session_state.sidebar["atr_stop_mult"])
+    take_profit_price = entry_price + (atr_val * st.session_state.sidebar["atr_tp_mult"])
 
-            if price >= tp_price:
-                reason = "TP"
-            elif price <= sl_price:
-                reason = "SL"
-            elif price <= trail_price:
-                reason = "TRAIL"
-            else:
-                continue
+    current_price = price  # fetched latest price from df earlier
+    latest_signal_val = latest_signal  # from signal generation
 
-            try:
-                _ = place_order(pair, "SELL", amount, price, dry_run=True)
-                trade_log.append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "pair": pair,
-                    "side": "SELL",
-                    "amount": amount,
-                    "price": price,
-                    "result": reason
-                })
-                current_capital += amount * price * (1 - trading_cfg.get("fee", 0.001))
-                del open_positions[pair]
-                trade_counter.inc()
-                logger.info(f"Closed position {pair} due to {reason}")
-            except Exception as e:
-                logger.error(f"Closing failed for {pair}: {e}")
+    sell_reason = None
 
-            write_heartbeat()
+    # Exit on hard stop-loss or take-profit
+    if current_price <= stop_loss_price:
+        sell_reason = "STOP-LOSS"
+    elif current_price >= take_profit_price:
+        sell_reason = "TAKE-PROFIT"
+    elif latest_signal_val < -0.5:  # Strong negative signal
+        sell_reason = "SIGNAL-EXIT"
+
+    if sell_reason:
+        try:
+            _ = place_order(pair, "SELL", amount, current_price, dry_run=True)
+            trade_log.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "pair": pair,
+                "side": "SELL",
+                "amount": amount,
+                "price": current_price,
+                "result": sell_reason
+            })
+            current_capital += amount * current_price * (1 - trading_cfg.get("fee", 0.001))
+            del open_positions[pair]
+            trade_counter.inc()
+            logger.info(f"Closed SELL {pair} at {current_price:.4f} by {sell_reason}")
+        except Exception as e:
+            logger.error(f"Sell execution failed for {pair}: {e}")
+
+        write_heartbeat()
+        continue
 
     # Save session
     atomic_save_json(open_positions, POSITIONS_FILE)
