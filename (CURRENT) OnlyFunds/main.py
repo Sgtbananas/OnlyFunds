@@ -17,31 +17,8 @@ import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 # --- Safe Sidebar State Init ---
-def sidebar(key, default=None, set_value=None):
-    if "sidebar" not in st.session_state:
-        st.session_state.sidebar = {}
-
-    if set_value is not None:
-        st.session_state.sidebar[key] = set_value
-        return set_value
-    return st.session_state.sidebar.get(key, default)
-
-# --- Sidebar Safe Access Helper ---
-def sidebar(key, default=None, set_value=None):
-    if "sidebar" not in st.session_state:
-        st.session_state.sidebar = {}
-
-    if set_value is not None:
-        st.session_state.sidebar[key] = set_value
-        return set_value
-    return st.session_state.sidebar.get(key, default)
-    """Safe access/update for sidebar parameters."""
-    if "sidebar" not in st.session_state:
-        st.session_state.sidebar = get_config_defaults()
-    if set_value is not None:
-        st.session_state.sidebar[key] = set_value
-    return st.session_state.sidebar.get(key, default)
-
+def get_config_defaults():
+    """Default sidebar config values."""
     return dict(
         mode="Auto",
         dry_run=True,
@@ -56,11 +33,23 @@ def sidebar(key, default=None, set_value=None):
         atr_stop_mult=1.0,
         atr_tp_mult=2.0,
         atr_trail_mult=1.0,
-        partial_exit=True
+        partial_exit=True,
+        capital_alloc_pct=0.05  # Add capital allocation control too
     )
 
-if "sidebar" not in st.session_state or not isinstance(st.session_state.sidebar, dict):
+def sidebar(key, default=None, set_value=None):
+    """Safe access and setting of sidebar keys."""
+    if "sidebar" not in st.session_state:
+        st.session_state.sidebar = get_config_defaults()
+
+    if set_value is not None:
+        st.session_state.sidebar[key] = set_value
+    return st.session_state.sidebar.get(key, default)
+
+# --- Initialize Sidebar at Startup ---
+if "sidebar" not in st.session_state:
     st.session_state.sidebar = get_config_defaults()
+
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -572,7 +561,7 @@ if run_backtest_btn:
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5")
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
