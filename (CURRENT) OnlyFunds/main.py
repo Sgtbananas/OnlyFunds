@@ -18,6 +18,15 @@ st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 # --- Safe Sidebar State Init (must come early) ---
 def get_config_defaults():
+# --- Sidebar Safe Access Helper ---
+def sidebar(key, default=None, set_value=None):
+    """Safe access/update for sidebar parameters."""
+    if "sidebar" not in st.session_state:
+        st.session_state.sidebar = get_config_defaults()
+    if set_value is not None:
+        st.session_state.sidebar[key] = set_value
+    return st.session_state.sidebar.get(key, default)
+
     return dict(
         mode="Auto",
         dry_run=True,
@@ -497,19 +506,14 @@ if run_backtest_btn:
     try:
         st.sidebar.success("Backtest started...")
 
-        # Pick first trading pair (or extend later to multi-pair backtest)
         pair = TRADING_PAIRS[0]
 
         # Auto params per pair (interval, lookback, threshold) if available
-        if st.session_state.sidebar["mode"] == "Auto":
-            params = get_pair_params(pair)
-            interval_used = params.get("interval", "5m")
-            lookback_used = params.get("lookback", 1000)
-            threshold_used = params.get("threshold", 0.5)
-        else:
-            interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", 1000)
-            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+        sidebar("mode", set_value="Auto")
+        params = get_pair_params(pair)
+        interval_used = params.get("interval", "5m")
+        lookback_used = params.get("lookback", 1000)
+        threshold_used = params.get("threshold", 0.5")
 
         df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
@@ -518,7 +522,6 @@ if run_backtest_btn:
         else:
             df = add_indicators(df)
 
-            # Use Ensemble or base signal
             if META_MODEL:
                 signal = generate_ensemble_signal(df, META_MODEL)
             else:
