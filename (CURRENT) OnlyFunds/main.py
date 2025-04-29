@@ -466,10 +466,10 @@ except Exception as e:
 
 latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
         # Bias tuning based on Trading Mode
-        if st.session_state.sidebar.get("mode") == "Aggressive":
+if st.session_state.sidebar.get("mode") == "Aggressive":
             stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
             tp_mult = tp_mult * 1.2                 # stretch take profits
             trail_mult = trail_mult * 1.1            # loosen trailing stop
