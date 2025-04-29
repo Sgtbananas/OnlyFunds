@@ -16,6 +16,28 @@ os.makedirs("logs", exist_ok=True)
 import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
+# --- Safe Sidebar State Init (must come early) ---
+def get_config_defaults():
+    return dict(
+        mode="Auto",
+        dry_run=True,
+        autotune=True,
+        interval="5m",
+        lookback=1000,
+        threshold=0.5,
+        max_positions=5,
+        stop_loss_pct=0.01,
+        take_profit_pct=0.02,
+        fee=0.001,
+        atr_stop_mult=1.0,
+        atr_tp_mult=2.0,
+        atr_trail_mult=1.0,
+        partial_exit=True
+    )
+
+if "sidebar" not in st.session_state or not isinstance(st.session_state.sidebar, dict):
+    st.session_state.sidebar = get_config_defaults()
+
 import pandas as pd
 from dotenv import load_dotenv
 import yaml
