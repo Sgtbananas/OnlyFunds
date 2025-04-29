@@ -594,29 +594,35 @@ if run_backtest_btn:
         total_trades = 0
 
 for pair in TRADING_PAIRS:
+    # Fetch parameters
+    if st.session_state.sidebar["mode"] == "Auto":
+        p = get_pair_params(pair)
+        interval_used = p.get("interval", "5m")
+        lookback_used = p.get("lookback", 1000)
+        threshold_used = p.get("threshold", 0.5)
+    else:
+        interval_used = st.session_state.sidebar.get("interval", "5m")
+        lookback_used = st.session_state.sidebar.get("lookback", 1000)
+        threshold_used = st.session_state.sidebar.get("threshold", 0.5")
+
+    df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+
+    if df.empty or not validate_df(df):
+        logger.warning(f⚠️ Skipping {pair}: no valid data")
+        continue
+
+    df = add_indicators(df)
+
     try:
-        if st.session_state.sidebar["mode"] == "Auto":
-            p = get_pair_params(pair)
-            interval_used = p.get("interval", "5m")
-            lookback_used = p.get("lookback", 1000)
-            threshold_used = p.get("threshold", 0.5)
-        else:
-            interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", 1000)
-            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
-
-        if df.empty or not validate_df(df):
-            logger.warning(f⚠️ Skipping {pair}: no valid data")
-            continue
-
-        df = add_indicators(df)
-
         if META_MODEL:
             signal = generate_ensemble_signal(df, META_MODEL)
         else:
             signal = generate_signal(df)
+    except Exception as e:
+        logger.error(f"Signal generation failed for {pair}: {e}")
+        continue
+
+    stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)  # <--- INDENTED correctly
 
         # --- Correct placement of ATR Multiplier Estimation ---
         stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
