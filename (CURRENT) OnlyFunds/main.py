@@ -594,23 +594,12 @@ if run_backtest_btn:
         total_trades = 0
 
         for pair in TRADING_PAIRS:
+            # Fetch parameters
             if st.session_state.sidebar["mode"] == "Auto":
                 p = get_pair_params(pair)
                 interval_used = p.get("interval", "5m")
                 lookback_used = p.get("lookback", 1000)
-# Estimate threshold dynamically using AI/ML if autotune is enabled
-if st.session_state.sidebar.get("autotune", True):
-    try:
-        threshold_used = estimate_optimal_threshold(
-            df=df,
-            signal=signal,
-            prices=df["Close"]
-        )
-    except Exception as e:
-        logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-        threshold_used = p.get("threshold", 0.5)
-else:
-    threshold_used = p.get("threshold", 0.5)
+                threshold_used = p.get("threshold", 0.5)
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
@@ -624,23 +613,43 @@ else:
 
             df = add_indicators(df)
 
-            if META_MODEL:
-                signal = generate_ensemble_signal(df, META_MODEL)
+            try:
+                if META_MODEL:
+                    signal = generate_ensemble_signal(df, META_MODEL)
+                else:
+                    signal = generate_signal(df)
+            except Exception as e:
+                logger.error(f"Signal generation failed for {pair}: {e}")
+                continue
+
+            # --- Autotune threshold based on AI/ML ---
+            if st.session_state.sidebar.get("autotune", True):
+                try:
+                    threshold_used = estimate_optimal_threshold(
+                        df=df,
+                        signal=signal,
+                        prices=df["Close"]
+                    )
+                except Exception as e:
+                    logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
+                    threshold_used = 0.5  # fallback
             else:
-                signal = generate_signal(df)
+                threshold_used = threshold_used
+
+            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+            price = df["Close"].iloc[-1]
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-# Bias tuning based on Trading Mode
-if st.session_state.sidebar.get("mode") == "Aggressive":
-    stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
-    tp_mult = tp_mult * 1.2                 # stretch take profits
-    trail_mult = trail_mult * 1.1            # loosen trailing stop
-elif st.session_state.sidebar.get("mode") == "Conservative":
-    stop_mult = stop_mult * 1.2              # looser stops
-    tp_mult = tp_mult * 0.9                  # smaller take profits
-    trail_mult = trail_mult * 1.0             # trailing unchanged
-
+            # Bias tuning based on Trading Mode
+            if st.session_state.sidebar.get("mode") == "Aggressive":
+                stop_mult = max(0.7, stop_mult * 0.8)
+                tp_mult = tp_mult * 1.2
+                trail_mult = trail_mult * 1.1
+            elif st.session_state.sidebar.get("mode") == "Conservative":
+                stop_mult = stop_mult * 1.2
+                tp_mult = tp_mult * 0.9
+                trail_mult = trail_mult * 1.0
 
             backtest_df = run_backtest(
                 signal=signal,
