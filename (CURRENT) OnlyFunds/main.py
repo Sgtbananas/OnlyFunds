@@ -585,7 +585,7 @@ if run_trading_btn:
 
 if run_backtest_btn:
     try:
-        st.sidebar.success("📈 Backtest running on ALL pairs...")
+        st.sidebar.success("📊 Backtest running on ALL pairs...")
 
         all_results = []
         starting_capital = trading_cfg.get("default_capital", 10.0)
@@ -594,6 +594,7 @@ if run_backtest_btn:
         total_trades = 0
 
         for pair in TRADING_PAIRS:
+            # Fetch parameters
             if st.session_state.sidebar["mode"] == "Auto":
                 p = get_pair_params(pair)
                 interval_used = p.get("interval", "5m")
@@ -621,6 +622,7 @@ if run_backtest_btn:
                 logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
 
+            # --- Autotune threshold based on AI/ML ---
             if st.session_state.sidebar.get("autotune", True):
                 try:
                     threshold_used = estimate_optimal_threshold(
@@ -630,10 +632,13 @@ if run_backtest_btn:
                     )
                 except Exception as e:
                     logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-                    threshold_used = p.get("threshold", 0.5)
+                    threshold_used = 0.5  # fallback
+            else:
+                threshold_used = threshold_used
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
+            # Bias tuning based on Trading Mode
             if st.session_state.sidebar.get("mode") == "Aggressive":
                 stop_mult = max(0.7, stop_mult * 0.8)
                 tp_mult = tp_mult * 1.2
@@ -642,6 +647,9 @@ if run_backtest_btn:
                 stop_mult = stop_mult * 1.2
                 tp_mult = tp_mult * 0.9
                 trail_mult = trail_mult * 1.0
+
+            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+            price = df["Close"].iloc[-1]
 
             backtest_df = run_backtest(
                 signal=signal,
@@ -660,6 +668,7 @@ if run_backtest_btn:
             if not backtest_df.empty:
                 all_results.append(backtest_df)
 
+                # Update running capital
                 summaries = backtest_df[backtest_df["type"] == "summary"]
                 for _, row in summaries.iterrows():
                     day_return = row.get("daily_return_pct", 0.0)
@@ -692,7 +701,6 @@ if run_backtest_btn:
 
 # --- Global Error Catching for Crash Recovery ---
 import sys
-
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
