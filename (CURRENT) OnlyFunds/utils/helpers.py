@@ -311,6 +311,46 @@ def estimate_dynamic_atr_multipliers(df):
     except Exception as e:
         print(f"[WARN] ATR estimation failed: {e}")
         return 1.0, 2.0, 1.0  # Safe default
+def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fee_pct=0.001):
+    """
+    Smartly find the best entry threshold based on historical profit per trade.
+    - signal: Series of signals.
+    - prices: Series of close prices.
+    """
+    try:
+        thresholds = np.linspace(0.3, 0.8, n_steps)
+        best_thr = 0.5
+        best_profit = -np.inf
+
+        for thr in thresholds:
+            buys = (signal > thr)
+            sells = (signal < -thr)
+
+            profits = []
+            for i in range(1, len(prices)):
+                if buys.iloc[i-1]:
+                    entry = prices.iloc[i-1]
+                    exit = prices.iloc[i]
+                    ret = (exit - entry) / entry - fee_pct
+                    profits.append(ret * risk_pct)
+                elif sells.iloc[i-1]:
+                    entry = prices.iloc[i-1]
+                    exit = prices.iloc[i]
+                    ret = (entry - exit) / entry - fee_pct
+                    profits.append(ret * risk_pct)
+
+            avg_profit = np.mean(profits) if profits else -999
+
+            if avg_profit > best_profit:
+                best_profit = avg_profit
+                best_thr = thr
+
+        return best_thr
+
+    except Exception as e:
+        print(f"[WARN] estimate_optimal_threshold fallback: {e}")
+        return 0.5
+
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
@@ -339,7 +379,6 @@ def estimate_dynamic_atr_multipliers(df, window=50):
 
         # Target: try to predict large candle movements (future volatility proxy)
         y = df["Close"].pct_change(periods=5).abs().shift(-5).fillna(0).values
-
         model = LinearRegression()
         model.fit(X, y)
 
