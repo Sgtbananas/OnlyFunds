@@ -59,6 +59,25 @@ from logging.handlers import RotatingFileHandler
 from pythonjsonlogger import jsonlogger
 import logging
 
+# --- Safe get_pair_params (Auto Mode support) ---
+def get_pair_params(pair):
+    """Return tuned interval, lookback, and threshold for each pair."""
+    try:
+        from utils.helpers import load_json
+        params = load_json("state/auto_params.json", default={})
+        return params.get(pair, {
+            "interval": "5m",
+            "lookback": 1000,
+            "threshold": 0.5
+        })
+    except Exception as e:
+        print(f"[WARN] get_pair_params fallback: {e}")
+        return {
+            "interval": "5m",
+            "lookback": 1000,
+            "threshold": 0.5
+        }
+
 # --- Core App Imports
 from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
 from core.core_signals import (
