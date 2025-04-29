@@ -276,3 +276,86 @@ def dynamic_threshold(df):
             return 0.5
     except Exception:
         return 0.5  # fallback safe default
+def estimate_dynamic_atr_multipliers(df):
+    """
+    Estimate dynamic ATR stop loss and take profit multipliers
+    based on volatility regime (ATR % of price).
+    """
+    try:
+        atr = df["ATR"].iloc[-1]
+        close = df["Close"].iloc[-1]
+        if close == 0:
+            raise ValueError("Close price is 0.")
+        atr_pct = atr / close
+
+        # Set multipliers based on atr_pct volatility
+        if atr_pct > 0.08:
+            stop_mult = 2.0
+            tp_mult = 4.0
+            trail_mult = 2.0
+        elif atr_pct > 0.05:
+            stop_mult = 1.5
+            tp_mult = 3.0
+            trail_mult = 1.5
+        elif atr_pct > 0.02:
+            stop_mult = 1.0
+            tp_mult = 2.0
+            trail_mult = 1.0
+        else:
+            stop_mult = 0.8
+            tp_mult = 1.5
+            trail_mult = 0.8
+
+        return stop_mult, tp_mult, trail_mult
+
+    except Exception as e:
+        print(f"[WARN] ATR estimation failed: {e}")
+        return 1.0, 2.0, 1.0  # Safe default
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
+def estimate_dynamic_atr_multipliers(df, window=50):
+    """
+    Smarter AI/ML dynamic tuning of ATR-based stop loss, take profit, and trailing multipliers.
+    - Uses historical volatility and reward/risk optimization.
+    """
+    try:
+        if "ATR" not in df.columns:
+            raise ValueError("ATR missing from dataframe.")
+
+        df = df.dropna().copy()
+
+        atr_mean = df["ATR"].rolling(window).mean()
+        volatility = df["Close"].pct_change().rolling(window).std()
+
+        # Normalize ATR to Close price
+        atr_norm = atr_mean / df["Close"]
+
+        # Prepare simple features
+        X = np.column_stack([
+            atr_norm.fillna(0).values,
+            volatility.fillna(0).values
+        ])
+
+        # Target: try to predict large candle movements (future volatility proxy)
+        y = df["Close"].pct_change(periods=5).abs().shift(-5).fillna(0).values
+
+        model = LinearRegression()
+        model.fit(X, y)
+
+        pred = model.predict(X)
+
+        avg_pred = np.mean(pred)
+
+        # Now map prediction to ATR multipliers
+        stop_mult = max(0.8, min(2.0, 1.5 - avg_pred * 5))
+        tp_mult = max(1.5, min(4.0, 2.5 + avg_pred * 8))
+        trail_mult = max(0.8, min(2.5, 1.0 + avg_pred * 4))
+
+        return stop_mult, tp_mult, trail_mult
+
+    except Exception as e:
+        print(f"[WARN] estimate_dynamic_atr_multipliers fallback: {e}")
+        # Fallback to sane defaults
+        return 1.0, 2.0, 1.0
+
