@@ -453,18 +453,20 @@ else:
             logger.warning(f"Invalid or empty data for {pair}")
             continue
 
-        df = add_indicators(df)
+df = add_indicators(df)
 
-        try:
-            if META_MODEL:
-                signal = generate_ensemble_signal(df, META_MODEL)
-            else:
-                signal = generate_signal(df)
-        except Exception as e:
-            logger.error(f"Signal generation failed for {pair}: {e}")
-            continue
+try:
+    if META_MODEL:
+        signal = generate_ensemble_signal(df, META_MODEL)
+    else:
+        signal = generate_signal(df)
+except Exception as e:
+    logger.error(f"Signal generation failed for {pair}: {e}")
+    continue
 
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+
+stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
 # Bias tuning based on Trading Mode
 if st.session_state.sidebar.get("mode") == "Aggressive":
@@ -475,9 +477,6 @@ elif st.session_state.sidebar.get("mode") == "Conservative":
     stop_mult = stop_mult * 1.2              # looser stops
     tp_mult = tp_mult * 0.9                  # smaller take profits
     trail_mult = trail_mult * 1.0             # trailing unchanged
-
-
-        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
         price = df["Close"].iloc[-1]
         atr_val = df["ATR"].iloc[-1]
 
