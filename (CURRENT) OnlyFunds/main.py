@@ -185,6 +185,24 @@ mode = st.sidebar.selectbox(
     index=["Conservative", "Normal", "Aggressive", "Auto"].index(trading_cfg.get("mode", "Normal").capitalize())
 )
 
+# === Trading Mode Definitions (updated) ===
+if st.session_state.sidebar["mode"] == "Conservative":
+    st.session_state.sidebar["target_daily_return"] = 5.0
+    st.session_state.sidebar["risk_pct"] = 0.005  # 0.5% per trade
+    st.session_state.sidebar["capital_alloc_pct"] = 0.05  # 5% of balance per trade
+elif st.session_state.sidebar["mode"] == "Aggressive":
+    st.session_state.sidebar["target_daily_return"] = 20.0
+    st.session_state.sidebar["risk_pct"] = 0.02   # 2% per trade
+    st.session_state.sidebar["capital_alloc_pct"] = 0.2   # 20% of balance per trade
+elif st.session_state.sidebar["mode"] == "Auto":
+    st.session_state.sidebar["target_daily_return"] = 10.0
+    st.session_state.sidebar["risk_pct"] = 0.01   # 1% per trade
+    st.session_state.sidebar["capital_alloc_pct"] = 0.1   # 10% of balance per trade
+else:
+    st.session_state.sidebar["target_daily_return"] = 10.0
+    st.session_state.sidebar["risk_pct"] = 0.01
+    st.session_state.sidebar["capital_alloc_pct"] = 0.1
+
 # --- Other sidebar toggles
 dry_run = st.sidebar.checkbox("Dry Run Mode", value=trading_cfg.get("dry_run", True))
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=True)
@@ -504,22 +522,30 @@ if run_trading_btn:
 
 if run_backtest_btn:
     try:
-        st.sidebar.success("Backtest started...")
+        st.sidebar.success("📊 Backtest running on ALL pairs...")
 
-        pair = TRADING_PAIRS[0]
+        all_results = []
+        starting_capital = trading_cfg.get("default_capital", 10)
+        capital = starting_capital
+        day_returns = []
 
-        # Auto params per pair (interval, lookback, threshold) if available
-        sidebar("mode", set_value="Auto")
-        params = get_pair_params(pair)
-        interval_used = params.get("interval", "5m")
-        lookback_used = params.get("lookback", 1000)
-        threshold_used = params.get("threshold", 0.5")
+        for pair in TRADING_PAIRS:
+            if st.session_state.sidebar["mode"] == "Auto":
+                p = get_pair_params(pair)
+                interval_used = p.get("interval", "5m")
+                lookback_used = p.get("lookback", 1000)
+                threshold_used = p.get("threshold", 0.5)
+            else:
+                interval_used = st.session_state.sidebar.get("interval", "5m")
+                lookback_used = st.session_state.sidebar.get("lookback", 1000)
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-        if df.empty or not validate_df(df):
-            st.sidebar.error(f"Backtest failed: No valid data for {pair}")
-        else:
+            if df.empty or not validate_df(df):
+                logger.warning(f"⚠️ Skipping {pair}: no valid data")
+                continue
+
             df = add_indicators(df)
 
             if META_MODEL:
@@ -527,30 +553,48 @@ if run_backtest_btn:
             else:
                 signal = generate_signal(df)
 
-            # === NEW: Estimate ATR multipliers dynamically
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-            # Run backtest
-            backtest_result = run_backtest(
+            backtest_df = run_backtest(
                 signal=signal,
                 prices=df["Close"],
                 threshold=threshold_used,
-                initial_capital=trading_cfg.get("default_capital", 10),
+                initial_capital=capital,
                 risk_pct=risk_cfg.get("risk_pct", 0.01),
                 stop_loss_atr_mult=stop_mult,
                 take_profit_atr_mult=tp_mult,
                 trailing_atr_mult=trail_mult,
                 fee_pct=trading_cfg.get("fee", 0.001),
-                partial_exit=True,  # Always enable partial exits in AI backtest
-                atr=df.get("ATR"),
+                partial_exit=st.session_state.sidebar.get("partial_exit", True),
+                atr=df.get("ATR")
             )
 
-            # Show backtest results
-            st.write("📊 Backtest Results", backtest_result)
+            if not backtest_df.empty:
+                all_results.append(backtest_df)
+                day_return = backtest_df.loc[backtest_df["type"] == "summary", "daily_return_pct"].mean()
+                day_returns.append(day_return)
+                # Compound capital
+                capital *= (1 + (day_return/100))
+
+        if all_results:
+            final_df = pd.concat(all_results, ignore_index=True)
+            st.success(f"✅ Backtest complete across {len(TRADING_PAIRS)} pairs!")
+            st.write(f"📈 Final Capital: ${capital:.2f}")
+            st.write(f"⚡ Average Daily Return: {sum(day_returns)/len(day_returns):.2f}%")
+
+            st.dataframe(final_df)
 
             try:
-                atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-                st.sidebar.success("✅ Backtest results saved!")
+                atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+            except Exception as e:
+                logger.error(f"Saving backtest results failed: {e}")
+        else:
+            st.warning("❗ No valid backtest results to display.")
+
+    except Exception as e:
+        logger.exception("Backtest execution error")
+        st.error(f"Backtest error: {e}")
+
             except Exception as e:
                 logger.error(f"Saving backtest results failed: {e}")
                 st.sidebar.error("Saving backtest results failed!")
