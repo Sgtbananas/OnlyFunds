@@ -9,7 +9,6 @@ from datetime import datetime, date
 import requests
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from utils.helpers import get_pair_params
 
 
 def get_volatile_pairs(limit=10, interval="1h", market="USDT") -> list:
