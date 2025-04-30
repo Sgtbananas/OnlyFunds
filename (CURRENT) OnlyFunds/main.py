@@ -98,7 +98,7 @@ from core.trade_execution import place_order
 from core.backtester import run_backtest
 from utils.helpers import (
     compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
-    get_auto_pair_params, get_volatile_pairs
+    get_volatile_pairs
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
