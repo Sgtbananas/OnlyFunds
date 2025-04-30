@@ -1,4 +1,5 @@
-import streamlit as st  # MUST come before using st.session_state
+import streamlit as st
+st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 import os
 import sys
@@ -46,7 +47,6 @@ if "TRADING_PAIRS" not in st.session_state:
 os.makedirs("state", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
-st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 # --- Safe Sidebar State Init ---
 def get_config_defaults():
