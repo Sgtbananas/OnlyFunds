@@ -427,62 +427,61 @@ def main_loop():
     for pair in TRADING_PAIRS:
         performance = compute_trade_metrics(trade_log, starting_capital)
 
-# Auto-fetch interval/lookback if Auto mode
-if st.session_state.sidebar["mode"] == "Auto":
-    params = get_pair_params(pair)
-    interval_used = params.get("interval", "5m")
-    lookback_used = params.get("lookback", 1000)
+        # Auto-fetch interval/lookback if Auto mode
+        if st.session_state.sidebar["mode"] == "Auto":
+            params = get_pair_params(pair)
+            interval_used = params.get("interval", "5m")
+            lookback_used = params.get("lookback", 1000)
 
-    if st.session_state.sidebar.get("autotune", True):
-        threshold_used = dynamic_threshold(df)
-    else:
-        threshold_used = params.get("threshold", 0.5)
+            if st.session_state.sidebar.get("autotune", True):
+                threshold_used = dynamic_threshold(df)
+            else:
+                threshold_used = params.get("threshold", 0.5)
+        else:
+            interval_used = st.session_state.sidebar.get("interval", "5m")
+            lookback_used = st.session_state.sidebar.get("lookback", "1000")
 
-else:
-    interval_used = st.session_state.sidebar.get("interval", "5m")
-    lookback_used = st.session_state.sidebar.get("lookback", "1000")
+            if st.session_state.sidebar.get("autotune", True):
+                threshold_used = dynamic_threshold(df)
+            else:
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-if st.session_state.sidebar.get("autotune", True):
-    threshold_used = dynamic_threshold(df)
-else:
-    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+        if df.empty or not validate_df(df):
+            logger.warning(f"Invalid or empty data for {pair}")
+            continue
 
-if df.empty or not validate_df(df):
-    logger.warning(f"Invalid or empty data for {pair}")
-    continue
+        df = add_indicators(df)
 
-df = add_indicators(df)
+        try:
+            if META_MODEL:
+                signal = generate_ensemble_signal(df, META_MODEL)
+            else:
+                signal = generate_signal(df)
+        except Exception as e:
+            logger.error(f"Signal generation failed for {pair}: {e}")
+            continue
 
-try:
-    if META_MODEL:
-        signal = generate_ensemble_signal(df, META_MODEL)
-    else:
-        signal = generate_signal(df)
-except Exception as e:
-    logger.error(f"Signal generation failed for {pair}: {e}")
-    continue
+        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
-latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-
-stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
         # Bias tuning based on Trading Mode
-if st.session_state.sidebar.get("mode") == "Aggressive":
+        if st.session_state.sidebar.get("mode") == "Aggressive":
             stop_mult = max(0.7, stop_mult * 0.8)   # tighten stops
             tp_mult = tp_mult * 1.2                 # stretch take profits
-            trail_mult = trail_mult * 1.1            # loosen trailing stop
-elif st.session_state.sidebar.get("mode") == "Conservative":
-            stop_mult = stop_mult * 1.2              # looser stops
-            tp_mult = tp_mult * 0.9                  # smaller take profits
-            trail_mult = trail_mult * 1.0             # trailing unchanged
+            trail_mult = trail_mult * 1.1           # loosen trailing stop
+        elif st.session_state.sidebar.get("mode") == "Conservative":
+            stop_mult = stop_mult * 1.2             # looser stops
+            tp_mult = tp_mult * 0.9                 # smaller take profits
+            trail_mult = trail_mult * 1.0           # trailing unchanged
 
         # Get latest signal value
-latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+        latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
         ### BUY CONDITION
-if pair not in open_positions and latest_signal > threshold_used:
+        if pair not in open_positions and latest_signal > threshold_used:
             if len(open_positions) >= st.session_state.sidebar["max_positions"]:
                 continue
 
@@ -518,7 +517,7 @@ if pair not in open_positions and latest_signal > threshold_used:
             continue
 
         ### SELL CONDITION
-if pair in open_positions:
+        if pair in open_positions:
             position = open_positions[pair]
             amount = position["amount"]
             entry_price = position["entry_price"]
@@ -563,12 +562,12 @@ if pair in open_positions:
             continue
 
     # Save all
-atomic_save_json(open_positions, POSITIONS_FILE)
-atomic_save_json(trade_log, TRADE_LOG_FILE)
-atomic_save_json(current_capital, CAPITAL_FILE)
+    atomic_save_json(open_positions, POSITIONS_FILE)
+    atomic_save_json(trade_log, TRADE_LOG_FILE)
+    atomic_save_json(current_capital, CAPITAL_FILE)
 
-pnl_gauge.set(current_capital)
-retrain_ml_background(trade_log)
+    pnl_gauge.set(current_capital)
+    retrain_ml_background(trade_log)
 
 # --- Sidebar Controls for Execution ---
 run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
@@ -603,7 +602,11 @@ if run_backtest_btn:
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+
+                if st.session_state.sidebar.get("autotune", True):
+                    threshold_used = dynamic_threshold(df)
+                else:
+                    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
@@ -622,7 +625,6 @@ if run_backtest_btn:
                 logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
 
-            # --- Autotune threshold based on AI/ML ---
             if st.session_state.sidebar.get("autotune", True):
                 try:
                     threshold_used = estimate_optimal_threshold(
@@ -632,24 +634,25 @@ if run_backtest_btn:
                     )
                 except Exception as e:
                     logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-                    threshold_used = 0.5  # fallback
+                    threshold_used = 0.5
             else:
-                threshold_used = threshold_used
-
-            stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-
-            # Bias tuning based on Trading Mode
-            if st.session_state.sidebar.get("mode") == "Aggressive":
-                stop_mult = max(0.7, stop_mult * 0.8)
-                tp_mult = tp_mult * 1.2
-                trail_mult = trail_mult * 1.1
-            elif st.session_state.sidebar.get("mode") == "Conservative":
-                stop_mult = stop_mult * 1.2
-                tp_mult = tp_mult * 0.9
-                trail_mult = trail_mult * 1.0
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
             price = df["Close"].iloc[-1]
+
+            stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+
+            # Bias tuning by mode
+            mode = st.session_state.sidebar.get("mode")
+            if mode == "Aggressive":
+                stop_mult = max(0.7, stop_mult * 0.8)
+                tp_mult *= 1.2
+                trail_mult *= 1.1
+            elif mode == "Conservative":
+                stop_mult *= 1.2
+                tp_mult *= 0.9
+                trail_mult *= 1.0
 
             backtest_df = run_backtest(
                 signal=signal,
@@ -668,7 +671,6 @@ if run_backtest_btn:
             if not backtest_df.empty:
                 all_results.append(backtest_df)
 
-                # Update running capital
                 summaries = backtest_df[backtest_df["type"] == "summary"]
                 for _, row in summaries.iterrows():
                     day_return = row.get("daily_return_pct", 0.0)
@@ -678,7 +680,6 @@ if run_backtest_btn:
 
         if all_results:
             final_df = pd.concat(all_results, ignore_index=True)
-
             avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
 
             st.success(f"✅ Backtest complete across {len(all_results)} pairs!")
