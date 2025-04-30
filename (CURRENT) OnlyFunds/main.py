@@ -1,3 +1,5 @@
+import streamlit as st  # MUST come before using st.session_state
+
 import os
 import sys
 import time
@@ -8,17 +10,39 @@ import shutil
 import json
 from datetime import datetime
 
+import pandas as pd
+from dotenv import load_dotenv
+import yaml
+import joblib
+from logging.handlers import RotatingFileHandler
+from pythonjsonlogger import jsonlogger
+import logging
+
+from utils.helpers import get_volatile_pairs
+
+# --- Background auto-refresh of volatile pairs
+def auto_refresh_pairs(interval=300):  # 5 minutes
+    while True:
+        try:
+            st.session_state["TRADING_PAIRS"] = get_volatile_pairs(limit=10)
+            time.sleep(interval)
+        except Exception as e:
+            print(f"[WARN] Auto-refresh pairs failed: {e}")
+            time.sleep(60)
+
+# --- Initialize volatile pairs on startup
+if "TRADING_PAIRS" not in st.session_state:
+    st.session_state["TRADING_PAIRS"] = get_volatile_pairs(limit=10)
+    threading.Thread(target=auto_refresh_pairs, args=(300,), daemon=True).start()
+
 # --- Early folder creation
 os.makedirs("state", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
-# --- Streamlit First Call (must be before any other Streamlit stuff)
-import streamlit as st
 st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
 
 # --- Safe Sidebar State Init ---
 def get_config_defaults():
-    """Default sidebar config values."""
     return dict(
         mode="Auto",
         dry_run=True,
@@ -34,36 +58,23 @@ def get_config_defaults():
         atr_tp_mult=2.0,
         atr_trail_mult=1.0,
         partial_exit=True,
-        capital_alloc_pct=0.05  # Add capital allocation control too
+        capital_alloc_pct=0.05
     )
 
 def sidebar(key, default=None, set_value=None):
-    """Safe access and setting of sidebar keys."""
     if "sidebar" not in st.session_state:
         st.session_state.sidebar = get_config_defaults()
-
     if set_value is not None:
         st.session_state.sidebar[key] = set_value
     return st.session_state.sidebar.get(key, default)
 
-# --- Initialize Sidebar at Startup ---
 if "sidebar" not in st.session_state:
     st.session_state.sidebar = get_config_defaults()
 
-
-import pandas as pd
-from dotenv import load_dotenv
-import yaml
-import joblib
-from logging.handlers import RotatingFileHandler
-from pythonjsonlogger import jsonlogger
-import logging
-
-# --- Safe get_pair_params (Auto Mode support) ---
+# --- Safe get_pair_params fallback ---
 def get_pair_params(pair):
-    """Return tuned interval, lookback, and threshold for each pair."""
+    from utils.helpers import load_json
     try:
-        from utils.helpers import load_json
         params = load_json("state/auto_params.json", default={})
         return params.get(pair, {
             "interval": "5m",
@@ -78,8 +89,8 @@ def get_pair_params(pair):
             "threshold": 0.5
         }
 
-# --- Core App Imports
-from core.core_data import fetch_klines, validate_df, add_indicators, TRADING_PAIRS
+# --- Core App Imports (no more TRADING_PAIRS here!)
+from core.core_data import fetch_klines, validate_df, add_indicators
 from core.core_signals import (
     generate_signal, smooth_signal, adaptive_threshold, track_trade_result, generate_ensemble_signal
 )

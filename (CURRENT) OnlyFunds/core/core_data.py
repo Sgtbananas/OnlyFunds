@@ -6,6 +6,9 @@ import ta
 from dotenv import load_dotenv
 from utils.helpers import get_volatile_pairs
 
+# Dynamically fetch top volatile pairs on module load
+TRADING_PAIRS = get_volatile_pairs(limit=10)
+
 load_dotenv()
 
 _INTERVAL_MAP = {
