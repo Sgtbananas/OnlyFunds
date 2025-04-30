@@ -206,7 +206,7 @@ def load_config_safe(config_path, fallback=None):
             raise ValueError("Config is not a dict.")
         return cfg
     except Exception as e:
-        st.sidebar.error(f"Error loading config: {e}")
+        st.sidebar.error(f"Error loading config: { Chadwicke}")
         return fallback or {}
 
 config = load_config_safe(CONFIG_PATH, fallback={})
@@ -655,32 +655,38 @@ if run_backtest_btn:
             df = add_indicators(df)
 
             try:
+                # Generate signal using ensemble or base model
                 if META_MODEL:
                     signal = generate_ensemble_signal(df, META_MODEL)
-                    confidence = ml_confidence(df, META_MODEL)
-                    if confidence < 0.7:
-                        logger.info(f"❌ Skipping {pair} in backtest due to low confidence: {confidence:.2f}")
-                        continue
                 else:
                     signal = generate_signal(df)
             except Exception as e:
                 logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
 
-            if st.session_state.sidebar.get("autotune", True):
-                try:
-                    threshold_used = estimate_optimal_threshold(
-                        df=df,
-                        signal=signal,
-                        prices=df["Close"]
-                    )
-                except Exception as e:
-                    logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-                    threshold_used = 0.5
-            else:
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+            # AI confidence check (skip low-confidence predictions)
+            confidence = ml_confidence(df, META_MODEL)
+            if confidence < 0.75:
+                logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                continue
 
+            # Estimate AI-tuned entry threshold
+            try:
+                threshold_used = estimate_optimal_threshold(
+                    df=df,
+                    signal=signal,
+                    prices=df["Close"]
+                )
+            except Exception as e:
+                logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
+                threshold_used = 0.5  # fallback
+
+            # Final signal check: skip if not strong enough
             latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+            if abs(latest_signal) < threshold_used:
+                logger.info(f"⚠️ Signal for {pair} below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping.")
+                continue
+
             price = df["Close"].iloc[-1]
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
