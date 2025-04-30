@@ -508,6 +508,13 @@ def main_loop():
         # Get latest signal value
         latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
+confidence = ml_confidence(df, META_MODEL)
+
+if confidence < 0.7:
+    logger.info(f"❌ Skipping {pair} - confidence too low: {confidence:.2f}")
+    continue
+
+
         ### BUY CONDITION
         if pair not in open_positions and latest_signal > threshold_used:
             if len(open_positions) >= st.session_state.sidebar["max_positions"]:
@@ -609,6 +616,11 @@ if run_trading_btn:
     except Exception as e:
         st.error(f"Trading loop failed: {e}")
         logger.error(f"Trading loop error: {e}")
+confidence = ml_confidence(df, META_MODEL)
+
+if confidence < 0.7:
+    logger.info(f"❌ Skipping {pair} - confidence too low: {confidence:.2f}")
+    continue
 
 if run_backtest_btn:
     try:
