@@ -606,7 +606,8 @@ if run_backtest_btn:
         day_returns = []
         total_trades = 0
 
-        for pair in st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"]):
+        pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
+        for pair in pairs:
             # Fetch parameters
             if st.session_state.sidebar["mode"] == "Auto":
                 p = get_pair_params(pair)
@@ -656,6 +657,7 @@ if run_backtest_btn:
             price = df["Close"].iloc[-1]
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+            # Continue your backtesting logic here...
 
             # Bias tuning by mode
             mode = st.session_state.sidebar.get("mode")
