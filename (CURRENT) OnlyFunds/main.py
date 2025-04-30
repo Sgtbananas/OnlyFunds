@@ -21,7 +21,11 @@ import logging
 
 from utils.helpers import get_volatile_pairs
 
-TRADING_PAIRS = get_volatile_pairs(limit=10)
+@st.cache_data(ttl=300)  # Refresh every 5 minutes
+def get_trading_pairs():
+    return get_volatile_pairs(limit=10)
+
+TRADING_PAIRS = get_trading_pairs()
 
 # --- Background auto-refresh of volatile pairs
 def auto_refresh_pairs(interval=300):  # 5 minutes
