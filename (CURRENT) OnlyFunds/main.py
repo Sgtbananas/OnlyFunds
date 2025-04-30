@@ -482,22 +482,21 @@ def main_loop():
 
         df = add_indicators(df)
 
-try:
-    if META_MODEL:
-        signal = generate_ensemble_signal(df, META_MODEL)
+        try:
+            if META_MODEL:
+                signal = generate_ensemble_signal(df, META_MODEL)
+            else:
+                signal = generate_signal(df)
+        except Exception as e:
+            logger.error(f"Signal generation failed for {pair}: {e}")
+            continue
+
         confidence = ml_confidence(df, META_MODEL)
         if confidence < 0.7:
             logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
             continue
-    else:
-        signal = generate_signal(df)
-except Exception as e:
-    logger.error(f"Signal generation failed for {pair}: {e}")
-    continue
 
         latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
         # Bias tuning based on Trading Mode
         if st.session_state.sidebar.get("mode") == "Aggressive":
