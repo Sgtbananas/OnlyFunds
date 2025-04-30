@@ -244,6 +244,15 @@ else:
 dry_run = st.sidebar.checkbox("Dry Run Mode", value=trading_cfg.get("dry_run", True))
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=True)
 
+# --- Show current volatile pairs in the sidebar ---
+with st.sidebar.expander("📈 Auto-Selected Pairs (Top Volatility)", expanded=False):
+    current_pairs = st.session_state.get("TRADING_PAIRS", [])
+    if current_pairs:
+        for i, pair in enumerate(current_pairs, 1):
+            st.markdown(f"**{i}.** `{pair}`")
+    else:
+        st.info("Volatile pair list is still loading...")
+
 # --- Only if Manual (not AI)
 if mode != "Auto":
     interval = st.sidebar.selectbox(
