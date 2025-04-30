@@ -461,25 +461,28 @@ def main_loop():
             params = get_pair_params(pair)
             interval_used = params.get("interval", "5m")
             lookback_used = params.get("lookback", 1000)
-
-            if st.session_state.sidebar.get("autotune", True):
-                threshold_used = dynamic_threshold(df)
-            else:
-                threshold_used = params.get("threshold", 0.5)
         else:
             interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", "1000")
+            lookback_used = st.session_state.sidebar.get("lookback", 1000)
 
-            if st.session_state.sidebar.get("autotune", True):
-                threshold_used = dynamic_threshold(df)
-            else:
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-
+        # ✅ Move df fetch BEFORE using it
         df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
         if df.empty or not validate_df(df):
             logger.warning(f"Invalid or empty data for {pair}")
             continue
+
+        # Now it's safe to use df
+        if st.session_state.sidebar["mode"] == "Auto":
+            if st.session_state.sidebar.get("autotune", True):
+                threshold_used = dynamic_threshold(df)
+            else:
+                threshold_used = params.get("threshold", 0.5)
+        else:
+            if st.session_state.sidebar.get("autotune", True):
+                threshold_used = dynamic_threshold(df)
+            else:
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
         df = add_indicators(df)
 
