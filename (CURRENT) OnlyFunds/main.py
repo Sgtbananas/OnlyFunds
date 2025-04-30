@@ -47,7 +47,6 @@ if "TRADING_PAIRS" not in st.session_state:
 os.makedirs("state", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
-
 # --- Safe Sidebar State Init ---
 def get_config_defaults():
     return dict(
@@ -315,6 +314,7 @@ def write_heartbeat():
         heartbeat_gauge.set(ts)
     except Exception as e:
         logger.error(f"Failed to write heartbeat: {e}")
+
 # --- State Files and Safety Loaders
 POSITIONS_FILE = "state/open_positions.json"
 TRADE_LOG_FILE = "state/trade_log.json"
@@ -398,6 +398,7 @@ def estimate_dynamic_atr_multipliers(df):
     except Exception as e:
         logger.error(f"ATR tuning failed: {e}")
         return 1.0, 2.0, 1.0  # fallback safe values
+
 # --- Heartbeat Writing for Watchdog ---
 def write_heartbeat():
     ts = time.time()
@@ -511,12 +512,11 @@ def main_loop():
         # Get latest signal value
         latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
-confidence = ml_confidence(df, META_MODEL)
+        confidence = ml_confidence(df, META_MODEL)
 
-if confidence < 0.7:
-    logger.info(f"❌ Skipping {pair} - confidence too low: {confidence:.2f}")
-    continue
-
+        if confidence < 0.7:
+            logger.info(f"❌ Skipping {pair} - confidence too low: {confidence:.2f}")
+            continue
 
         ### BUY CONDITION
         if pair not in open_positions and latest_signal > threshold_used:
@@ -596,8 +596,8 @@ if confidence < 0.7:
                 except Exception as e:
                     logger.error(f"Sell execution failed for {pair}: {e}")
 
-            write_heartbeat()
-            continue
+                write_heartbeat()
+                continue
 
     # Save all
     atomic_save_json(open_positions, POSITIONS_FILE)
@@ -619,6 +619,7 @@ if run_trading_btn:
     except Exception as e:
         st.error(f"Trading loop failed: {e}")
         logger.error(f"Trading loop error: {e}")
+
 confidence = ml_confidence(df, META_MODEL)
 
 if confidence < 0.7:
@@ -660,19 +661,15 @@ if run_backtest_btn:
 
             df = add_indicators(df)
 
-try:
-    if META_MODEL:
-        signal = generate_ensemble_signal(df, META_MODEL)
-        confidence = ml_confidence(df, META_MODEL)
-        if confidence < 0.7:
-            logger.info(f"❌ Skipping {pair} in backtest due to low confidence: {confidence:.2f}")
-            continue
-    else:
-        signal = generate_signal(df)
-except Exception as e:
-    logger.error(f"Signal generation failed for {pair}: {e}")
-    continue
-
+            try:
+                if META_MODEL:
+                    signal = generate_ensemble_signal(df, META_MODEL)
+                    confidence = ml_confidence(df, META_MODEL)
+                    if confidence < 0.7:
+                        logger.info(f"❌ Skipping {pair} in backtest due to low confidence: {confidence:.2f}")
+                        continue
+                else:
+                    signal = generate_signal(df)
             except Exception as e:
                 logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
@@ -694,7 +691,6 @@ except Exception as e:
             price = df["Close"].iloc[-1]
 
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-            # Continue your backtesting logic here...
 
             # Bias tuning by mode
             mode = st.session_state.sidebar.get("mode")
