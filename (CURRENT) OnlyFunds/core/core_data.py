@@ -126,38 +126,6 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
 
     return df2
 
-import requests
-
-def get_volatile_pairs(limit=10, interval="1h", market="USDT") -> list:
-    """
-    Fetch the top `limit` most volatile trading pairs over the last hour.
-    This uses the CoinEx API to get real-time volatility signals.
-    """
-    try:
-        url = "https://api.coinex.com/v1/market/ticker/all"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()["data"]["ticker"]
-
-        pairs_volatility = []
-        for pair, stats in data.items():
-            if not pair.endswith(market):
-                continue
-            try:
-                change_rate = abs(float(stats.get("percent_change_24h", 0)))
-                volume = float(stats.get("vol", 0))
-                score = change_rate * volume
-                pairs_volatility.append((pair, score))
-            except Exception:
-                continue
-
-        sorted_pairs = sorted(pairs_volatility, key=lambda x: x[1], reverse=True)
-        top_pairs = [p[0] for p in sorted_pairs[:limit]]
-        return top_pairs
-
-    except Exception as e:
-        print(f"[WARN] get_volatile_pairs failed: {e}")
-        return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]  # fallback default
 
 def get_volatile_pairs(min_volatility=0.015, interval="1h", lookback=100):
     selected = []
