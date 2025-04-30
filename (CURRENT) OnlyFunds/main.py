@@ -482,14 +482,18 @@ def main_loop():
 
         df = add_indicators(df)
 
-        try:
-            if META_MODEL:
-                signal = generate_ensemble_signal(df, META_MODEL)
-            else:
-                signal = generate_signal(df)
-        except Exception as e:
-            logger.error(f"Signal generation failed for {pair}: {e}")
+try:
+    if META_MODEL:
+        signal = generate_ensemble_signal(df, META_MODEL)
+        confidence = ml_confidence(df, META_MODEL)
+        if confidence < 0.7:
+            logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
             continue
+    else:
+        signal = generate_signal(df)
+except Exception as e:
+    logger.error(f"Signal generation failed for {pair}: {e}")
+    continue
 
         latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
@@ -657,11 +661,19 @@ if run_backtest_btn:
 
             df = add_indicators(df)
 
-            try:
-                if META_MODEL:
-                    signal = generate_ensemble_signal(df, META_MODEL)
-                else:
-                    signal = generate_signal(df)
+try:
+    if META_MODEL:
+        signal = generate_ensemble_signal(df, META_MODEL)
+        confidence = ml_confidence(df, META_MODEL)
+        if confidence < 0.7:
+            logger.info(f"❌ Skipping {pair} in backtest due to low confidence: {confidence:.2f}")
+            continue
+    else:
+        signal = generate_signal(df)
+except Exception as e:
+    logger.error(f"Signal generation failed for {pair}: {e}")
+    continue
+
             except Exception as e:
                 logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
