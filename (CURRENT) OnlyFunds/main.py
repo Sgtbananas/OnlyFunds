@@ -437,7 +437,8 @@ def main_loop():
     starting_capital = trading_cfg.get("default_capital", 10)
     capital = starting_capital
 
-    for pair in st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"]):
+    pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
+    for pair in pairs:
         performance = compute_trade_metrics(trade_log, starting_capital)
 
         # Auto-fetch interval/lookback if Auto mode
