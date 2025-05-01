@@ -614,88 +614,100 @@ if run_backtest_btn:
         total_trades = 0
 
         pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
+        logger.info(f"📝 Pairs to test: {pairs}")
+        st.write(f"📝 Pairs to test: {pairs}")
+
         for pair in pairs:
+
+            logger.info(f"🔍 Testing pair: {pair}")
+            st.write(f"🔍 Testing pair: {pair}")
+
             if pair in BLACKLISTED_TOKENS:
                 logger.info(f"⏭ Skipping blacklisted token: {pair}")
                 continue
 
-            logger.info(f"🧐 Testing pair: {pair}")
-            st.write(f"📈 Backtesting: {pair}")
+            logger.info(f"✅ Pair {pair} passed blacklist check")
 
-            # Get params
+            # --- Parameters ---
             if st.session_state.sidebar["mode"] == "Auto":
                 p = get_pair_params(pair)
                 interval_used = p.get("interval", "5m")
                 lookback_used = p.get("lookback", 1000)
-                threshold_used = p.get("threshold", 0.5)
             else:
                 interval_used = st.session_state.sidebar.get("interval", "5m")
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
 
-            # 🚨 FETCH THE DATA FIRST BEFORE USING IT!
+            # --- Fetch Data ---
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-            if df.empty or not validate_df(df):
-                logger.warning(f"⚠️ Skipping {pair}: no valid data")
+            if df.empty:
+                logger.warning(f"⚠ No data returned for {pair}")
+                st.warning(f"⚠ No data returned for {pair}")
+                continue
+            else:
+                logger.info(f"✅ Data fetched for {pair}, {len(df)} rows")
+                st.write(f"✅ Data fetched for {pair}, {len(df)} rows")
+
+            if not validate_df(df):
+                logger.warning(f"⚠ Data for {pair} failed validation")
                 continue
 
             df = add_indicators(df)
 
-            # ✅ Now df exists, so it's safe to use in dynamic_threshold
+            # --- Threshold ---
             if st.session_state.sidebar["mode"] == "Auto":
-                threshold_used = p.get("threshold", 0.5)
-            else:
                 if st.session_state.sidebar.get("autotune", True):
                     threshold_used = dynamic_threshold(df)
                 else:
-                    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+                    threshold_used = p.get("threshold", 0.5)
+            else:
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
-
-            if df.empty or not validate_df(df):
-                logger.warning(f"⚠️ Skipping {pair}: no valid data")
-                continue
-
-            df = add_indicators(df)
-
+            # --- Generate Signal ---
             try:
                 if META_MODEL:
                     signal = generate_ensemble_signal(df, META_MODEL)
-                    confidence = ml_confidence(df, META_MODEL)
-                    if confidence < 0.7:
-                        logger.info(f"❌ Skipping {pair} due to low ML confidence ({confidence:.2f})")
-                        continue
                 else:
                     signal = generate_signal(df)
             except Exception as e:
-                logger.error(f"Signal gen failed for {pair}: {e}")
+                logger.error(f"Signal generation failed for {pair}: {e}")
                 continue
 
-            # AI dynamic threshold
-            if st.session_state.sidebar.get("autotune", True):
-                try:
-                    threshold_used = estimate_optimal_threshold(
-                        df=df,
-                        signal=signal,
-                        prices=df["Close"]
-                    )
-                except Exception as e:
-                    logger.warning(f"Threshold AI tuning failed for {pair}: {e}")
-                    threshold_used = 0.5
+            if signal is None or len(signal) == 0:
+                logger.warning(f"⚠ No signal generated for {pair}")
+                st.warning(f"⚠ No signal generated for {pair}")
+                continue
+            else:
+                logger.info(f"✅ Signal generated for {pair}")
+                st.write(f"✅ Signal generated for {pair}")
 
+            # --- Confidence Check ---
+            confidence = ml_confidence(df, META_MODEL)
+            logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
+            if confidence < 0.75:
+                logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                continue
+
+            # --- Optimize Threshold ---
+            try:
+                threshold_used = estimate_optimal_threshold(
+                    df=df,
+                    signal=signal,
+                    prices=df["Close"]
+                )
+            except Exception as e:
+                logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
+                threshold_used = 0.5
+
+            # --- Final Signal Check ---
+            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+            if abs(latest_signal) < threshold_used:
+                logger.info(f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping.")
+                continue
+
+            # --- Backtest ---
             stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-            # Trading mode sensitivity
-            mode = st.session_state.sidebar.get("mode", "Auto")
-            if mode == "Aggressive":
-                stop_mult = max(0.7, stop_mult * 0.8)
-                tp_mult *= 1.2
-                trail_mult *= 1.1
-            elif mode == "Conservative":
-                stop_mult *= 1.2
-                tp_mult *= 0.9
-
-            # Run backtest
             backtest_df = run_backtest(
                 signal=signal,
                 prices=df["Close"],
@@ -710,20 +722,17 @@ if run_backtest_btn:
                 atr=df.get("ATR")
             )
 
-            if backtest_df.empty:
-                st.warning(f"No trades executed for {pair}")
-                continue
+            if not backtest_df.empty:
+                all_results.append(backtest_df)
 
-            all_results.append(backtest_df)
+                summaries = backtest_df[backtest_df["type"] == "summary"]
+                for _, row in summaries.iterrows():
+                    day_return = row.get("daily_return_pct", 0.0)
+                    current_capital *= (1 + day_return / 100.0)
+                    day_returns.append(day_return)
+                    total_trades += row.get("trades", 0)
 
-            summaries = backtest_df[backtest_df["type"] == "summary"]
-            for _, row in summaries.iterrows():
-                day_return = row.get("daily_return_pct", 0.0)
-                current_capital *= (1 + day_return / 100.0)
-                day_returns.append(day_return)
-                total_trades += row.get("trades", 0)
-
-        # Display final results
+        # --- Results ---
         if all_results:
             final_df = pd.concat(all_results, ignore_index=True)
             avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
@@ -732,6 +741,7 @@ if run_backtest_btn:
             st.metric("Final Capital", f"${current_capital:.2f}")
             st.metric("Average Daily Return", f"{avg_day_return:.2f}%")
             st.metric("Total Trades Executed", f"{total_trades}")
+
             st.dataframe(final_df)
 
             try:
@@ -744,6 +754,7 @@ if run_backtest_btn:
     except Exception as e:
         logger.exception("Backtest execution error")
         st.error(f"Backtest error: {e}")
+
 
 # --- Global Error Catching for Crash Recovery ---
 import sys
