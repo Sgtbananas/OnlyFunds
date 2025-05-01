@@ -11,7 +11,6 @@ import shutil
 import json
 from datetime import datetime
 from utils.helpers import dynamic_threshold
-
 import pandas as pd
 from dotenv import load_dotenv
 import yaml
@@ -19,8 +18,9 @@ import joblib
 from logging.handlers import RotatingFileHandler
 from pythonjsonlogger import jsonlogger
 import logging
-
 from utils.helpers import get_volatile_pairs
+from utils.helpers import BLACKLISTED_TOKENS
+
 
 @st.cache_data(ttl=300)  # Refresh every 5 minutes
 def get_trading_pairs():
