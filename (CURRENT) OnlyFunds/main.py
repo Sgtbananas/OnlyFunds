@@ -206,7 +206,7 @@ def load_config_safe(config_path, fallback=None):
             raise ValueError("Config is not a dict.")
         return cfg
     except Exception as e:
-        st.sidebar.error(f"Error loading config: { Chadwicke}")
+        st.sidebar.error(f"Error loading config: {e}")
         return fallback or {}
 
 config = load_config_safe(CONFIG_PATH, fallback={})
@@ -455,9 +455,9 @@ def main_loop():
     pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
 
     for pair in pairs:
-if pair in BLACKLISTED_TOKENS:
-    logger.info(f"⛔ Skipping blacklisted token: {pair}")
-    continue
+        if pair in BLACKLISTED_TOKENS:
+            logger.info(f"⛔ Skipping blacklisted token: {pair}")
+            continue
         performance = compute_trade_metrics(trade_log, starting_capital)
 
         if st.session_state.sidebar["mode"] == "Auto":
@@ -611,11 +611,10 @@ if run_backtest_btn:
         total_trades = 0
 
         pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
-
         for pair in pairs:
-if pair in BLACKLISTED_TOKENS:
-    logger.info(f"⛔ Skipping blacklisted token: {pair}")
-    continue
+            if pair in BLACKLISTED_TOKENS:
+                logger.info(f"⛔ Skipping blacklisted token: {pair}")
+                continue
             st.write(f"📈 Backtesting: {pair}")
 
             # Get params
@@ -731,7 +730,7 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
+    logger.critical(f"UNHANDLED EXCEPTION Gifts:\n{error_msg}")
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
