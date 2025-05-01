@@ -443,7 +443,6 @@ def dynamic_capital_allocation(performance: dict, base_alloc_pct=0.05, min_alloc
     return capital_to_use
 
 # --- Main Trading Function ---
-# --- Main Trading Function (patched version) ---
 def main_loop():
     global current_capital, trade_log, open_positions
 
@@ -455,7 +454,6 @@ def main_loop():
     for pair in pairs:
         performance = compute_trade_metrics(trade_log, starting_capital)
 
-        # --- Fetch parameters
         if st.session_state.sidebar["mode"] == "Auto":
             params = get_pair_params(pair)
             interval_used = params.get("interval", "5m")
@@ -464,7 +462,6 @@ def main_loop():
             interval_used = st.session_state.sidebar.get("interval", "5m")
             lookback_used = st.session_state.sidebar.get("lookback", 1000)
 
-        # --- Fetch candles
         df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Invalid or empty data for {pair}")
@@ -472,41 +469,33 @@ def main_loop():
 
         df = add_indicators(df)
 
-        # --- Determine threshold
-        if st.session_state.sidebar["mode"] == "Auto":
-            if st.session_state.sidebar.get("autotune", True):
-                threshold_used = dynamic_threshold(df)
-            else:
-                threshold_used = params.get("threshold", 0.5)
-        else:
-            if st.session_state.sidebar.get("autotune", True):
-                threshold_used = dynamic_threshold(df)
-            else:
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-
+        # AI signal and confidence
         try:
             if META_MODEL:
                 signal = generate_ensemble_signal(df, META_MODEL)
                 confidence = ml_confidence(df, META_MODEL)
+                if confidence < 0.7:
+                    logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                    continue
             else:
                 signal = generate_signal(df)
-                confidence = 1.0  # Assume confidence is high for classic models
         except Exception as e:
             logger.error(f"Signal generation failed for {pair}: {e}")
             continue
 
-        if confidence < 0.7:
-            logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
-            continue
-
         latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
         price = df["Close"].iloc[-1]
-        atr_val = df["ATR"].iloc[-1] if "ATR" in df.columns else 0.0
 
-        # --- Estimate multipliers
+        # Threshold logic
+        if st.session_state.sidebar.get("autotune", True):
+            threshold_used = estimate_optimal_threshold(df, signal, df["Close"])
+        else:
+            threshold_used = params.get("threshold", 0.5)
+
+        # ATR multipliers
         stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
-        # --- Bias adjustment
+        # Bias tuning by mode
         mode = st.session_state.sidebar.get("mode")
         if mode == "Aggressive":
             stop_mult = max(0.7, stop_mult * 0.8)
@@ -517,20 +506,18 @@ def main_loop():
             tp_mult *= 0.9
             trail_mult *= 1.0
 
-        # === BUY CONDITION ===
+        # BUY
         if pair not in open_positions and latest_signal > threshold_used:
             if len(open_positions) >= st.session_state.sidebar["max_positions"]:
                 continue
-
             capital_alloc = dynamic_capital_allocation(performance)
             amount = capital_alloc / price
-
             try:
                 _ = place_order(pair, "BUY", amount, price, dry_run=True)
                 open_positions[pair] = {
                     "amount": amount,
                     "entry_price": price,
-                    "atr_val": atr_val
+                    "atr_val": df["ATR"].iloc[-1]
                 }
                 trade_log.append({
                     "timestamp": datetime.utcnow().isoformat(),
@@ -546,53 +533,51 @@ def main_loop():
                 logger.info(f"Opened BUY for {pair} at {price:.4f}")
             except Exception as e:
                 logger.error(f"Buy execution failed for {pair}: {e}")
-
             write_heartbeat()
             continue
 
-        # === SELL CONDITION ===
+        # SELL
         if pair in open_positions:
-            position = open_positions[pair]
-            amount = position["amount"]
-            entry_price = position["entry_price"]
-            atr_val = position.get("atr_val", atr_val)
+            pos = open_positions[pair]
+            atr_val = pos.get("atr_val", df["ATR"].iloc[-1])
+            entry_price = pos["entry_price"]
+            amount = pos["amount"]
 
             stop_loss_price = entry_price - (atr_val * stop_mult)
             take_profit_price = entry_price + (atr_val * tp_mult)
+            current_price = price
 
             sell_reason = None
-            if price <= stop_loss_price:
+            if current_price <= stop_loss_price:
                 sell_reason = "STOP-LOSS"
-            elif price >= take_profit_price:
+            elif current_price >= take_profit_price:
                 sell_reason = "TAKE-PROFIT"
             elif latest_signal < -threshold_used:
                 sell_reason = "SIGNAL-EXIT"
 
             if sell_reason:
                 try:
-                    _ = place_order(pair, "SELL", amount, price, dry_run=True)
+                    _ = place_order(pair, "SELL", amount, current_price, dry_run=True)
                     trade_log.append({
                         "timestamp": datetime.utcnow().isoformat(),
                         "pair": pair,
                         "side": "SELL",
                         "amount": amount,
-                        "price": price,
+                        "price": current_price,
                         "result": sell_reason
                     })
-                    current_capital += amount * price * (1 - trading_cfg.get("fee", 0.001))
+                    current_capital += amount * current_price * (1 - trading_cfg.get("fee", 0.001))
                     del open_positions[pair]
                     trade_counter.inc()
-                    logger.info(f"Closed SELL {pair} at {price:.4f} by {sell_reason}")
+                    logger.info(f"Closed SELL {pair} at {current_price:.4f} due to {sell_reason}")
                 except Exception as e:
                     logger.error(f"Sell execution failed for {pair}: {e}")
-
                 write_heartbeat()
+                continue
 
-    # Final save state
     atomic_save_json(open_positions, POSITIONS_FILE)
     atomic_save_json(trade_log, TRADE_LOG_FILE)
     atomic_save_json(current_capital, CAPITAL_FILE)
-
     pnl_gauge.set(current_capital)
     retrain_ml_background(trade_log)
 
