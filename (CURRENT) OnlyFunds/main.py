@@ -455,6 +455,9 @@ def main_loop():
     pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
 
     for pair in pairs:
+if pair in BLACKLISTED_TOKENS:
+    logger.info(f"⛔ Skipping blacklisted token: {pair}")
+    continue
         performance = compute_trade_metrics(trade_log, starting_capital)
 
         if st.session_state.sidebar["mode"] == "Auto":
@@ -610,6 +613,9 @@ if run_backtest_btn:
         pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
 
         for pair in pairs:
+if pair in BLACKLISTED_TOKENS:
+    logger.info(f"⛔ Skipping blacklisted token: {pair}")
+    continue
             st.write(f"📈 Backtesting: {pair}")
 
             # Get params
