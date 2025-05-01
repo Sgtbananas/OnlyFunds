@@ -42,6 +42,9 @@ def get_volatile_pairs(limit=10, interval="1h", market="USDT") -> list:
         print(f"[WARN] get_volatile_pairs failed: {e}")
         return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]  # fallback default
 
+def validate_trade(amount, price, capital):
+    estimated_cost = amount * price
+    return capital >= estimated_cost * 1.01  # Allow buffer for fees
 
 def compute_trade_metrics(trade_log, initial_capital):
     if not trade_log:
