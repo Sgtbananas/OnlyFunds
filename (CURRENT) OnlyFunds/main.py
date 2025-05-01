@@ -615,19 +615,12 @@ if run_backtest_btn:
 
         pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
         for pair in pairs:
-
             if pair in BLACKLISTED_TOKENS:
                 logger.info(f"⏭ Skipping blacklisted token: {pair}")
                 continue
 
             logger.info(f"🧐 Testing pair: {pair}")
             st.write(f"📈 Backtesting: {pair}")
-
-        # (Rest of your backtest logic continues below this...)
-
-    except Exception as e:
-        logger.exception("Backtest execution error")
-        st.error(f"Backtest error: {e}")
 
             # Get params
             if st.session_state.sidebar["mode"] == "Auto":
