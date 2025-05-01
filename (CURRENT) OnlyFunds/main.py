@@ -622,31 +622,31 @@ if run_backtest_btn:
 
             # Get params
             if st.session_state.sidebar["mode"] == "Auto":
-    p = get_pair_params(pair)
-    interval_used = p.get("interval", "5m")
-    lookback_used = p.get("lookback", 1000)
-    threshold_used = p.get("threshold", 0.5)
-else:
-    interval_used = st.session_state.sidebar.get("interval", "5m")
-    lookback_used = st.session_state.sidebar.get("lookback", 1000)
+                p = get_pair_params(pair)
+                interval_used = p.get("interval", "5m")
+                lookback_used = p.get("lookback", 1000)
+                threshold_used = p.get("threshold", 0.5)
+            else:
+                interval_used = st.session_state.sidebar.get("interval", "5m")
+                lookback_used = st.session_state.sidebar.get("lookback", 1000)
 
-# 🚨 FETCH THE DATA FIRST BEFORE USING IT!
-df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            # 🚨 FETCH THE DATA FIRST BEFORE USING IT!
+            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
-if df.empty or not validate_df(df):
-    logger.warning(f"⚠️ Skipping {pair}: no valid data")
-    continue
+            if df.empty or not validate_df(df):
+                logger.warning(f"⚠️ Skipping {pair}: no valid data")
+                continue
 
-df = add_indicators(df)
+            df = add_indicators(df)
 
-# ✅ Now df exists, so it's safe to use in dynamic_threshold
-if st.session_state.sidebar["mode"] == "Auto":
-    threshold_used = p.get("threshold", 0.5)
-else:
-    if st.session_state.sidebar.get("autotune", True):
-        threshold_used = dynamic_threshold(df)
-    else:
-        threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+            # ✅ Now df exists, so it's safe to use in dynamic_threshold
+            if st.session_state.sidebar["mode"] == "Auto":
+                threshold_used = p.get("threshold", 0.5)
+            else:
+                if st.session_state.sidebar.get("autotune", True):
+                    threshold_used = dynamic_threshold(df)
+                else:
+                    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
 
