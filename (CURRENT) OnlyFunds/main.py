@@ -591,11 +591,18 @@ def main_loop():
     retrain_ml_background(trade_log)
 
 # --- Sidebar Controls for Execution ---
-run_trading_btn = st.sidebar.button("▶️ Run Trading Cycle")
-run_backtest_btn = st.sidebar.button("🧪 Run Backtest")
+if "run_trading_btn" not in st.session_state:
+    st.session_state["run_trading_btn"] = False
+if "run_backtest_btn" not in st.session_state:
+    st.session_state["run_backtest_btn"] = False
+
+if st.sidebar.button("Run Trading Cycle"):
+    st.session_state["run_trading_btn"] = True
+if st.sidebar.button("Run Backtest"):
+    st.session_state["run_backtest_btn"] = True
 
 # --- Main App Logic Entrypoint ---
-if run_trading_btn:
+if st.session_state["run_trading_btn"]:
     try:
         st.success("Trading cycle running...")
         main_loop()
@@ -603,7 +610,7 @@ if run_trading_btn:
         st.error(f"Trading loop failed: {e}")
         logger.error(f"Trading loop error: {e}")
 
-if run_backtest_btn:
+if st.session_state["run_backtest_btn"]:
     try:
         st.sidebar.success("📊 Backtest running on ALL pairs...")
 
