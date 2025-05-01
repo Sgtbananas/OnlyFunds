@@ -624,6 +624,13 @@ if st.session_state["run_backtest_btn"]:
         logger.info(f"📝 Pairs to test: {pairs}")
         st.write(f"📝 Pairs to test: {pairs}")
 
+        if not pairs:
+            logger.warning("⚠️ No trading pairs found. Falling back to default.")
+            pairs = ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+            st.session_state["TRADING_PAIRS"] = pairs
+            logger.info(f"✅ Fallback pairs applied: {pairs}")
+            st.write(f"✅ Fallback pairs applied: {pairs}")
+
         for pair in pairs:
 
             logger.info(f"🔍 Testing pair: {pair}")
