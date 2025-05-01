@@ -10,11 +10,16 @@ import requests
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 
+# Blacklisted tokens to exclude from trading
+BLACKLISTED_TOKENS = {
+    "TAPUSDT", "ARTYUSDT", "BROCCOLIUSDT", "BOOPUSDT",
+    "ZEROUSDT", "PSPUSDT", "CWIFUSDT", "AZEROUSDT", "BITCOINUSDT"
+}
 
-def get_volatile_pairs(limit=10, interval="1h", market="USDT") -> list:
+def get_volatile_pairs(limit=10, interval="1h", market="USDT", min_volume=50000, min_change=1.0):
     """
-    Fetch the top `limit` most volatile trading pairs over the last hour.
-    This uses the CoinEx API to get real-time volatility signals.
+    Return the top volatile pairs that meet volume and change requirements,
+    excluding blacklisted tokens.
     """
     try:
         url = "https://api.coinex.com/v1/market/ticker/all"
@@ -22,25 +27,27 @@ def get_volatile_pairs(limit=10, interval="1h", market="USDT") -> list:
         resp.raise_for_status()
         data = resp.json()["data"]["ticker"]
 
-        pairs_volatility = []
+        candidates = []
         for pair, stats in data.items():
             if not pair.endswith(market):
                 continue
+            if pair in BLACKLISTED_TOKENS:
+                continue
             try:
-                change_rate = abs(float(stats.get("percent_change_24h", 0)))
                 volume = float(stats.get("vol", 0))
-                score = change_rate * volume
-                pairs_volatility.append((pair, score))
+                change_pct = abs(float(stats.get("percent_change_24h", 0)))
+                if volume >= min_volume and change_pct >= min_change:
+                    score = change_pct * volume
+                    candidates.append((pair, score))
             except Exception:
                 continue
 
-        sorted_pairs = sorted(pairs_volatility, key=lambda x: x[1], reverse=True)
-        top_pairs = [p[0] for p in sorted_pairs[:limit]]
-        return top_pairs
-
+        sorted_pairs = sorted(candidates, key=lambda x: x[1], reverse=True)
+        return [p[0] for p in sorted_pairs[:limit]]
     except Exception as e:
         print(f"[WARN] get_volatile_pairs failed: {e}")
-        return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]  # fallback default
+        return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+
 
 def validate_trade(amount, price, capital):
     estimated_cost = amount * price
