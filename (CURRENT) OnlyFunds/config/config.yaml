@@ -80,7 +80,7 @@ trading:
   - LTCUSDT
   - SOLUSDT
   - BNBUSDT
-  threshold: 0.1
+  threshold: 0.7
   trading_windows:
     enabled: true
     end_time: '18:00'

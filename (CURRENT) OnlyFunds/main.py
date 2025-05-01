@@ -162,6 +162,7 @@ if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
     root.addHandler(stdout_handler)
 
 logger = logging.getLogger(__name__)
+
 # --- Prometheus Metrics Setup (safe singleton)
 def get_prometheus_metrics():
     module = __import__(__name__)
@@ -453,6 +454,8 @@ def main_loop():
 
     # ✅ Always use refreshed, blacklist-filtered pairs
     pairs = st.session_state.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
+    logger.info(f"🔍 Pairs to backtest: {pairs}")
+    st.write(f"🔍 Pairs to backtest: {pairs}")
 
     for pair in pairs:
         if pair in BLACKLISTED_TOKENS:
