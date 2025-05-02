@@ -537,7 +537,7 @@ def main_loop():
                     "result": None
                 })
                 current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
-                atomic_save_json(current_capital, CAPITAL_FILE)
+                atomic_save_json(current_capital, CAPTIAL_FILE)
                 trade_counter.inc()
                 logger.info(f"Opened BUY for {pair} at {price:.4f}")
             except Exception as e:
@@ -631,146 +631,145 @@ if st.session_state["run_backtest_btn"]:
             logger.info(f"✅ Fallback pairs applied: {pairs}")
             st.write(f"✅ Fallback pairs applied: {pairs}")
 
-for pair in pairs:
-    logger.info(f"🔍 Testing pair: {pair}")
-    st.write(f"🔍 Testing pair: {pair}")
+        for pair in pairs:
+            logger.info(f"🔍 Testing pair: {pair}")
+            st.write(f"🔍 Testing pair: {pair}")
 
-    if pair in BLACKLISTED_TOKENS:
-        logger.info(f"⏭ Skipping blacklisted token: {pair}")
-        continue
+            if pair in BLACKLISTED_TOKENS:
+                logger.info(f"⏭ Skipping blacklisted token: {pair}")
+                continue
 
-    logger.info(f"✅ Pair {pair} passed blacklist check")
+            logger.info(f"✅ Pair {pair} passed blacklist check")
 
-    # --- Parameters ---
-    try:
-        if st.session_state.sidebar["mode"] == "Auto":
-            p = get_pair_params(pair)
-            interval_used = p.get("interval", "5m")
-            lookback_used = p.get("lookback", 1000)
-        else:
-            interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", 1000)
-    except Exception as e:
-        logger.error(f"⚠ Failed to get parameters for {pair}: {e}")
-        continue
+            # --- Parameters ---
+            try:
+                if st.session_state.sidebar["mode"] == "Auto":
+                    p = get_pair_params(pair)
+                    interval_used = p.get("interval", "5m")
+                    lookback_used = p.get("lookback", 1000)
+                else:
+                    interval_used = st.session_state.sidebar.get("interval", "5m")
+                    lookback_used = st.session_state.sidebar.get("lookback", 1000)
+            except Exception as e:
+                logger.error(f"⚠ Failed to get parameters for {pair}: {e}")
+                continue
 
-    # --- Fetch Data ---
-    try:
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
-    except Exception as e:
-        logger.error(f"⚠ Data fetch failed for {pair}: {e}")
-        continue
+            # --- Fetch Data ---
+            try:
+                df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            except Exception as e:
+                logger.error(f"⚠ Data fetch failed for {pair}: {e}")
+                continue
 
-    if df.empty or not validate_df(df):
-        logger.warning(f"⚠ No valid data for {pair}, skipping.")
-        continue
-    else:
-        logger.info(f"✅ Data fetched for {pair}, {len(df)} rows.")
-        st.write(f"✅ Data fetched for {pair}, {len(df)} rows.")
-
-    df = add_indicators(df)
-
-    # --- Threshold ---
-    try:
-        if st.session_state.sidebar["mode"] == "Auto":
-            if st.session_state.sidebar.get("autotune", True):
-                threshold_used = dynamic_threshold(df)
+            if df.empty or not validate_df(df):
+                logger.warning(f"⚠ No valid data for {pair}, skipping.")
+                continue
             else:
-                threshold_used = p.get("threshold", 0.5)
-        else:
-            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-    except Exception as e:
-        logger.error(f"⚠ Threshold determination failed for {pair}: {e}")
-        threshold_used = 0.5
+                logger.info(f"✅ Data fetched for {pair}, {len(df)} rows.")
+                st.write(f"✅ Data fetched for {pair}, {len(df)} rows.")
 
-    # --- Generate Signal ---
-    try:
-        if META_MODEL:
-            signal = generate_ensemble_signal(df, META_MODEL)
-        else:
-            signal = generate_signal(df)
-    except Exception as e:
-        logger.error(f"Signal generation failed for {pair}: {e}")
-        continue
+            df = add_indicators(df)
 
-    if signal is None or len(signal) == 0:
-        logger.warning(f"⚠ No signal generated for {pair}")
-        st.warning(f"⚠ No signal generated for {pair}")
-        continue
-    else:
-        logger.info(f"✅ Signal generated for {pair}")
-        st.write(f"✅ Signal generated for {pair}")
+            # --- Threshold ---
+            try:
+                if st.session_state.sidebar["mode"] == "Auto":
+                    if st.session_state.sidebar.get("autotune", True):
+                        threshold_used = dynamic_threshold(df)
+                    else:
+                        threshold_used = p.get("threshold", 0.5)
+                else:
+                    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+            except Exception as e:
+                logger.error(f"⚠ Threshold determination failed for {pair}: {e}")
+                threshold_used = 0.5
 
-    # --- Confidence Check ---
-    try:
-        confidence = ml_confidence(df, META_MODEL)
-    except Exception as e:
-        logger.error(f"⚠ Failed to evaluate ML confidence for {pair}: {e}")
-        confidence = 0
+            # --- Generate Signal ---
+            try:
+                if META_MODEL:
+                    signal = generate_ensemble_signal(df, META_MODEL)
+                else:
+                    signal = generate_signal(df)
+            except Exception as e:
+                logger.error(f"Signal generation failed for {pair}: {e}")
+                continue
 
-    logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
-    if confidence < 0.75:
-        logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
-        continue
+            if signal is None or len(signal) == 0:
+                logger.warning(f"⚠ No signal generated for {pair}")
+                st.warning(f"⚠ No signal generated for {pair}")
+                continue
+            else:
+                logger.info(f"✅ Signal generated for {pair}")
+                st.write(f"✅ Signal generated for {pair}")
 
-    # --- Optimize Threshold ---
-    try:
-        threshold_used = estimate_optimal_threshold(
-            df=df,
-            signal=signal,
-            prices=df["Close"]
-        )
-    except Exception as e:
-        logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
-        threshold_used = 0.5
+            # --- Confidence Check ---
+            try:
+                confidence = ml_confidence(df, META_MODEL)
+            except Exception as e:
+                logger.error(f"⚠ Failed to evaluate ML confidence for {pair}: {e}")
+                confidence = 0
 
-    latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+            logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
+            if confidence < 0.75:
+                logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                continue
 
-    # --- ATR Multipliers ---
-    try:
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-    except Exception as e:
-        logger.error(f"⚠ ATR multiplier estimation failed for {pair}: {e}")
-        stop_mult, tp_mult, trail_mult = 1.0, 2.0, 1.0
+            # --- Optimize Threshold ---
+            try:
+                threshold_used = estimate_optimal_threshold(
+                    df=df,
+                    signal=signal,
+                    prices=df["Close"]
+                )
+            except Exception as e:
+                logger.warning(f"Threshold AI optimization failed for {pair}: {e}")
+                threshold_used = 0.5
 
-    logger.info(
-        f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}"
-    )
+            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
 
-    # --- Backtest ---
-    try:
-        backtest_df = run_backtest(
-            signal=signal,
-            prices=df["Close"],
-            threshold=threshold_used,
-            initial_capital=current_capital,
-            risk_pct=risk_cfg.get("risk_pct", 0.01),
-            stop_loss_atr_mult=stop_mult,
-            take_profit_atr_mult=tp_mult,
-            trailing_atr_mult=trail_mult,
-            fee_pct=trading_cfg.get("fee", 0.001),
-            partial_exit=st.session_state.sidebar.get("partial_exit", True),
-            atr=df.get("ATR")
-        )
-    except Exception as e:
-        logger.error(f"⚠ Backtest failed for {pair}: {e}")
-        continue
+            # --- ATR Multipliers ---
+            try:
+                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+            except Exception as e:
+                logger.error(f"⚠ ATR multiplier estimation failed for {pair}: {e}")
+                stop_mult, tp_mult, trail_mult = 1.0, 2.0, 1.0
 
-    if backtest_df.empty:
-        logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
-        st.write(f"⚠ No valid trades for {pair}.")
-    else:
-        logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
-        st.write(f"✅ Backtest completed for {pair}.")
-        all_results.append(backtest_df)
+            logger.info(
+                f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}"
+            )
 
-        summaries = backtest_df[backtest_df["type"] == "summary"]
-        for _, row in summaries.iterrows():
-            day_return = row.get("daily_return_pct", 0.0)
-            current_capital *= (1 + day_return / 100.0)
-            day_returns.append(day_return)
-            total_trades += row.get("trades", 0)
+            # --- Backtest ---
+            try:
+                backtest_df = run_backtest(
+                    signal=signal,
+                    prices=df["Close"],
+                    threshold=threshold_used,
+                    initial_capital=current_capital,
+                    risk_pct=risk_cfg.get("risk_pct", 0.01),
+                    stop_loss_atr_mult=stop_mult,
+                    take_profit_atr_mult=tp_mult,
+                    trailing_atr_mult=trail_mult,
+                    fee_pct=trading_cfg.get("fee", 0.001),
+                    partial_exit=st.session_state.sidebar.get("partial_exit", True),
+                    atr=df.get("ATR")
+                )
+            except Exception as e:
+                logger.error(f"⚠ Backtest failed for {pair}: {e}")
+                continue
 
+            if backtest_df.empty:
+                logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
+                st.write(f"⚠ No valid trades for {pair}.")
+            else:
+                logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
+                st.write(f"✅ Backtest completed for {pair}.")
+                all_results.append(backtest_df)
+
+                summaries = backtest_df[backtest_df["type"] == "summary"]
+                for _, row in summaries.iterrows():
+                    day_return = row.get("daily_return_pct", 0.0)
+                    current_capital *= (1 + day_return / 100.0)
+                    day_returns.append(day_return)
+                    total_trades += row.get("trades", 0)
 
         # --- Results ---
         if all_results:
