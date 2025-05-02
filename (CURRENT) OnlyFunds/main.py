@@ -632,7 +632,6 @@ if st.session_state["run_backtest_btn"]:
             st.write(f"✅ Fallback pairs applied: {pairs}")
 
         for pair in pairs:
-
             logger.info(f"🔍 Testing pair: {pair}")
             st.write(f"🔍 Testing pair: {pair}")
 
@@ -719,40 +718,40 @@ if st.session_state["run_backtest_btn"]:
                 logger.info(f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping.")
                 continue
 
-# --- Backtest ---
-logger.info(f"🚀 Preparing backtest for {pair}")
-logger.info(f"Signal last value: {latest_signal}")
-logger.info(f"Threshold used: {threshold_used}")
+            # --- Backtest ---
+            logger.info(f"🚀 Preparing backtest for {pair}")
+            logger.info(f"Signal last value: {latest_signal}")
+            logger.info(f"Threshold used: {threshold_used}")
 
-stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
+            stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+            logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
-backtest_df = run_backtest(
-    signal=signal,
-    prices=df["Close"],
-    threshold=threshold_used,
-    initial_capital=current_capital,
-    risk_pct=risk_cfg.get("risk_pct", 0.01),
-    stop_loss_atr_mult=stop_mult,
-    take_profit_atr_mult=tp_mult,
-    trailing_atr_mult=trail_mult,
-    fee_pct=trading_cfg.get("fee", 0.001),
-    partial_exit=st.session_state.sidebar.get("partial_exit", True),
-    atr=df.get("ATR")
-)
+            backtest_df = run_backtest(
+                signal=signal,
+                prices=df["Close"],
+                threshold=threshold_used,
+                initial_capital=current_capital,
+                risk_pct=risk_cfg.get("risk_pct", 0.01),
+                stop_loss_atr_mult=stop_mult,
+                take_profit_atr_mult=tp_mult,
+                trailing_atr_mult=trail_mult,
+                fee_pct=trading_cfg.get("fee", 0.001),
+                partial_exit=st.session_state.sidebar.get("partial_exit", True),
+                atr=df.get("ATR")
+            )
 
-if backtest_df.empty:
-    logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
-else:
-    logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
-    all_results.append(backtest_df)
+            if backtest_df.empty:
+                logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
+            else:
+                logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
+                all_results.append(backtest_df)
 
-    summaries = backtest_df[backtest_df["type"] == "summary"]
-    for _, row in summaries.iterrows():
-        day_return = row.get("daily_return_pct", 0.0)
-        current_capital *= (1 + day_return / 100.0)
-        day_returns.append(day_return)
-        total_trades += row.get("trades", 0)
+                summaries = backtest_df[backtest_df["type"] == "summary"]
+                for _, row in summaries.iterrows():
+                    day_return = row.get("daily_return_pct", 0.0)
+                    current_capital *= (1 + day_return / 100.0)
+                    day_returns.append(day_return)
+                    total_trades += row.get("trades", 0)
 
         # --- Results ---
         if all_results:
