@@ -705,12 +705,22 @@ if st.session_state["run_backtest_btn"]:
                 st.write(f"✅ Signal generated for {pair}")
 
             # --- Confidence Check ---
-            confidence = ml_confidence(df, META_MODEL)
-            logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
-            st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
-            if confidence < 0.75:
-                logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
-                st.write(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+            try:
+                logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+                st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+
+                confidence = ml_confidence(df, META_MODEL)
+                logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
+                st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
+
+                if confidence < 0.75:
+                    logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                    st.write(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+                    continue
+
+            except Exception as e:
+                logger.error(f"❌ ml_confidence failed for {pair}: {e}")
+                st.warning(f"❌ ml_confidence failed for {pair}: {e}")
                 continue
 
             # --- Optimize Threshold ---
