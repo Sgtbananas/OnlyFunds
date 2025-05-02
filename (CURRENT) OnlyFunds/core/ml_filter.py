@@ -50,28 +50,30 @@ def ml_confidence(df, model):
         return 0.0
 
 # --- Train and Save Model ---
-def train_and_save_model(data, filepath="state/meta_model_A.pkl"):
+def train_and_save_model(df, variant="A"):
     from sklearn.ensemble import RandomForestClassifier
+    import numpy as np
+    import joblib
 
-    logger = logging.getLogger(__name__)
+    feature_cols = ['rsi_z', 'macd_z', 'ema_diff_z', 'volatility_z']
+    target_col = 'indicator'
 
-    features = ["rsi_z", "macd_z", "ema_diff_z", "volatility_z"]
-    target = "indicator"
+    df = df.dropna()
+    X = df[feature_cols]
+    y = df[target_col]
 
-    if any(f not in data.columns for f in features + [target]):
-        logger.warning("❗ Training data missing required features.")
+    if len(X) < 100:
+        print("❌ Not enough data to train model.")
         return
 
-    df = data.dropna(subset=features + [target])
-    if df.empty:
-        logger.warning("❗ No data available after dropping NA.")
-        return
-
-    X = df[features]
-    y = df[target]
+    print(f"🔧 Training model on {len(X)} samples...")
 
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, y)
 
-    joblib.dump(model, filepath)
-    logger.info(f"✅ Model trained and saved to {filepath}")
+    print("✅ Model trained. Saving...")
+
+    output_file = f"state/meta_model_{variant}.pkl"
+    joblib.dump(model, output_file)
+
+    print(f"✅ Model saved as {output_file}")
