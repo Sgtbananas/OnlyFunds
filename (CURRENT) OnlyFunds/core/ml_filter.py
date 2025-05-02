@@ -57,11 +57,12 @@ def ml_confidence(df, model):
         logger.error(f"❌ Confidence prediction failed: {e}")
         return 0.0
 
-def train_and_save_model(X, y, path):
-    if X.empty or y.empty:
-        logger.error("❌ Training data is empty. Aborting training.")
-        return
-
+def train_and_save_model():
+    try:
+        trade_log = load_json("state/trade_log.json", [])
+        closed = [t for t in trade_log if t.get("result") in ("TP","SL","TRAIL")]
+        if len(closed) < 20:
+            return (False, "Not enough data to retrain model.")
     try:
         clf = RandomForestClassifier(
             n_estimators=150,
@@ -73,3 +74,13 @@ def train_and_save_model(X, y, path):
         logger.info(f"✅ ML model trained and saved to {path}")
     except Exception as e:
         logger.error(f"❌ Training failed: {e}")
+        model = LogisticRegression()
+        model.fit(X, y)
+        joblib.dump(model, META_MODEL_PATH)
+        # Update in-memory model if needed:
+        global META_MODEL
+        META_MODEL = model
+        return (True, f"Trained on {len(X)} trades.")
+    except Exception as e:
+        logger.error(f"Training failed: {e}")
+        return (False, str(e))
