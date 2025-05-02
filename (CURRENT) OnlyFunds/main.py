@@ -714,9 +714,10 @@ if st.session_state["run_backtest_btn"]:
 
             # --- Final Signal Check ---
             latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-            if abs(latest_signal) < threshold_used:
-                logger.info(f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping.")
-                continue
+# TEMP DISABLED SIGNAL STRENGTH FILTER FOR DEBUGGING
+            #if abs(latest_signal) < threshold_used:
+                #logger.info(f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping.")
+                #continue
 
             # --- Backtest ---
             logger.info(f"🚀 Preparing backtest for {pair}")
