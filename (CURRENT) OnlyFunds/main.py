@@ -21,15 +21,6 @@ import logging
 from utils.helpers import get_volatile_pairs
 from utils.helpers import BLACKLISTED_TOKENS
 
-META_MODEL = None
-try:
-    META_MODEL = joblib.load("state/meta_model_A.pkl")
-    logger.info("✅ META_MODEL loaded successfully.")
-    st.sidebar.success("✅ META_MODEL loaded successfully.")
-except Exception as e:
-    logger.warning(f"⚠ META_MODEL not loaded: {e}")
-    st.sidebar.error(f"⚠ META_MODEL not loaded: {e}")
-
 
 @st.cache_data(ttl=300)  # Refresh every 5 minutes
 def get_trading_pairs():
@@ -171,6 +162,15 @@ if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
     root.addHandler(stdout_handler)
 
 logger = logging.getLogger(__name__)
+
+META_MODEL = None
+try:
+    META_MODEL = joblib.load("state/meta_model_A.pkl")
+    logger.info("✅ META_MODEL loaded successfully.")
+    st.sidebar.success("✅ META_MODEL loaded successfully.")
+except Exception as e:
+    logger.warning(f"⚠ META_MODEL not loaded: {e}")
+    st.sidebar.error(f"⚠ META_MODEL not loaded: {e}")
 
 # --- Prometheus Metrics Setup (safe singleton)
 def get_prometheus_metrics():
