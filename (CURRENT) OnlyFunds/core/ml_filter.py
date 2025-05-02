@@ -41,6 +41,7 @@ def ml_confidence(df, model):
         return 0.0
 
     try:
+        logger.info(f"🔎 Feature values preview (last 5 rows):\n{X.tail()}")
         logger.info(f"🔎 Passing {len(X)} samples to ML model for confidence prediction.")
         if hasattr(model, "feature_names_in_"):
             model_features = list(model.feature_names_in_)
