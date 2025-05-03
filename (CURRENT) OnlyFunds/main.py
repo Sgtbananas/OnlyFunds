@@ -713,6 +713,8 @@ if st.session_state["run_backtest_btn"]:
                 value = df[col].iloc[-1]
                 z = (value - mean) / std if std > 0 else 0.0
                 z_features[col + "_z"] = z
+            for k, v in z_features.items():
+                df[k] = v
 
             logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
             st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
