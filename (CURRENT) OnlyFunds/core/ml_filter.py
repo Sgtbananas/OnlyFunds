@@ -152,18 +152,44 @@ def ml_confidence(data):
     logger.debug(f"Computed ml_confidence probability: {proba:.4f}")
     return float(proba)
 
-def train_and_save_model():
-    """
-    Load historical data, compute features and labels, train the ML model, and save it to disk.
-    Returns (success: bool, message: str).
-    """
-    global _model
-    try:
-        # Load all CSV files from data/historical
-        data_files = sorted(glob.glob(os.path.join("data", "historical", "*.csv")))
-        if not data_files:
-            logger.error("No historical data files found in 'data/historical'.")
-            return False, "No historical data files found."
+def train_and_save_model(data, model_file="state/meta_model_A.pkl"):
+    required = ["rsi", "macd", "ema_diff", "volatility", "indicator"]
+
+    missing = [f for f in required if f not in data.columns]
+    if missing:
+        raise ValueError(f"Missing required features: {missing}")
+
+    features = ["rsi", "macd", "ema_diff", "volatility"]
+    X_raw = data[features]
+    y = (data["indicator"] > 0).astype(int)
+
+    # --- Compute means and stds for normalization ---
+    feature_means = {col: X_raw[col].mean() for col in features}
+    feature_stds = {col: X_raw[col].std() for col in features}
+
+    for col in features:
+        if feature_stds[col] == 0 or pd.isna(feature_stds[col]):
+            feature_stds[col] = 1.0  # Prevent divide by zero
+
+    # --- Normalize ---
+    X = pd.DataFrame({
+        f"{col}_z": (X_raw[col] - feature_means[col]) / feature_stds[col]
+        for col in features
+    })
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        random_state=42
+    )
+    model.fit(X, y)
+
+    # --- Save normalization params inside model ---
+    model.feature_means = feature_means
+    model.feature_stds = feature_stds
+
+    joblib.dump(model, model_file)
+    logger.info(f"✅ Model trained and saved as {model_file}")
 
         # Read and concatenate all historical data
         df_list = []
