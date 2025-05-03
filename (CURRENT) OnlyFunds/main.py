@@ -352,6 +352,20 @@ if not isinstance(current_capital, (float, int)):
 # --- Risk Manager
 risk_manager = RiskManager(config)
 
+# --- Calculate z-scores before ML confidence ---
+
+z_features = {}
+
+for col in ["rsi", "macd", "ema_diff", "volatility"]:
+    mean = META_MODEL.feature_means.get(col, df[col].mean())
+    std = META_MODEL.feature_stds.get(col, df[col].std())
+    value = df[col].iloc[-1]
+    z = (value - mean) / std if std > 0 else 0.0
+    z_features[col + "_zscore"] = z
+
+logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
+st.write(f"🔎 Z-Scores for {pair}: {z_features}")
+
 # --- ML Retraining & Meta Model Watchdog
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 
