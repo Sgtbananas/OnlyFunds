@@ -712,10 +712,10 @@ if st.session_state["run_backtest_btn"]:
                 std = META_MODEL.feature_stds.get(col, df[col].std())
                 value = df[col].iloc[-1]
                 z = (value - mean) / std if std > 0 else 0.0
-                z_features[col + "_zscore"] = z
+                z_features[col + "_z"] = z
 
-            logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
-            st.write(f"🔎 Z-Scores for {pair}: {z_features}")
+            logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
+            st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
 
             # --- Confidence Check ---
             try:
