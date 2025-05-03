@@ -352,20 +352,6 @@ if not isinstance(current_capital, (float, int)):
 # --- Risk Manager
 risk_manager = RiskManager(config)
 
-# --- Calculate z-scores before ML confidence ---
-
-z_features = {}
-
-for col in ["rsi", "macd", "ema_diff", "volatility"]:
-    mean = META_MODEL.feature_means.get(col, df[col].mean())
-    std = META_MODEL.feature_stds.get(col, df[col].std())
-    value = df[col].iloc[-1]
-    z = (value - mean) / std if std > 0 else 0.0
-    z_features[col + "_zscore"] = z
-
-logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
-st.write(f"🔎 Z-Scores for {pair}: {z_features}")
-
 # --- ML Retraining & Meta Model Watchdog
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 
@@ -699,43 +685,56 @@ if st.session_state["run_backtest_btn"]:
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-            # --- Generate Signal ---
-            try:
-                if META_MODEL:
-                    signal = generate_ensemble_signal(df, META_MODEL)
-                else:
-                    signal = generate_signal(df)
-            except Exception as e:
-                logger.error(f"Signal generation failed for {pair}: {e}")
-                st.warning(f"Signal generation failed for {pair}: {e}")
-                continue
+# --- Generate Signal ---
+try:
+    if META_MODEL:
+        signal = generate_ensemble_signal(df, META_MODEL)
+    else:
+        signal = generate_signal(df)
+except Exception as e:
+    logger.error(f"Signal generation failed for {pair}: {e}")
+    st.warning(f"Signal generation failed for {pair}: {e}")
+    continue
 
-            if signal is None or len(signal) == 0:
-                logger.warning(f"⚠ No signal generated for {pair}")
-                st.warning(f"⚠ No signal generated for {pair}")
-                continue
-            else:
-                logger.info(f"✅ Signal generated for {pair}")
-                st.write(f"✅ Signal generated for {pair}")
+if signal is None or len(signal) == 0:
+    logger.warning(f"⚠ No signal generated for {pair}")
+    st.warning(f"⚠ No signal generated for {pair}")
+    continue
+else:
+    logger.info(f"✅ Signal generated for {pair}")
+    st.write(f"✅ Signal generated for {pair}")
 
-            # --- Confidence Check ---
-            try:
-                logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
-                st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+# --- Calculate z-scores before ML confidence ---
+z_features = {}
 
-                confidence = ml_confidence(df, META_MODEL)
-                logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
-                st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
+for col in ["rsi", "macd", "ema_diff", "volatility"]:
+    mean = META_MODEL.feature_means.get(col, df[col].mean())
+    std = META_MODEL.feature_stds.get(col, df[col].std())
+    value = df[col].iloc[-1]
+    z = (value - mean) / std if std > 0 else 0.0
+    z_features[col + "_zscore"] = z
 
-                if confidence < 0.75:
-                    logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
-                    st.write(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
-                    continue
+logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
+st.write(f"🔎 Z-Scores for {pair}: {z_features}")
 
-            except Exception as e:
-                logger.error(f"❌ ml_confidence failed for {pair}: {e}")
-                st.warning(f"❌ ml_confidence failed for {pair}: {e}")
-                continue
+# --- Confidence Check ---
+try:
+    logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+    st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+
+    confidence = ml_confidence(df, META_MODEL)
+    logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
+    st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
+
+    if confidence < 0.75:
+        logger.info(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+        st.write(f"❌ Skipping {pair} due to low confidence: {confidence:.2f}")
+        continue
+
+except Exception as e:
+    logger.error(f"❌ ml_confidence failed for {pair}: {e}")
+    st.warning(f"❌ ml_confidence failed for {pair}: {e}")
+    continue
 
             # --- Optimize Threshold ---
             try:
