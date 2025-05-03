@@ -156,45 +156,16 @@ def ml_confidence(data):
     logger.debug(f"Computed ml_confidence probability: {proba:.4f}")
     return float(proba)
 
-def train_and_save_model(data, model_file="state/meta_model_A.pkl"):
-    required = ["rsi", "macd", "ema_diff", "volatility", "indicator"]
-
-    missing = [f for f in required if f not in data.columns]
-    if missing:
-        raise ValueError(f"Missing required features: {missing}")
-
-    features = ["rsi", "macd", "ema_diff", "volatility"]
-    X_raw = data[features]
-    y = (data["indicator"] > 0).astype(int)
-
-    # --- Compute means and stds for normalization ---
-    feature_means = {col: X_raw[col].mean() for col in features}
-    feature_stds = {col: X_raw[col].std() for col in features}
-
-    for col in features:
-        if feature_stds[col] == 0 or pd.isna(feature_stds[col]):
-            feature_stds[col] = 1.0  # Prevent divide by zero
-
-    # --- Normalize ---
-    X = pd.DataFrame({
-        f"{col}_z": (X_raw[col] - feature_means[col]) / feature_stds[col]
-        for col in features
-    })
-
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=5,
-        random_state=42
-    )
-    model.fit(X, y)
-
-    # --- Save normalization params inside model ---
-    model.feature_means = feature_means
-    model.feature_stds = feature_stds
-
-    joblib.dump(model, model_file)
-    logger.info(f"✅ Model trained and saved as {model_file}")
-
+def train_and_save_model(data_files, model_file="state/meta_model_A.pkl"):
+    """
+    Train a RandomForestClassifier model on historical data and save it to disk.
+    Args:
+        data_files: List of CSV file paths containing historical price data.
+        model_file: Path where the trained model will be saved (default: state/meta_model_A.pkl).
+    Returns:
+        Tuple (success: bool, message: str) indicating whether training was successful and a status message.
+    """
+    try:
         # Read and concatenate all historical data
         df_list = []
         for file in data_files:
