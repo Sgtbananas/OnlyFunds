@@ -546,7 +546,7 @@ def main_loop():
                     "result": None
                 })
                 current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
-                atomic_save_json(current_capital, CAPTIAL_FILE)
+                atomic_save_json(current_capital, CAPITAL_FILE)
                 trade_counter.inc()
                 logger.info(f"Opened BUY for {pair} at {price:.4f}")
             except Exception as e:
@@ -676,67 +676,65 @@ if st.session_state["run_backtest_btn"]:
 
             df = add_indicators(df)
 
-# --- Threshold ---
-if st.session_state.sidebar["mode"] == "Auto":
-    if st.session_state.sidebar.get("autotune", True):
-        threshold_used = dynamic_threshold(df)
-    else:
-        threshold_used = p.get("threshold", 0.5)
-else:
-    threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+            # --- Threshold ---
+            if st.session_state.sidebar["mode"] == "Auto":
+                if st.session_state.sidebar.get("autotune", True):
+                    threshold_used = dynamic_threshold(df)
+                else:
+                    threshold_used = p.get("threshold", 0.5)
+            else:
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-# --- Calculate z-scores before ML confidence ---
-z_features = {}
+            # --- Calculate z-scores before ML confidence ---
+            z_features = {}
 
-for col in ["rsi", "macd", "ema_diff", "volatility"]:
-    mean = META_MODEL.feature_means.get(col, df[col].mean())
-    std = META_MODEL.feature_stds.get(col, df[col].std())
-    if std == 0 or pd.isna(std):
-        std = 1.0  # Prevent division by zero
-    df[col + "_z"] = (df[col] - mean) / std
-    z_features[col + "_z"] = df[col + "_z"].iloc[-1]
+            for col in ["rsi", "macd", "ema_diff", "volatility"]:
+                mean = META_MODEL.feature_means.get(col, df[col].mean())
+                std = META_MODEL.feature_stds.get(col, df[col].std())
+                if std == 0 or pd.isna(std):
+                    std = 1.0  # Prevent division by zero
+                df[col + "_z"] = (df[col] - mean) / std
+                z_features[col + "_z"] = df[col + "_z"].iloc[-1]
 
-logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
-st.write(f"🔎 Z-Scores for {pair}: {z_features}")
+            logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
+            st.write(f"🔎 Z-Scores for {pair}: {z_features}")
 
-logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
-st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
+            logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
+            st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
 
-logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
-st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+            logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+            st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
 
-expected_columns = ["rsi_z", "macd_z", "ema_diff_z", "volatility_z"]
-actual_columns = df.columns.tolist()
-missing_cols = [col for col in expected_columns if col not in actual_columns]
+            expected_columns = ["rsi_z", "macd_z", "ema_diff_z", "volatility_z"]
+            actual_columns = df.columns.tolist()
+            missing_cols = [col for col in expected_columns if col not in actual_columns]
 
-logger.info(f"🔎 Checking ML expected columns for {pair}. Actual DF columns: {actual_columns}")
-logger.info(f"🔎 Missing columns: {missing_cols}")
-st.write(f"🔎 Checking ML expected columns for {pair}: {actual_columns}")
-st.write(f"🔎 Missing columns: {missing_cols}")
+            logger.info(f"🔎 Checking ML expected columns for {pair}. Actual DF columns: {actual_columns}")
+            logger.info(f"🔎 Missing columns: {missing_cols}")
+            st.write(f"🔎 Checking ML expected columns for {pair}: {actual_columns}")
+            st.write(f"🔎 Missing columns: {missing_cols}")
 
-# --- Generate Signal ---
-try:
-    if META_MODEL:
-        signal = generate_ensemble_signal(df, META_MODEL)
-    else:
-        signal = generate_signal(df)
-except Exception as e:
-    logger.error(f"Signal generation failed for {pair}: {e}")
-    st.warning(f"Signal generation failed for {pair}: {e}")
-    continue
+            # --- Generate Signal ---
+            try:
+                if META_MODEL:
+                    signal = generate_ensemble_signal(df, META_MODEL)
+                else:
+                    signal = generate_signal(df)
+            except Exception as e:
+                logger.error(f"Signal generation failed for {pair}: {e}")
+                st.warning(f"Signal generation failed for {pair}: {e}")
+                continue
 
-if signal is None or len(signal) == 0:
-    logger.warning(f"⚠ No signal generated for {pair}")
-    st.warning(f"⚠ No signal generated for {pair}")
-    continue
-else:
-    logger.info(f"✅ Signal generated for {pair}")
-    st.write(f"✅ Signal generated for {pair}")
-
+            if signal is None or len(signal) == 0:
+                logger.warning(f"⚠ No signal generated for {pair}")
+                st.warning(f"⚠ No signal generated for {pair}")
+                continue
+            else:
+                logger.info(f"✅ Signal generated for {pair}")
+                st.write(f"✅ Signal generated for {pair}")
 
             # --- Confidence Check ---
             try:
-
                 confidence = ml_confidence(df, META_MODEL)
                 logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
                 st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
@@ -833,7 +831,6 @@ else:
         logger.exception("Backtest execution error")
         st.error(f"Backtest error: {e}")
 
-
 # --- Global Error Catching for Crash Recovery ---
 import sys
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -841,7 +838,7 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logger.critical(f"UNHANDLED EXCEPTION Gifts:\n{error_msg}")
+    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
