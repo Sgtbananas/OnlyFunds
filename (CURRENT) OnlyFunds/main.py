@@ -726,6 +726,15 @@ if st.session_state["run_backtest_btn"]:
                 logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
                 st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
 
+                expected_columns = ["rsi_z", "macd_z", "ema_diff_z", "volatility_z"]
+                actual_columns = df.columns.tolist()
+                missing_cols = [col for col in expected_columns if col not in actual_columns]
+
+                logger.info(f"🔎 Checking ML expected columns for {pair}. Actual DF columns: {actual_columns}")
+                logger.info(f"🔎 Missing columns: {missing_cols}")
+                st.write(f"🔎 Checking ML expected columns for {pair}: {actual_columns}")
+                st.write(f"🔎 Missing columns: {missing_cols}")
+
                 confidence = ml_confidence(df, META_MODEL)
                 logger.info(f"🔎 Confidence for {pair}: {confidence:.2f}")
                 st.write(f"🔎 Confidence for {pair}: {confidence:.2f}")
