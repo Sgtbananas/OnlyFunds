@@ -685,34 +685,31 @@ if st.session_state["run_backtest_btn"]:
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-            # --- Calculate z-scores before ML confidence ---
-            z_features = {}
+# --- Calculate z-scores before ML confidence ---
+z_features = {}
 
-            for col in ["rsi", "macd", "ema_diff", "volatility"]:
-                mean = META_MODEL.feature_means.get(col, df[col].mean())
-                std = META_MODEL.feature_stds.get(col, df[col].std())
-                if std == 0 or pd.isna(std):
-                    std = 1.0  # Prevent division by zero
-                df[col + "_z"] = (df[col] - mean) / std
-                z_features[col + "_z"] = df[col + "_z"].iloc[-1]
+for col in ["rsi", "macd", "ema_diff", "volatility"]:
+    mean = META_MODEL.feature_means.get(col, df[col].mean())
+    std = META_MODEL.feature_stds.get(col, df[col].std())
+    if std == 0 or pd.isna(std):
+        std = 1.0  # Prevent division by zero
+    df[f"{col}_zscore"] = (df[col] - mean) / std
+    z_features[f"{col}_zscore"] = df[f"{col}_zscore"].iloc[-1]
 
-            logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
-            st.write(f"🔎 Z-Scores for {pair}: {z_features}")
+logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
+st.write(f"🔎 Z-Scores for {pair}: {z_features}")
 
-            logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
-            st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
+logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
+st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
 
-            logger.info(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
-            st.write(f"🔍 DF columns before ML confidence: {df.columns.tolist()}")
+expected_columns = ["rsi_zscore", "macd_zscore", "ema_diff_zscore", "volatility_zscore"]
+actual_columns = df.columns.tolist()
+missing_cols = [col for col in expected_columns if col not in actual_columns]
 
-            expected_columns = ["rsi_z", "macd_z", "ema_diff_z", "volatility_z"]
-            actual_columns = df.columns.tolist()
-            missing_cols = [col for col in expected_columns if col not in actual_columns]
-
-            logger.info(f"🔎 Checking ML expected columns for {pair}. Actual DF columns: {actual_columns}")
-            logger.info(f"🔎 Missing columns: {missing_cols}")
-            st.write(f"🔎 Checking ML expected columns for {pair}: {actual_columns}")
-            st.write(f"🔎 Missing columns: {missing_cols}")
+logger.info(f"🔎 Checking ML expected columns for {pair}. Actual DF columns: {actual_columns}")
+logger.info(f"🔎 Missing columns: {missing_cols}")
+st.write(f"🔎 Checking ML expected columns for {pair}: {actual_columns}")
+st.write(f"🔎 Missing columns: {missing_cols}")
 
             # --- Generate Signal ---
             try:
