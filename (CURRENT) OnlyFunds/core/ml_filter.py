@@ -36,36 +36,40 @@ def load_model():
 
 def ml_confidence(data):
     """
-    Compute the model's confidence for the given market data.
-    `data` should be a pandas DataFrame (or Series/dict for a single sample) containing at least 
-    the latest values of required features (Close price, RSI, MACD, ATR, etc.).
-    Returns a float between 0 and 1 indicating the probability of a positive outcome (higher means more confidence).
+    Compute model confidence using precomputed z-scores.
     """
     model = load_model()
     if model is None:
-        # No model available, return zero confidence
-        logger.error("ml_confidence called but no model is loaded. Returning 0.0 confidence.")
+        logger.error("No model loaded.")
         return 0.0
 
-    # Accept data in various formats and extract the latest sample
-    if data is None:
+    # Check data
+    if data is None or len(data) == 0:
         logger.error("No data provided to ml_confidence.")
         return 0.0
+
     if isinstance(data, pd.DataFrame):
-        if data.empty:
-            logger.error("Empty DataFrame provided to ml_confidence.")
-            return 0.0
-        # Use the last row of the DataFrame as the sample
         sample = data.iloc[-1]
-    elif isinstance(data, dict):
-        if not data:
-            logger.error("Empty data dict provided to ml_confidence.")
-            return 0.0
-        sample = pd.Series(data)
     elif isinstance(data, pd.Series):
         sample = data
     else:
-        logger.error(f"Unsupported data type for ml_confidence: {type(data)}. Expect DataFrame, Series or dict.")
+        logger.error("Unsupported data type.")
+        return 0.0
+
+    expected_cols = model.feature_names_final  # Should be ["rsi_zscore", "macd_zscore", "ema_diff_zscore", "volatility_zscore"]
+
+    missing = [c for c in expected_cols if c not in sample.index]
+    if missing:
+        logger.error(f"Missing expected z-score columns: {missing}")
+        return 0.0
+
+    X = pd.DataFrame([sample[expected_cols].values], columns=expected_cols)
+
+    try:
+        proba = model.predict_proba(X)[0][1]
+        return float(proba)
+    except Exception as e:
+        logger.error(f"Prediction failed: {e}")
         return 0.0
 
     # Ensure we have a pandas Series for the sample (for consistent indexing)
