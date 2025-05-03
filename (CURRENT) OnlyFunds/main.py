@@ -704,17 +704,20 @@ if st.session_state["run_backtest_btn"]:
                 logger.info(f"✅ Signal generated for {pair}")
                 st.write(f"✅ Signal generated for {pair}")
 
-            # --- Calculate z-scores before ML confidence ---
-            z_features = {}
+            # --- Calculate z-scores before ML confidence --- 
+z_features = {}
 
-            for col in ["rsi", "macd", "ema_diff", "volatility"]:
-                mean = META_MODEL.feature_means.get(col, df[col].mean())
-                std = META_MODEL.feature_stds.get(col, df[col].std())
-                value = df[col].iloc[-1]
-                z = (value - mean) / std if std > 0 else 0.0
-                z_features[col + "_z"] = z
-            for k, v in z_features.items():
-                df[k] = v
+for col in ["rsi", "macd", "ema_diff", "volatility"]:
+    mean = META_MODEL.feature_means.get(col, df[col].mean())
+    std = META_MODEL.feature_stds.get(col, df[col].std())
+    if std == 0 or pd.isna(std):
+        std = 1.0  # Prevent division by zero
+    df[col + "_z"] = (df[col] - mean) / std
+    z_features[col + "_z"] = df[col + "_z"].iloc[-1]
+
+logger.info(f"🔎 Z-Scores for {pair}: {z_features}")
+st.write(f"🔎 Z-Scores for {pair}: {z_features}")
+
 
             logger.info(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
             st.write(f"🔎 Final Z-Scores before ML confidence: {list(z_features.keys())}")
