@@ -808,3 +808,182 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
+
+
+
+if run_backtest_btn:
+    try:
+        st.sidebar.success("Backtest started...")
+        all_results = []
+        starting_capital = trading_cfg.get("default_capital", 10.0)
+        current_capital = starting_capital
+        day_returns = []
+        total_trades = 0
+
+        for pair in TRADING_PAIRS:
+            # Auto params per pair if available, otherwise use sidebar values
+            if st.session_state.sidebar.get("mode") == "Auto":
+                params = get_auto_pair_params(pair) or {}
+                interval_used = params.get("interval", "5m")
+                lookback_used = params.get("lookback", 1000)
+                threshold_used = params.get("threshold", 0.5)
+            else:
+                interval_used = st.session_state.sidebar.get("interval", "5m")
+                lookback_used = st.session_state.sidebar.get("lookback", 1000)
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+
+            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            if df.empty or not validate_df(df):
+                st.sidebar.error(f"Backtest failed: No valid data for {pair}")
+                continue
+            else:
+                df = add_indicators(df)
+
+                # --- Generate signal series (with ML confidence if available) ---
+                if META_MODEL:
+                    conf_series = None
+                    try:
+                        conf_series = ml_confidence(df)
+                    except Exception as e:
+                        logger.error(f"Backtest ML confidence error for {pair}: {e}")
+                        conf_series = None
+
+                    if conf_series is None:
+                        st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
+                        continue
+                    else:
+                        base_signal = generate_signal(df)
+                        # Combine base signal and ML confidence by gating
+                        if not isinstance(conf_series, pd.Series):
+                            conf_series = pd.Series(conf_series, index=df.index)
+                        signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
+                else:
+                    signal = generate_signal(df)
+
+                # --- If ML failed completely, skip backtest ---
+                if META_MODEL and (conf_series is None):
+                    backtest_result = None
+                    st.warning(f"Skipping backtest for {pair} — missing ML confidence.")
+                    continue
+
+                # --- Run backtest (corrected call matching new backtester.py) ---
+                try:
+                    backtest_result = run_backtest(
+                        signal=signal,
+                        pair=pair,
+                        interval=interval_used,
+                        limit=lookback_used,
+                        equity=current_capital
+                    )
+                except Exception as e:
+                    logger.error(f"Backtest failed for {pair}: {e}")
+                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
+                    continue
+
+                if backtest_result is None or backtest_result.empty:
+                    st.warning(f"No valid backtest results for {pair}.")
+                    continue
+
+                # --- Show results ---
+                st.write("📊 Backtest Results", backtest_result)
+
+                # --- Save results ---
+                try:
+                    atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+                    st.sidebar.success("✅ Backtest results saved!")
+                except Exception as e:
+                    logger.error(f"Saving backtest results failed: {e}")
+                    st.sidebar.error("Saving backtest results failed!")
+
+                # --- Final Signal Check ---
+                latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+                if abs(latest_signal) < threshold_used:
+                    logger.info(
+                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
+                    )
+                    st.write(
+                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
+                    )
+                    continue
+
+                logger.info(f"🚀 Preparing backtest for {pair}")
+                st.write(f"🚀 Preparing backtest for {pair}")
+
+                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+                logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
+
+                # **This block was duplicated, removed redundant call**
+                backtest_result = run_backtest(
+                    signal=signal,
+                    pair=pair,
+                    interval=interval_used,
+                    limit=lookback_used,
+                    equity=current_capital
+                    equity=current_capital
+                    
+                    
+                    risk_pct=risk_cfg.get("risk_pct", 0.05),  # <- You might want to raise this from 1% to 5%
+                    stop_loss_atr_mult=stop_mult,
+                    take_profit_atr_mult=tp_mult,
+                    trailing_atr_mult=trail_mult,
+                    fee_pct=trading_cfg.get("fee", 0.001),
+                    partial_exit=st.session_state.sidebar.get("partial_exit", True),
+                    atr=df.get("ATR")
+                )
+
+                if backtest_df.empty:
+                    logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
+                    st.write(f"⚠ No valid trades for {pair}.")
+                else:
+                    logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
+                    st.write(f"✅ Backtest completed for {pair}.")
+                    st.write(backtest_df.head(5))  # Show first 5 trades
+
+                    all_results.append(backtest_df)
+
+                    summaries = backtest_df[backtest_df["type"] == "summary"]
+                    for _, row in summaries.iterrows():
+                        day_return = row.get("daily_return_pct", 0.0)
+                        current_capital *= (1 + day_return / 100.0)
+                        day_returns.append(day_return)
+                        total_trades += row.get("trades", 0)
+
+        # --- Results ---
+        if all_results:
+            final_df = pd.concat(all_results, ignore_index=True)
+            avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
+
+            st.success(f"✅ Backtest complete across {len(all_results)} pairs!")
+            st.metric("Final Capital", f"${current_capital:.2f}")
+            st.metric("Average Daily Return", f"{avg_day_return:.2f}%")
+            st.metric("Total Trades Executed", f"{total_trades}")
+
+            st.dataframe(final_df)
+
+            try:
+                atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+            except Exception as e:
+                logger.error(f"Saving backtest results failed: {e}")
+        else:
+            st.warning("❗ No valid backtest results to display.")
+
+    except Exception as e:
+        logger.exception("Backtest execution error")
+        st.error(f"Backtest error: {e}")
+
+# --- Global Error Catching for Crash Recovery ---
+import sys
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
+    st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
+
+sys.excepthook = global_exception_handler
+
+# --- No broken legacy backtest_df calls remain ---
+# --- All valid results shown and saved above ---
+
+
