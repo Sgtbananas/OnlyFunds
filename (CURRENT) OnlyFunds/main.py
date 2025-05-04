@@ -20,6 +20,16 @@ from pythonjsonlogger import jsonlogger
 import logging
 from utils.helpers import get_volatile_pairs
 from utils.helpers import BLACKLISTED_TOKENS
+import streamlit as st
+from datetime import datetime, timedelta  # (Make sure to import datetime for scheduling)
+
+# === Initialize session state flags ===
+if 'backtest_triggered' not in st.session_state:
+    st.session_state.backtest_triggered = False  # flag to indicate a backtest run is requested
+if 'auto_mode' not in st.session_state:
+    st.session_state.auto_mode = False           # flag to indicate if automatic backtesting is on
+if 'next_run_time' not in st.session_state:
+    st.session_state.next_run_time = None        # store next scheduled run time (if auto_mode)
 
 
 @st.cache_data(ttl=300)  # Refresh every 5 minutes
@@ -627,6 +637,8 @@ def main_loop():
     atomic_save_json(current_capital, CAPITAL_FILE)
     pnl_gauge.set(current_capital)
     retrain_ml_background(trade_log)
+
+run_backtest_btn = st.sidebar.button("Run Backtest")
 
 # --- Backtest Execution ---
 if run_backtest_btn:
