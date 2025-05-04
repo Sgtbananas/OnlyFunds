@@ -108,7 +108,7 @@ def get_pair_params(pair):
 # --- Core App Imports (no more TRADING_PAIRS here!)
 from core.core_data import fetch_klines, validate_df, add_indicators
 from core.core_signals import (
-    generate_signal, smooth_signal, adaptive_threshold, track_trade_result, generate_ensemble_signal
+    generate_signal, smooth_signal, generate_ensemble_signal
 )
 from core.trade_execution import place_live_order
 from core.backtester import run_backtest
@@ -504,7 +504,7 @@ def main_loop():
         autotune = st.session_state.sidebar.get("autotune", True)
         if autotune:
             try:
-                threshold_final = adaptive_threshold(df, target_profit=0.01)
+                threshold_final = trading_cfg.get("threshold", 0.5)
             except Exception as e:
                 logger.warning(f"Autotune failed for {pair}: {e}")
                 threshold_final = trading_cfg.get("threshold", 0.5)
@@ -669,7 +669,7 @@ if run_backtest_btn:
             else:
                 df = add_indicators(df)
 
-                # Generate signal series (with ML confidence if available)
+                # --- Generate signal series (with ML confidence if available) ---
                 if META_MODEL:
                     conf_series = None
                     try:
@@ -677,45 +677,53 @@ if run_backtest_btn:
                     except Exception as e:
                         logger.error(f"Backtest ML confidence error for {pair}: {e}")
                         conf_series = None
+
                     if conf_series is None:
                         st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
                         continue
                     else:
                         base_signal = generate_signal(df)
-                        # Combine base signal and ML confidence by taking the minimum (gating)
+                        # Combine base signal and ML confidence by gating
                         if not isinstance(conf_series, pd.Series):
-                            # Convert array-like or scalar confidence to series
                             conf_series = pd.Series(conf_series, index=df.index)
                         signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
                 else:
                     signal = generate_signal(df)
 
+                # --- If ML failed completely, skip backtest ---
                 if META_MODEL and (conf_series is None):
-                    # Skip running backtest due to missing features/confidence
                     backtest_result = None
-                else:
-                    # Dynamic ATR multipliers for backtest (uses latest ATR values)
-                    stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+                    st.warning(f"Skipping backtest for {pair} — missing ML confidence.")
+                    continue
+
+                # --- Run backtest (corrected call matching new backtester.py) ---
+                try:
                     backtest_result = run_backtest(
                         signal=signal,
-                        prices=df["Close"],
-                        threshold=threshold_used,
-                        initial_capital=current_capital,
-                        risk_pct=risk_cfg.get("risk_pct", 0.05),  # Risk percentage
-                        stop_loss_atr_mult=stop_mult,
-                        take_profit_atr_mult=tp_mult,
-                        trailing_atr_mult=trail_mult,
-                        fee_pct=trading_cfg.get("fee", 0.001),  # Fee percentage
-                        partial_exit=st.session_state.sidebar.get("partial_exit", True),
-                        atr=df.get("ATR")
+                        pair=pair,
+                        interval=interval_used,
+                        limit=lookback_used,
+                        equity=current_capital
                     )
-                    st.write("📊 Backtest Results", backtest_result)
-                    try:
-                        atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-                        st.sidebar.success("✅ Backtest results saved!")
-                    except Exception as e:
-                        logger.error(f"Saving backtest results failed: {e}")
-                        st.sidebar.error("Saving backtest results failed!")
+                except Exception as e:
+                    logger.error(f"Backtest failed for {pair}: {e}")
+                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
+                    continue
+
+                if backtest_result is None or backtest_result.empty:
+                    st.warning(f"No valid backtest results for {pair}.")
+                    continue
+
+                # --- Show results ---
+                st.write("📊 Backtest Results", backtest_result)
+
+                # --- Save results ---
+                try:
+                    atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+                    st.sidebar.success("✅ Backtest results saved!")
+                except Exception as e:
+                    logger.error(f"Saving backtest results failed: {e}")
+                    st.sidebar.error("Saving backtest results failed!")
 
                 # --- Final Signal Check ---
                 latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
