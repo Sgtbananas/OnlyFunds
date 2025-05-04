@@ -5,8 +5,20 @@ from core.grid_trader import GridTrader
 from core.meta_learner import select_strategy
 from core import risk_manager
 import os
+import yaml
 
-def load_backtest_data(pair, interval='5m', limit=1000):
+# --- Load defaults from YAML automatically ---
+with open('config/config.yaml', 'r') as f:
+    CONFIG = yaml.safe_load(f)
+
+DEFAULT_INTERVAL = CONFIG.get('DEFAULT_INTERVAL', '5m')
+DEFAULT_LOOKBACK = CONFIG.get('DEFAULT_LOOKBACK', 1000)
+DEFAULT_EQUITY = CONFIG.get('DEFAULT_EQUITY', 1000)
+DEFAULT_ATR_MULTIPLIER = CONFIG.get('DEFAULT_ATR_MULTIPLIER', 2)
+DEFAULT_RISK_PCT = CONFIG.get('DEFAULT_RISK_PCT', 0.01)
+DEFAULT_FEE = CONFIG.get('DEFAULT_FEE', 0.002)
+
+def load_backtest_data(pair, interval=DEFAULT_INTERVAL, limit=DEFAULT_LOOKBACK):
     """
     Load backtest data from CSV or fetch it if not available.
     """
@@ -28,11 +40,20 @@ def load_backtest_data(pair, interval='5m', limit=1000):
         logging.info(f"Fetched and saved new data for {pair} at {interval}")
         return df
 
-def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
-                 performance_dict=None, meta_model=None,
-                 risk_pct=0.01, atr_multiplier=2,
-                 grid_mode=False, grid_kwargs=None,
-                 fee_pct=0.002, verbose=False, log_every_n=100):
+def run_backtest(signal,
+                 pair="BTCUSDT",
+                 interval=DEFAULT_INTERVAL,
+                 limit=DEFAULT_LOOKBACK,
+                 equity=DEFAULT_EQUITY,
+                 performance_dict=None,
+                 meta_model=None,
+                 risk_pct=DEFAULT_RISK_PCT,
+                 atr_multiplier=DEFAULT_ATR_MULTIPLIER,
+                 grid_mode=False,
+                 grid_kwargs=None,
+                 fee_pct=DEFAULT_FEE,
+                 verbose=False,
+                 log_every_n=100):
     """
     Run the backtest for the selected strategy.
     """
@@ -143,10 +164,10 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
     trades_df = pd.DataFrame(trades)
 
     if not trades_df.empty:
-        trade_returns = trades_df[trades_df['type'] == 'exit']['profit'] / equity
+        trade_returns = trades_df[trades_df['type'].str.contains('exit')]['profit'] / equity
         win_rate = (trade_returns > 0).mean() * 100
         avg_return = trade_returns.mean()
-        total_pnl = trades_df[trades_df['type'].isin(['exit', 'forced_exit'])]['profit'].sum()
+        total_pnl = trades_df[trades_df['type'].str.contains('exit')]['profit'].sum()
         sharpe = (trade_returns.mean() / trade_returns.std()) if trade_returns.std() != 0 else 0
     else:
         win_rate = 0
