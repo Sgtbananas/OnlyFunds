@@ -118,6 +118,7 @@ from utils.helpers import (
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
+from core.data_manager import get_top_coinex_symbols, update_historical_data, load_data
 from utils.config import load_config
 
 # --- Prometheus Metrics
@@ -258,7 +259,7 @@ elif st.session_state.sidebar["mode"] == "Aggressive":
 elif st.session_state.sidebar["mode"] == "Auto":
     st.session_state.sidebar["target_daily_return"] = 10.0
     st.session_state.sidebar["risk_pct"] = 0.01   # 1% per trade
-    st.session_state.sidebar["capital_alloc_pct"] = 0.1   # 10% of balance per trade
+    st.session_state.sidebar["capital_alloc_pct"] = 0.1   # 10_0]
 else:
     st.session_state.sidebar["target_daily_return"] = 10.0
     st.session_state.sidebar["risk_pct"] = 0.01
@@ -468,13 +469,13 @@ def main_loop():
 
     retrain_ml_background(trade_log)
 
-    for pair in TRADING_PAIRS:
+    for pair in [pair]:  # Using sidebar pair
         perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
         # Fetch Auto params
         interval_used = trading_cfg.get("default_interval", "5m")
         lookback_used = trading_cfg.get("backtest_lookback", 1000)
 
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+        df = load_data(pair, interval=interval_used, limit=lookback_used)
         st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Invalid data for {pair}")
@@ -654,13 +655,20 @@ run_backtest_btn = st.sidebar.button("Run Backtest")
 
 # --- Backtest Execution ---
 pair = st.sidebar.text_input('Trading Pair', value='BTCUSDT')
-pair = st.sidebar.text_input('Manual Trading Pair (leave blank for auto)', value='')
-# Auto-select pairs based on volatility if no manual pair provided
-if not pair:
-    TRADING_PAIRS = get_volatile_pairs(limit=5)
-else:
-    TRADING_PAIRS = [pair]
 if run_backtest_btn:
+    st.write("🔎 Fetching latest top CoinEx symbols...")
+    TRADING_PAIRS = get_top_coinex_symbols(limit=250)
+    st.write("Top symbols:", TRADING_PAIRS[:5], "...")
+
+    updated_pairs = []
+    for sym in TRADING_PAIRS:
+        try:
+            st.write(f"🔄 Updating data for {sym}...")
+            update_historical_data(sym, interval=interval_used, limit=lookback_used)
+            updated_pairs.append(sym)
+        except Exception as e:
+            st.write(f"⚠ Skipping {sym} due to data error: {e}")
+    st.write(f"✅ Updated {len(updated_pairs)} symbols.")
     try:
         st.sidebar.success("Backtest started...")
         all_results = []
@@ -669,7 +677,7 @@ if run_backtest_btn:
         day_returns = []
         total_trades = 0
 
-        for pair in TRADING_PAIRS:
+        for pair in updated_pairs:
             # Auto params per pair if available, otherwise use sidebar values
             if st.session_state.sidebar.get("mode") == "Auto":
                 params = get_auto_pair_params(pair) or {}
@@ -681,7 +689,7 @@ if run_backtest_btn:
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            df = load_data(pair, interval=interval_used, limit=lookback_used)
             if df.empty or not validate_df(df):
                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
                 continue
@@ -843,7 +851,7 @@ if run_backtest_btn:
                 lookback_used = st.session_state.sidebar.get("lookback", 1000)
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            df = load_data(pair, interval=interval_used, limit=lookback_used)
             if df.empty or not validate_df(df):
                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
                 continue
