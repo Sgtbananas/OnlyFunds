@@ -1,314 +1,246 @@
 import os
-import glob
+import json
 import logging
 import pandas as pd
 import numpy as np
 import joblib
 from sklearn.ensemble import RandomForestClassifier
+from collections import defaultdict
+from datetime import datetime
 
-# Initialize module logger
+# If fetch_klines and add_indicators are needed for training data:
+from core.core_data import fetch_klines, add_indicators
+
+# Path for the ML model file
+MODEL_PATH = "state/ml_model.pkl"
+# Default trading interval (used for fetching historical data)
+DEFAULT_INTERVAL = "5m"
+
 logger = logging.getLogger(__name__)
 
-# Global cache for the loaded model to avoid repeated disk reads
-_model = None
-
-# Model file path (ensure this matches the main app expectation)
-MODEL_FILE_PATH = "state/meta_model_A.pkl"
-
 def load_model():
-    """
-    Load the trained ML model from disk (state/meta_model_A.pkl).
-    Returns the model if available, otherwise None.
-    """
-    global _model
-    if _model is not None:
-        return _model
+    """Load the trained ML model from disk, or return None if not available."""
     try:
-        _model = joblib.load(MODEL_FILE_PATH)
-        logger.info(f"Loaded ML model from '{MODEL_FILE_PATH}'.")
-    except FileNotFoundError:
-        logger.warning(f"No ML model found at '{MODEL_FILE_PATH}'.")
-        _model = None
+        return joblib.load(MODEL_PATH)
     except Exception as e:
-        logger.error(f"Error loading ML model: {e}")
-        _model = None
-    return _model
+        logger.error(f"Failed to load ML model: {e}")
+        return None
+
+def train_and_save_model():
+    """Train a RandomForest model on past trade outcomes and save it to disk."""
+    trade_log_file = "state/trade_log.json"
+    # Load trade history
+    try:
+        with open(trade_log_file, "r") as f:
+            trade_log = json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading trade log: {e}")
+        return False, "Failed to load trade log"
+    if not trade_log or len(trade_log) < 1:
+        return False, "No trade data available for training"
+    
+    # Prepare training samples (features and outcome) from completed trades
+    open_positions = {}
+    samples = []  # Each sample: {"pair": ..., "open_time": ..., "outcome": ...}
+    for entry in trade_log:
+        side = entry.get("side")
+        pair = entry.get("pair")
+        if side == "BUY":
+            # Record open trade info
+            open_positions[pair] = entry
+        elif side == "SELL" and pair in open_positions:
+            # Trade closed; determine outcome
+            open_entry = open_positions.pop(pair)
+            result = entry.get("result")
+            outcome = 0 if result == "SL" else 1  # 1 = successful (TP/TRAIL), 0 = stopped out (SL)
+            samples.append({
+                "pair": pair,
+                "open_time": open_entry.get("timestamp"),
+                "outcome": outcome
+            })
+    if not samples:
+        return False, "No completed trades to train on"
+    if len(samples) < 2:
+        return False, f"Not enough training samples ({len(samples)})"
+    
+    # Group samples by trading pair for efficient feature extraction
+    samples_by_pair = defaultdict(list)
+    for sample in samples:
+        try:
+            open_dt = datetime.fromisoformat(sample["open_time"])
+        except Exception as e:
+            logger.warning(f"Skipping sample with invalid time {sample}: {e}")
+            continue
+        samples_by_pair[sample["pair"]].append((open_dt, sample["outcome"]))
+    # Sort events by time for each pair
+    for pair in samples_by_pair:
+        samples_by_pair[pair].sort(key=lambda x: x[0])
+    
+    feature_matrix = []
+    outcomes = []
+    feature_names = None
+    # Extract indicator features at each trade entry time
+    for pair, events in samples_by_pair.items():
+        # Fetch historical data for this pair (up to the last trade entry time)
+        last_time = events[-1][0]
+        try:
+            df = fetch_klines(pair, interval=DEFAULT_INTERVAL, limit=1000)
+        except Exception as e:
+            logger.error(f"Data fetch failed for {pair}: {e}")
+            continue
+        if df is None or df.empty:
+            logger.error(f"No data for {pair}, skipping ML training sample extraction.")
+            continue
+        df = add_indicators(df)
+        # Ensure data sorted by time
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df.sort_index()
+        elif "timestamp" in df.columns:
+            df = df.sort_values("timestamp")
+        elif "Time" in df.columns:
+            df = df.sort_values("Time")
+        # Iterate through each trade event for this pair
+        for open_dt, outcome in events:
+            # Find the latest row at or before open_dt
+            entry_features = None
+            if isinstance(df.index, pd.DatetimeIndex):
+                # If DataFrame index is datetime
+                if open_dt < df.index[0]:
+                    continue  # trade is earlier than data range
+                # get index position of last timestamp <= open_dt
+                idx_pos = df.index.get_indexer([open_dt], method='ffill')[0]
+                if idx_pos == -1:
+                    continue
+                entry_features = df.iloc[idx_pos]
+            else:
+                # Use a time column if present
+                time_col = None
+                for col in ["timestamp", "Time", "Datetime", "Date"]:
+                    if col in df.columns:
+                        time_col = col
+                        break
+                if not time_col:
+                    logger.error(f"No timestamp column found in data for {pair}")
+                    continue
+                # Filter data up to open_dt
+                df_times = pd.to_datetime(df[time_col])
+                df_before = df[df_times <= open_dt]
+                if df_before.empty:
+                    continue
+                entry_features = df_before.iloc[-1]
+            if entry_features is None:
+                continue
+            # Determine feature columns (exclude raw OHLCV and timestamp columns)
+            base_cols = {"Open", "High", "Low", "Close", "Volume", "Adj Close", 
+                         "timestamp", "Time", "Datetime", "Date"}
+            if feature_names is None:
+                feature_names = [col for col in entry_features.index if col not in base_cols]
+            # Gather feature values in the same order as feature_names
+            try:
+                features = [entry_features[col] for col in feature_names]
+            except KeyError as e:
+                logger.error(f"Missing expected feature {e} for {pair} at {open_dt}")
+                continue
+            feature_matrix.append(features)
+            outcomes.append(outcome)
+    if not feature_matrix:
+        return False, "No training samples after feature extraction"
+    
+    X = np.array(feature_matrix, dtype=float)
+    y = np.array(outcomes, dtype=int)
+    if X.size == 0 or y.size == 0:
+        return False, "Insufficient data for model training"
+    # Compute feature mean and std for normalization
+    means = X.mean(axis=0)
+    stds = X.std(axis=0, ddof=0)
+    # Remove any constant features (std = 0)
+    non_const_mask = (stds != 0)
+    if not non_const_mask.all():
+        X = X[:, non_const_mask]
+        means = means[non_const_mask]
+        stds = stds[non_const_mask]
+        if feature_names:
+            feature_names = [name for name, keep in zip(feature_names, non_const_mask) if keep]
+        if X.shape[1] == 0:
+            return False, "All features have zero variance"
+    # Normalize features to z-scores
+    X_norm = (X - means) / stds
+    # Train the RandomForest classifier
+    try:
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X_norm, y)
+    except Exception as e:
+        logger.error(f"Model training error: {e}")
+        return False, f"Training failed: {e}"
+    # Attach feature metadata to the model for later use
+    model.feature_names = feature_names or []
+    model.feature_means = means
+    model.feature_stds = stds
+    # Save the trained model
+    try:
+        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+        joblib.dump(model, MODEL_PATH)
+    except Exception as e:
+        logger.error(f"Failed to save ML model: {e}")
+        return False, f"Model save failed: {e}"
+    logger.info(f"Trained ML model on {len(y)} samples, features: {model.feature_names}")
+    return True, f"Model trained on {len(y)} samples"
 
 def ml_confidence(data):
-    """
-    Compute model confidence using precomputed z-scores.
-    """
+    """Compute the model confidence (probability of positive outcome) for given data (DataFrame or Series)."""
     model = load_model()
-    if model is None:
-        logger.error("No model loaded.")
-        return 0.0
-
-    # Check data
-    if data is None or len(data) == 0:
-        logger.error("No data provided to ml_confidence.")
-        return 0.0
-
+    if model is None or not hasattr(model, "feature_names"):
+        # If no model available, skip filtering (return high confidence)
+        return 1.0
+    # Select the latest data row and required features
     if isinstance(data, pd.DataFrame):
-        sample = data.iloc[-1]
-    elif isinstance(data, pd.Series):
-        sample = data
-    else:
-        logger.error("Unsupported data type.")
-        return 0.0
-
-    expected_cols = model.feature_names_final  # Should be ["rsi_zscore", "macd_zscore", "ema_diff_zscore", "volatility_zscore"]
-
-    missing = [c for c in expected_cols if c not in sample.index]
-    if missing:
-        logger.error(f"Missing expected z-score columns: {missing}")
-        return 0.0
-
-    X = pd.DataFrame([sample[expected_cols].values], columns=expected_cols)
-
-    try:
-        proba = model.predict_proba(X)[0][1]
-        return float(proba)
-    except Exception as e:
-        logger.error(f"Prediction failed: {e}")
-        return 0.0
-
-    # Ensure we have a pandas Series for the sample (for consistent indexing)
-    sample = sample.squeeze()  # In case it's a one-row DataFrame, convert to Series
-
-    # If the sample itself has multiple entries (unlikely for Series), take the last value for each (handled by squeeze above).
-    # Prepare raw feature values from the sample
-    required_features = ["RSI", "MACD", "EMA_diff", "volatility"]
-    raw_vals = {}
-    for feat in required_features:
-        if feat in sample.index:
-            raw_vals[feat] = sample[feat]
-        else:
-            raw_vals[feat] = None
-
-    # Special case: if volatility not directly provided but ATR and Close are present, compute volatility = ATR/Close
-    if raw_vals.get("volatility") is None:
-        if "ATR" in sample.index and "Close" in sample.index:
-            try:
-                raw_vals["volatility"] = sample["ATR"] / sample["Close"]
-                logger.debug("Computed volatility from ATR for ml_confidence.")
-            except Exception:
-                raw_vals["volatility"] = None
-
-    # If EMA_diff not provided but an EMA value is present (e.g., EMA50), compute difference from Close
-    if raw_vals.get("EMA_diff") is None:
-        # Find any column name that looks like 'EMA'
-        ema_cols = [col for col in sample.index if col.upper().startswith("EMA") and col not in ["EMA_diff"]]
-        if ema_cols:
-            try:
-                ema_val = sample[ema_cols[0]]
-                if "Close" in sample.index:
-                    raw_vals["EMA_diff"] = sample["Close"] - ema_val
-                    logger.debug(f"Computed EMA_diff as Close - {ema_cols[0]} for ml_confidence.")
-            except Exception:
-                raw_vals["EMA_diff"] = None
-
-    # Fill missing features with their training mean (to produce a neutral z-score of 0)
-    missing_feats = []
-    feature_stats = getattr(model, "feature_stats", {})
-    for feat in required_features:
-        if raw_vals.get(feat) is None:
-            # If we have stats for this feature from training, use mean; otherwise default to 0
-            if feat in feature_stats:
-                raw_vals[feat] = feature_stats[feat][0]  # training mean
-            else:
-                raw_vals[feat] = 0.0
-            missing_feats.append(feat)
-    if missing_feats:
-        logger.warning(f"ml_confidence: input missing features {missing_feats}. Using training means for those.")
-
-    # Compute z-scores for each feature based on training stats
-    X_input = []
-    for feat in required_features:
-        # Use training mean and std from model.feature_stats
-        if feat in feature_stats:
-            mean_val, std_val = feature_stats[feat]
-            if std_val is None or std_val == 0:
-                z = 0.0
-            else:
-                z = (raw_vals[feat] - mean_val) / std_val
-        else:
-            # If feature_stats not available (should not happen if model is trained using this module)
-            z = raw_vals[feat]
-        X_input.append(z)
-    X_input = np.array(X_input).reshape(1, -1)
-
-    # Construct DataFrame with the same feature columns as training, to avoid feature name issues
-    if hasattr(model, "feature_names_final"):
-        feature_cols = model.feature_names_final
-    elif hasattr(model, "feature_names_in_"):
-        # Use feature names that the model was trained with
-        feature_cols = list(model.feature_names_in_)
-    else:
-        # Fallback: create names by appending "_zscore" to raw feature names
-        feature_cols = [f"{feat}_zscore" for feat in required_features]
-    X_df = pd.DataFrame(X_input, columns=feature_cols)
-
-    try:
-        proba = model.predict_proba(X_df)[0][1]  # probability of class 1 (positive outcome)
-    except Exception as e:
-        logger.error(f"Error computing model confidence: {e}")
-        return 0.0
-    logger.debug(f"Computed ml_confidence probability: {proba:.4f}")
-    return float(proba)
-
-def train_and_save_model(data_files, model_file="state/meta_model_A.pkl"):
-    """
-    Train a RandomForestClassifier model on historical data and save it to disk.
-    Args:
-        data_files: List of CSV file paths containing historical price data.
-        model_file: Path where the trained model will be saved (default: state/meta_model_A.pkl).
-    Returns:
-        Tuple (success: bool, message: str) indicating whether training was successful and a status message.
-    """
-    try:
-        # Read and concatenate all historical data
-        df_list = []
-        for file in data_files:
-            try:
-                df_part = pd.read_csv(file)
-            except Exception as e:
-                logger.error(f"Failed to read {file}: {e}")
-                return False, f"Failed to read {file}: {e}"
-            df_list.append(df_part)
-        df = pd.concat(df_list, ignore_index=True)
-        raw_rows = len(df)
-        logger.info(f"Loaded {raw_rows} rows of historical data from {len(data_files)} file(s).")
-
-        # Basic cleaning: drop any rows missing essential price data
-        if 'High' in df.columns and 'Low' in df.columns:
-            df.dropna(subset=['Close', 'High', 'Low'], inplace=True)
-        else:
-            df.dropna(subset=['Close'], inplace=True)
-        # Remove exact duplicate rows (if any)
-        df.drop_duplicates(inplace=True)
-        cleaned_rows = len(df)
-        if cleaned_rows < raw_rows:
-            logger.info(f"Cleaned data: {raw_rows - cleaned_rows} rows removed (NaN or duplicates). Remaining {cleaned_rows} rows.")
-
-        # Ensure the data is sorted by time if a time column exists
-        time_cols = [col for col in df.columns if "time" in col.lower() or "date" in col.lower()]
-        if time_cols:
-            df.sort_values(by=time_cols[0], inplace=True)
-            df.reset_index(drop=True, inplace=True)
-
-        # Feature Engineering
-        # 1. Compute RSI (Relative Strength Index, 14-period by default)
-        if 'Close' not in df.columns:
-            logger.error("Close price column missing in historical data.")
-            return False, "Missing Close price in data."
-        delta = df['Close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        window = 14
-        avg_gain = gain.rolling(window).mean()
-        avg_loss = loss.rolling(window).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-
-        # 2. Compute MACD (Moving Average Convergence Divergence: fast EMA 12, slow EMA 26)
-        fast_span, slow_span, signal_span = 12, 26, 9
-        ema_fast = df['Close'].ewm(span=fast_span, adjust=False).mean()
-        ema_slow = df['Close'].ewm(span=slow_span, adjust=False).mean()
-        df['MACD'] = ema_fast - ema_slow
-        # (Optionally compute MACD signal and histogram if needed in future)
-        # df['MACD_signal'] = df['MACD'].ewm(span=signal_span, adjust=False).mean()
-        # df['MACD_hist'] = df['MACD'] - df['MACD_signal']
-
-        # 3. Compute EMA difference (difference between price and a longer-term EMA, e.g. 50-period)
-        ema_long_span = 50
-        ema_long = df['Close'].ewm(span=ema_long_span, adjust=False).mean()
-        df['EMA_diff'] = df['Close'] - ema_long
-
-        # 4. Compute volatility measure (ATR-based or rolling std of returns)
-        if 'High' in df.columns and 'Low' in df.columns:
-            atr_window = 14
-            high_low = df['High'] - df['Low']
-            high_close = (df['High'] - df['Close'].shift()).abs()
-            low_close = (df['Low'] - df['Close'].shift()).abs()
-            # True range
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1, skipna=True)
-            df['ATR'] = tr.rolling(atr_window).mean()
-            df['volatility'] = df['ATR'] / df['Close']
-        else:
-            # Fallback: use rolling standard deviation of close-to-close returns as volatility
-            df['volatility'] = df['Close'].pct_change().rolling(14).std()
-
-        # Drop initial rows where indicators couldn't be computed (NaN values)
-        df.dropna(inplace=True)
-        if len(df) == 0:
-            logger.error("Historical data is insufficient after feature computation (all rows dropped).")
-            return False, "Not enough data after feature computation."
-
-        # Normalize features via z-score
-        feature_cols = ['RSI', 'MACD', 'EMA_diff', 'volatility']
-        feature_stats = {}
-        for col in feature_cols:
-            mean_val = df[col].mean()
-            std_val = df[col].std()
-            feature_stats[col] = (mean_val, std_val)
-            if std_val is None or std_val == 0:
-                # Avoid division by zero (if std is zero, data is constant; z-score would be 0)
-                df[f"{col}_zscore"] = 0.0
-            else:
-                df[f"{col}_zscore"] = (df[col] - mean_val) / std_val
-
-        # Label Generation: forward return over a horizon to classify outcome
-        horizon = 5  # number of periods ahead to evaluate return (can adjust as needed)
-        # Compute forward return as percentage change over the horizon
-        df['future_close'] = df['Close'].shift(-horizon)
-        df['forward_return'] = (df['future_close'] - df['Close']) / df['Close']
-        # Define label: 1 if forward return > 0 (positive outcome), else 0
-        df['Label'] = (df['forward_return'] > 0).astype(int)
-        # Drop final rows where forward_return could not be calculated (NaN in future_close/forward_return)
-        df.dropna(subset=['Label'], inplace=True)
-
-        if len(df) < 1:
-            logger.error("No training samples after label generation (check horizon and data length).")
-            return False, "No data to train after labeling."
-
-        # Prepare training data
-        X_cols = [f"{col}_zscore" for col in feature_cols]
-        X = df[X_cols]
-        y = df['Label'].astype(int)
-        num_samples = len(X)
-        num_features = len(X_cols)
-        pos_ratio = y.mean() if num_samples > 0 else 0
-
-        logger.info(f"Training data prepared: {num_samples} samples, {num_features} features.")
-        logger.info(f"Feature columns: {X_cols}")
-        logger.info(f"Positive class proportion: {pos_ratio:.2%}")
-
-        # Check for class balance or single-class issues
-        if y.nunique() < 2:
-            logger.warning("Training labels contain only one class. The model will not be predictive.")
-        if num_samples < 10:
-            logger.warning("Very few training samples available. Model performance may be poor or unreliable.")
-
-        # Train the model (Random Forest Classifier)
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model.fit(X, y)
-        # Attach training stats to model for use in ml_confidence (for consistent feature scaling)
-        model.feature_stats = feature_stats
-        model.feature_names = feature_cols  # raw feature names
-        model.feature_names_final = X_cols  # z-score feature names used in training
-
-        # Save the trained model to disk
-        os.makedirs(os.path.dirname(MODEL_FILE_PATH), exist_ok=True)
+        if data.empty:
+            return None
         try:
-            joblib.dump(model, MODEL_FILE_PATH)
+            # Use only the features the model was trained on
+            row = data.iloc[-1][model.feature_names]
+        except KeyError:
+            # If indicators not present, compute them then try again
+            data = add_indicators(data.copy())
+            try:
+                row = data.iloc[-1][model.feature_names]
+            except Exception as e:
+                logger.error(f"ml_confidence: required features missing from data: {e}")
+                return None
+    elif isinstance(data, pd.Series):
+        row = data
+        if not set(model.feature_names).issubset(row.index):
+            logger.error("ml_confidence: input Series is missing required features")
+            return None
+        row = row[model.feature_names]
+    else:
+        # Try to convert other data formats (dict or list) to a Series
+        try:
+            row = pd.Series(data)
+            row = row[model.feature_names]
         except Exception as e:
-            logger.error(f"Failed to save model to '{MODEL_FILE_PATH}': {e}")
-            return False, f"Model training successful, but saving failed: {e}"
-
-        # Update global model cache
-        _model = model
-        logger.info(f"Model trained and saved to '{MODEL_FILE_PATH}'.")
-        return True, f"Trained model on {num_samples} samples with {num_features} features."
+            logger.error(f"ml_confidence: unsupported data format: {e}")
+            return None
+    # Normalize the features using model's stored mean and std
+    vals = np.array(row.values, dtype=float)
+    means = np.array(model.feature_means, dtype=float)
+    stds = np.array(model.feature_stds, dtype=float)
+    stds[stds == 0] = 1e-9  # safeguard against division by zero
+    z = (vals - means) / stds
+    # Predict probability of positive class (outcome=1)
+    try:
+        proba = model.predict_proba(z.reshape(1, -1))[0]
     except Exception as e:
-        logger.exception("Exception during model training:")
-        return False, f"Error during model training: {e}"
+        logger.error(f"ml_confidence: model prediction failed: {e}")
+        return None
+    if len(model.classes_) == 2:
+        # Determine index of class '1'
+        try:
+            class_one_index = list(model.classes_).index(1)
+        except ValueError:
+            class_one_index = 1  # if class 1 not found, default to second class
+        confidence = proba[class_one_index]
+    else:
+        # For non-binary, use the maximum probability as a conservative measure
+        confidence = proba.max()
+    return float(confidence)
