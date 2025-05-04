@@ -700,13 +700,13 @@ if run_backtest_btn:
                         signal=signal,
                         prices=df["Close"],
                         threshold=threshold_used,
-                        initial_capital=trading_cfg.get("default_capital", 10.0),
-                        risk_pct=risk_cfg.get("risk_pct", 0.01),
+                        initial_capital=current_capital,
+                        risk_pct=risk_cfg.get("risk_pct", 0.05),  # Risk percentage
                         stop_loss_atr_mult=stop_mult,
                         take_profit_atr_mult=tp_mult,
                         trailing_atr_mult=trail_mult,
-                        fee_pct=trading_cfg.get("fee", 0.001),
-                        partial_exit=True,  # enable partial exits in backtest
+                        fee_pct=trading_cfg.get("fee", 0.001),  # Fee percentage
+                        partial_exit=st.session_state.sidebar.get("partial_exit", True),
                         atr=df.get("ATR")
                     )
                     st.write("📊 Backtest Results", backtest_result)
@@ -734,6 +734,7 @@ if run_backtest_btn:
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
+                # **This block was duplicated, removed redundant call**
                 backtest_df = run_backtest(
                     signal=signal,
                     prices=df["Close"],
