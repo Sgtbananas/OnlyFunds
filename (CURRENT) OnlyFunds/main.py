@@ -475,15 +475,25 @@ def main_loop():
         lookback_used = trading_cfg.get("backtest_lookback", 1000)
 
         df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+        st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Invalid data for {pair}")
             continue
 
         df = add_indicators(df)
+        st.write('DEBUG: DataFrame after fetching and adding indicators:')
+        st.write(df.head(5))
+        st.write('DEBUG: df empty?', df.empty)
         try:
             base_signal = generate_signal(df)  # Base strategy signal series
-            st.write("🔎 Final signal values (last 10):", signal.tail(10))
-            st.write("🔎 ATR values (last 10):", df['ATR'].tail(10))
+            st.write('🔎 Final signal values (last 10):', signal.tail(10))
+            st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
+            st.write('DEBUG: Is df empty?', df.empty)
+            st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
+            st.write('🔎 Final signal values (last 10):', signal.tail(10))
+            st.write('DEBUG: Is df empty?', df.empty)
+            st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
+            st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
         except Exception as e:
             logger.error(f"Signal generation failed for {pair}: {e}")
             continue
@@ -643,6 +653,13 @@ def main_loop():
 run_backtest_btn = st.sidebar.button("Run Backtest")
 
 # --- Backtest Execution ---
+pair = st.sidebar.text_input('Trading Pair', value='BTCUSDT')
+pair = st.sidebar.text_input('Manual Trading Pair (leave blank for auto)', value='')
+# Auto-select pairs based on volatility if no manual pair provided
+if not pair:
+    TRADING_PAIRS = get_volatile_pairs(limit=5)
+else:
+    TRADING_PAIRS = [pair]
 if run_backtest_btn:
     try:
         st.sidebar.success("Backtest started...")
