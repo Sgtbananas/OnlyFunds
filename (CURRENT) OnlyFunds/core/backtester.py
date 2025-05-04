@@ -2,42 +2,79 @@ import pandas as pd
 import numpy as np
 import logging
 from core.grid_trader import GridTrader
+from core.meta_learner import select_strategy
 
-def run_backtest(
-    signal: pd.Series,
-    prices: pd.Series,
-    threshold: float = 0.05,
-    initial_capital: float = 10.0,
-    risk_pct: float = 0.01,
-    stop_loss_pct: float = 0.005,
-    take_profit_pct: float = 0.01,
-    fee_pct: float = 0.0004,
-    verbose: bool = False,
-    log_every_n: int = 50,
-    grid_mode: bool = False,
-    grid_kwargs: dict = None,
-    log_func=None,
-    indicator_params: dict = None,
-    # The following args are for ATR/partial/trailing logic (added in advanced risk features)
-    stop_loss_atr_mult: float = None,
-    take_profit_atr_mult: float = None,
-    atr: pd.Series = None,
-    partial_exit: bool = False,
-    trailing_atr_mult: float = None,
-) -> pd.DataFrame:
-    """
-    Backtest with support for stop-loss, take-profit, ATR/trailing/partial-exit, and fee modeling.
-    If grid_mode, runs a grid strategy simulation instead.
-    indicator_params: dict that can be passed through to indicator logic (for multi-param search).
-    Returns DataFrame: [summary row, trade rows], summary always includes: 
-        type, trades, avg_return, win_rate, capital, total_pnl, max_drawdown, sharpe_ratio
-    """
-    # NOTE: indicator_params is for future use/compat with walk-forward hyperopt
-    if not grid_mode:
+def run_backtest(signal, prices, equity, performance_dict, meta_model=None, risk_pct=0.01, atr_multiplier=2, grid_mode=False, grid_kwargs=None, fee_pct=0.002, verbose=False, log_every_n=100):
+    # Get the selected strategy using AI/ML
+    strategy, _ = select_strategy(performance_dict, meta_model)
+
+    # Apply risk management for position sizing
+    position_size = risk_manager.position_size(equity, prices[-1], risk_pct=risk_pct, volatility=prices['ATR'], v_adj=True)
+    
+    # Apply ATR-based stop-loss and take-profit levels
+    entry_price = prices[-1]
+    stop_loss_price = entry_price - (atr_multiplier * prices['ATR'][-1])  # Example ATR-based stop loss
+    take_profit_price = entry_price + (atr_multiplier * prices['ATR'][-1])  # Example ATR-based take profit
+
+    # Simulate the trade based on selected strategy
+    if strategy == "trend_following":
+        # Apply trend-following logic (e.g., EMA crossover)
+        pass
+    elif strategy == "mean_reversion":
+        # Apply mean-reversion logic
+        pass
+    
+    for i, price in enumerate(prices):
+        if price <= stop_loss_price:
+            log_trade(entry_price, 'stop_loss', price, profit_loss=price - entry_price)
+            break
+        elif price >= take_profit_price:
+            log_trade(entry_price, 'take_profit', price, profit_loss=price - entry_price)
+            break
+    else:
+        log_trade(entry_price, 'continue', prices[-1], profit_loss=prices[-1] - entry_price)
+    
+    # Handle grid mode (if grid_mode is True)
+    if grid_mode:
+        if grid_kwargs is None:
+            raise ValueError("grid_kwargs must be provided for grid_mode backtest.")
+        grid = GridTrader(**grid_kwargs)
+        grid.build_orders()
+        grid_orders = []
+        price_series = prices.values
+        idx_series = prices.index
+        for i, price in enumerate(price_series):
+            ts = idx_series[i] if hasattr(idx_series, "__getitem__") else None
+            grid.check_and_fill_orders(price, timestamp=ts, log_func=log_func)
+        grid_orders = [o.to_dict() for o in grid.orders]
+        fills = [o for o in grid_orders if o["filled"]]
+        pnl = 0
+        buy_fills = [o for o in fills if o["side"] == "buy"]
+        sell_fills = [o for o in fills if o["side"] == "sell"]
+        min_fills = min(len(buy_fills), len(sell_fills))
+        if min_fills > 0:
+            pnl = sum(
+                (sell_fills[i]["fill_price"] - buy_fills[i]["fill_price"]) * buy_fills[i]["size"]
+                for i in range(min_fills)
+            )
+        summary = {
+            "type": "summary",
+            "trades": len(fills),
+            "buy_fills": len(buy_fills),
+            "sell_fills": len(sell_fills),
+            "total_pnl": pnl,
+        }
+        summary_df = pd.DataFrame([summary])
+        fills_df = pd.DataFrame(fills)
+        combined_df = pd.concat([summary_df, fills_df], ignore_index=True)
+        return combined_df
+
+    # Standard backtest without grid mode
+    else:
         trades = []
         position = None
         entry_price = None
-        capital = initial_capital
+        capital = equity
         equity_curve = [capital]
         partial_out = False
         trailing_stop = None
@@ -45,7 +82,7 @@ def run_backtest(
         for i in range(len(signal)):
             sig = signal.iloc[i]
             price = prices.iloc[i]
-            this_atr = atr.iloc[i] if atr is not None else None
+            this_atr = prices['ATR'].iloc[i] if prices['ATR'] is not None else None
 
             adjusted_entry_price = price * (1 + fee_pct) if position is None else entry_price
             adjusted_exit_price = price * (1 - fee_pct) if position is not None else price
@@ -54,7 +91,7 @@ def run_backtest(
                 logging.debug(f"Step {i}: Signal={sig:.4f}, Price={price:.2f}, Position={position}, Capital={capital:.2f}")
 
             # --- LONG entry ---
-            if sig > threshold and position is None:
+            if sig > 0 and position is None:
                 position_size = (capital * risk_pct) / adjusted_entry_price
                 position = {
                     "size": position_size,
@@ -72,11 +109,11 @@ def run_backtest(
                 if stop_loss_atr_mult is not None and this_atr is not None:
                     stop_loss = adjusted_entry_price - stop_loss_atr_mult * this_atr
                 else:
-                    stop_loss = adjusted_entry_price * (1 - stop_loss_pct)
+                    stop_loss = adjusted_entry_price * (1 - risk_pct)
                 if take_profit_atr_mult is not None and this_atr is not None:
                     take_profit = adjusted_entry_price + take_profit_atr_mult * this_atr
                 else:
-                    take_profit = adjusted_entry_price * (1 + take_profit_pct)
+                    take_profit = adjusted_entry_price * (1 + risk_pct)
                 trades.append({
                     "type": "open",
                     "entry_bar": i,
@@ -94,63 +131,29 @@ def run_backtest(
                 if stop_loss_atr_mult is not None and this_atr is not None:
                     stop_loss = entry_price - stop_loss_atr_mult * this_atr
                 else:
-                    stop_loss = entry_price * (1 - stop_loss_pct)
+                    stop_loss = entry_price * (1 - risk_pct)
                 if take_profit_atr_mult is not None and this_atr is not None:
                     take_profit = entry_price + take_profit_atr_mult * this_atr
                 else:
-                    take_profit = entry_price * (1 + take_profit_pct)
+                    take_profit = entry_price * (1 + risk_pct)
 
                 # Partial exit at first TP
-                if partial_exit and not partial_out and price >= take_profit:
-                    # Sell half, keep half for trailing
-                    half_size = position["size"] / 2
-                    profit = half_size * (price - entry_price)
+                if price >= take_profit:
+                    profit = position["size"] * (price - entry_price)
                     trades.append({
                         "type": "partial_exit",
                         "exit_bar": i,
                         "exit_price": price,
                         "profit": profit,
                         "return": (price - entry_price) / entry_price,
-                        "amount": half_size,
-                        "capital": capital + half_size * price
+                        "amount": position["size"] / 2,
+                        "capital": capital + (position["size"] / 2) * price
                     })
-                    capital += half_size * price
-                    position["size"] = half_size
-                    partial_out = True
-                    # Set trailing stop for remainder
-                    if trailing_atr_mult is not None and this_atr is not None:
-                        trailing_stop = price - trailing_atr_mult * this_atr
-                    else:
-                        trailing_stop = price * (1 - stop_loss_pct)
-                # Trailing exit for remainder
-                elif partial_exit and partial_out and trailing_stop is not None:
-                    # Dynamically update trailing stop if price moves up
-                    if trailing_atr_mult is not None and this_atr is not None:
-                        new_trailing = price - trailing_atr_mult * this_atr
-                    else:
-                        new_trailing = price * (1 - stop_loss_pct)
-                    if new_trailing > trailing_stop:
-                        trailing_stop = new_trailing
-                    if price <= trailing_stop:
-                        profit = position["size"] * (price - entry_price)
-                        trades.append({
-                            "type": "trailing_exit",
-                            "exit_bar": i,
-                            "exit_price": price,
-                            "profit": profit,
-                            "return": (price - entry_price) / entry_price,
-                            "amount": position["size"],
-                            "capital": capital + position["size"] * price
-                        })
-                        capital += position["size"] * price
-                        equity_curve.append(capital)
-                        position = None
-                        entry_price = None
-                        partial_out = False
-                        trailing_stop = None
-                # Full exit (SL or signal flip or TP if not using partial_exit)
-                elif ((not partial_exit) and (price <= stop_loss or price >= take_profit or sig < threshold)) or (partial_exit and not partial_out and price <= stop_loss) or (partial_exit and not partial_out and sig < threshold):
-                    # If partial_exit and not partial_out, SL or signal flip triggers full exit.
+                    capital += (position["size"] / 2) * price
+                    position["size"] /= 2  # Keep half of the position open
+
+                # Full exit (SL or TP or signal flip)
+                if price <= stop_loss or price >= take_profit or sig < 0:
                     profit = position["size"] * (price - entry_price)
                     trades.append({
                         "type": "full_exit",
@@ -166,19 +169,10 @@ def run_backtest(
                     equity_curve.append(capital)
                     position = None
                     entry_price = None
-                    partial_out = False
                     trailing_stop = None
-                # Update trailing stop if in partial
-                elif partial_exit and partial_out:
-                    if trailing_atr_mult is not None and this_atr is not None:
-                        new_trailing = price - trailing_atr_mult * this_atr
-                    else:
-                        new_trailing = price * (1 - stop_loss_pct)
-                    if new_trailing > trailing_stop:
-                        trailing_stop = new_trailing
 
         trades_df = pd.DataFrame(trades)
-        # --- PATCH: Robustly handle missing 'return' column ---
+        # --- Robustly handle missing 'return' column ---
         if not trades_df.empty and "return" in trades_df.columns:
             exit_mask = trades_df["type"].str.contains("exit")
             avg_return = trades_df.loc[exit_mask, "return"].mean()
@@ -214,38 +208,4 @@ def run_backtest(
         else:
             logging.info(f"Backtest complete: {summary['trades']} trades, Avg Return: {avg_return:.2%}")
 
-        return combined_df
-
-    else:
-        if grid_kwargs is None:
-            raise ValueError("grid_kwargs must be provided for grid_mode backtest.")
-        grid = GridTrader(**grid_kwargs)
-        grid.build_orders()
-        grid_orders = []
-        price_series = prices.values
-        idx_series = prices.index
-        for i, price in enumerate(price_series):
-            ts = idx_series[i] if hasattr(idx_series, "__getitem__") else None
-            grid.check_and_fill_orders(price, timestamp=ts, log_func=log_func)
-        grid_orders = [o.to_dict() for o in grid.orders]
-        fills = [o for o in grid_orders if o["filled"]]
-        pnl = 0
-        buy_fills = [o for o in fills if o["side"] == "buy"]
-        sell_fills = [o for o in fills if o["side"] == "sell"]
-        min_fills = min(len(buy_fills), len(sell_fills))
-        if min_fills > 0:
-            pnl = sum(
-                (sell_fills[i]["fill_price"] - buy_fills[i]["fill_price"]) * buy_fills[i]["size"]
-                for i in range(min_fills)
-            )
-        summary = {
-            "type": "summary",
-            "trades": len(fills),
-            "buy_fills": len(buy_fills),
-            "sell_fills": len(sell_fills),
-            "total_pnl": pnl,
-        }
-        summary_df = pd.DataFrame([summary])
-        fills_df = pd.DataFrame(fills)
-        combined_df = pd.concat([summary_df, fills_df], ignore_index=True)
         return combined_df

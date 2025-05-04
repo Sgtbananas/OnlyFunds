@@ -110,7 +110,7 @@ from core.core_data import fetch_klines, validate_df, add_indicators
 from core.core_signals import (
     generate_signal, smooth_signal, adaptive_threshold, track_trade_result, generate_ensemble_signal
 )
-from core.trade_execution import place_order
+from core.trade_execution import place_live_order
 from core.backtester import run_backtest
 from utils.helpers import (
     compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
