@@ -632,123 +632,126 @@ def main_loop():
 if run_backtest_btn:
     try:
         st.sidebar.success("Backtest started...")
-        # Use the first trading pair for backtesting (extend to multi-pair if needed)
-        pair = TRADING_PAIRS[0]
+        all_results = []
+        starting_capital = trading_cfg.get("default_capital", 10.0)
+        current_capital = starting_capital
+        day_returns = []
+        total_trades = 0
 
-        # Auto params per pair if available, otherwise use sidebar values
-        if st.session_state.sidebar.get("mode") == "Auto":
-            params = get_auto_pair_params(pair) or {}
-            interval_used = params.get("interval", "5m")
-            lookback_used = params.get("lookback", 1000)
-            threshold_used = params.get("threshold", 0.5)
-        else:
-            interval_used = st.session_state.sidebar.get("interval", "5m")
-            lookback_used = st.session_state.sidebar.get("lookback", 1000)
-            threshold_used = st.session_state.sidebar.get("threshold", 0.5)
+        for pair in TRADING_PAIRS:
+            # Auto params per pair if available, otherwise use sidebar values
+            if st.session_state.sidebar.get("mode") == "Auto":
+                params = get_auto_pair_params(pair) or {}
+                interval_used = params.get("interval", "5m")
+                lookback_used = params.get("lookback", 1000)
+                threshold_used = params.get("threshold", 0.5)
+            else:
+                interval_used = st.session_state.sidebar.get("interval", "5m")
+                lookback_used = st.session_state.sidebar.get("lookback", 1000)
+                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
-        df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
-        if df.empty or not validate_df(df):
-            st.sidebar.error(f"Backtest failed: No valid data for {pair}")
-        else:
-            df = add_indicators(df)
+            df = fetch_klines(pair, interval=interval_used, limit=lookback_used)
+            if df.empty or not validate_df(df):
+                st.sidebar.error(f"Backtest failed: No valid data for {pair}")
+                continue
+            else:
+                df = add_indicators(df)
 
-            # Generate signal series (with ML confidence if available)
-            if META_MODEL:
-                conf_series = None
-                try:
-                    conf_series = ml_confidence(df)
-                except Exception as e:
-                    logger.error(f"Backtest ML confidence error for {pair}: {e}")
+                # Generate signal series (with ML confidence if available)
+                if META_MODEL:
                     conf_series = None
-                if conf_series is None:
-                    st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
+                    try:
+                        conf_series = ml_confidence(df)
+                    except Exception as e:
+                        logger.error(f"Backtest ML confidence error for {pair}: {e}")
+                        conf_series = None
+                    if conf_series is None:
+                        st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
+                        continue
+                    else:
+                        base_signal = generate_signal(df)
+                        # Combine base signal and ML confidence by taking the minimum (gating)
+                        if not isinstance(conf_series, pd.Series):
+                            # Convert array-like or scalar confidence to series
+                            conf_series = pd.Series(conf_series, index=df.index)
+                        signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
                 else:
-                    base_signal = generate_signal(df)
-                    # Combine base signal and ML confidence by taking the minimum (gating)
-                    if not isinstance(conf_series, pd.Series):
-                        # Convert array-like or scalar confidence to series
-                        conf_series = pd.Series(conf_series, index=df.index)
-                    signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
-            else:
-                signal = generate_signal(df)
+                    signal = generate_signal(df)
 
-            if META_MODEL and (conf_series is None):
-                # Skip running backtest due to missing features/confidence
-                backtest_result = None
-            else:
-                # Dynamic ATR multipliers for backtest (uses latest ATR values)
+                if META_MODEL and (conf_series is None):
+                    # Skip running backtest due to missing features/confidence
+                    backtest_result = None
+                else:
+                    # Dynamic ATR multipliers for backtest (uses latest ATR values)
+                    stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+                    backtest_result = run_backtest(
+                        signal=signal,
+                        prices=df["Close"],
+                        threshold=threshold_used,
+                        initial_capital=trading_cfg.get("default_capital", 10.0),
+                        risk_pct=risk_cfg.get("risk_pct", 0.01),
+                        stop_loss_atr_mult=stop_mult,
+                        take_profit_atr_mult=tp_mult,
+                        trailing_atr_mult=trail_mult,
+                        fee_pct=trading_cfg.get("fee", 0.001),
+                        partial_exit=True,  # enable partial exits in backtest
+                        atr=df.get("ATR")
+                    )
+                    st.write("📊 Backtest Results", backtest_result)
+                    try:
+                        atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
+                        st.sidebar.success("✅ Backtest results saved!")
+                    except Exception as e:
+                        logger.error(f"Saving backtest results failed: {e}")
+                        st.sidebar.error("Saving backtest results failed!")
+
+                # --- Final Signal Check ---
+                latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
+                if abs(latest_signal) < threshold_used:
+                    logger.info(
+                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
+                    )
+                    st.write(
+                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
+                    )
+                    continue
+
+                logger.info(f"🚀 Preparing backtest for {pair}")
+                st.write(f"🚀 Preparing backtest for {pair}")
+
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-                backtest_result = run_backtest(
+                logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
+
+                backtest_df = run_backtest(
                     signal=signal,
                     prices=df["Close"],
                     threshold=threshold_used,
-                    initial_capital=trading_cfg.get("default_capital", 10.0),
-                    risk_pct=risk_cfg.get("risk_pct", 0.01),
+                    initial_capital=current_capital,
+                    risk_pct=risk_cfg.get("risk_pct", 0.05),  # <- You might want to raise this from 1% to 5%
                     stop_loss_atr_mult=stop_mult,
                     take_profit_atr_mult=tp_mult,
                     trailing_atr_mult=trail_mult,
                     fee_pct=trading_cfg.get("fee", 0.001),
-                    partial_exit=True,  # enable partial exits in backtest
+                    partial_exit=st.session_state.sidebar.get("partial_exit", True),
                     atr=df.get("ATR")
                 )
-                st.write("📊 Backtest Results", backtest_result)
-                try:
-                    atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-                    st.sidebar.success("✅ Backtest results saved!")
-                except Exception as e:
-                    logger.error(f"Saving backtest results failed: {e}")
-                    st.sidebar.error("Saving backtest results failed!")
-    except Exception as e:
-        logger.exception("Backtest execution error")
-        st.error(f"Backtest error: {e}")
 
-            # --- Final Signal Check ---
-            latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-            if abs(latest_signal) < threshold_used:
-                logger.info(
-                    f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                )
-                st.write(
-                    f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                )
-                continue
+                if backtest_df.empty:
+                    logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
+                    st.write(f"⚠ No valid trades for {pair}.")
+                else:
+                    logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
+                    st.write(f"✅ Backtest completed for {pair}.")
+                    st.write(backtest_df.head(5))  # Show first 5 trades
 
-            logger.info(f"🚀 Preparing backtest for {pair}")
-            st.write(f"🚀 Preparing backtest for {pair}")
+                    all_results.append(backtest_df)
 
-            stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-            logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
-
-            backtest_df = run_backtest(
-                signal=signal,
-                prices=df["Close"],
-                threshold=threshold_used,
-                initial_capital=current_capital,
-                risk_pct=risk_cfg.get("risk_pct", 0.05),  # <- You might want to raise this from 1% to 5%
-                stop_loss_atr_mult=stop_mult,
-                take_profit_atr_mult=tp_mult,
-                trailing_atr_mult=trail_mult,
-                fee_pct=trading_cfg.get("fee", 0.001),
-                partial_exit=st.session_state.sidebar.get("partial_exit", True),
-                atr=df.get("ATR")
-            )
-
-            if backtest_df.empty:
-                logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
-                st.write(f"⚠ No valid trades for {pair}.")
-            else:
-                logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
-                st.write(f"✅ Backtest completed for {pair}.")
-                st.write(backtest_df.head(5))  # Show first 5 trades
-
-                all_results.append(backtest_df)
-
-                summaries = backtest_df[backtest_df["type"] == "summary"]
-                for _, row in summaries.iterrows():
-                    day_return = row.get("daily_return_pct", 0.0)
-                    current_capital *= (1 + day_return / 100.0)
-                    day_returns.append(day_return)
-                    total_trades += row.get("trades", 0)
+                    summaries = backtest_df[backtest_df["type"] == "summary"]
+                    for _, row in summaries.iterrows():
+                        day_return = row.get("daily_return_pct", 0.0)
+                        current_capital *= (1 + day_return / 100.0)
+                        day_returns.append(day_return)
+                        total_trades += row.get("trades", 0)
 
         # --- Results ---
         if all_results:
