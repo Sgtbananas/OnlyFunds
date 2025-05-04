@@ -918,17 +918,7 @@ if run_backtest_btn:
                     pair=pair,
                     interval=interval_used,
                     limit=lookback_used,
-                    equity=current_capital
-                    equity=current_capital
-                    
-                    
-                    risk_pct=risk_cfg.get("risk_pct", 0.05),  # <- You might want to raise this from 1% to 5%
-                    stop_loss_atr_mult=stop_mult,
-                    take_profit_atr_mult=tp_mult,
-                    trailing_atr_mult=trail_mult,
-                    fee_pct=trading_cfg.get("fee", 0.001),
-                    partial_exit=st.session_state.sidebar.get("partial_exit", True),
-                    atr=df.get("ATR")
+                    equity=current_capital,                                      
                 )
 
                 if backtest_df.empty:
