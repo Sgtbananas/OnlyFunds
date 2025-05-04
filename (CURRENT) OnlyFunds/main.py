@@ -482,6 +482,8 @@ def main_loop():
         df = add_indicators(df)
         try:
             base_signal = generate_signal(df)  # Base strategy signal series
+            st.write("🔎 Final signal values (last 10):", signal.tail(10))
+            st.write("🔎 ATR values (last 10):", df['ATR'].tail(10))
         except Exception as e:
             logger.error(f"Signal generation failed for {pair}: {e}")
             continue
@@ -698,6 +700,8 @@ if run_backtest_btn:
 
                 # --- Run backtest (corrected call matching new backtester.py) ---
                 try:
+                    # --- Run backtest (fully updated arguments) ---
+
                     backtest_result = run_backtest(
                         signal=signal,
                         pair=pair,
@@ -705,6 +709,10 @@ if run_backtest_btn:
                         limit=lookback_used,
                         equity=current_capital
                     )
+                except Exception as e:
+                    logger.error(f"Backtest failed for {pair}: {e}")
+                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
+                    st.stop()
                 except Exception as e:
                     logger.error(f"Backtest failed for {pair}: {e}")
                     st.sidebar.error(f"Backtest failed for {pair}: {e}")
@@ -743,19 +751,7 @@ if run_backtest_btn:
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
                 # **This block was duplicated, removed redundant call**
-                backtest_df = run_backtest(
-                    signal=signal,
-                    prices=df["Close"],
-                    threshold=threshold_used,
-                    initial_capital=current_capital,
-                    risk_pct=risk_cfg.get("risk_pct", 0.05),  # <- You might want to raise this from 1% to 5%
-                    stop_loss_atr_mult=stop_mult,
-                    take_profit_atr_mult=tp_mult,
-                    trailing_atr_mult=trail_mult,
-                    fee_pct=trading_cfg.get("fee", 0.001),
-                    partial_exit=st.session_state.sidebar.get("partial_exit", True),
-                    atr=df.get("ATR")
-                )
+                # Removed invalid backtest_df call
 
                 if backtest_df.empty:
                     logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
@@ -808,8 +804,6 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
-
-
 
 if run_backtest_btn:
     try:
@@ -868,6 +862,8 @@ if run_backtest_btn:
 
                 # --- Run backtest (corrected call matching new backtester.py) ---
                 try:
+                    # --- Run backtest (fully updated arguments) ---
+
                     backtest_result = run_backtest(
                         signal=signal,
                         pair=pair,
@@ -875,6 +871,10 @@ if run_backtest_btn:
                         limit=lookback_used,
                         equity=current_capital
                     )
+                except Exception as e:
+                    logger.error(f"Backtest failed for {pair}: {e}")
+                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
+                    st.stop()
                 except Exception as e:
                     logger.error(f"Backtest failed for {pair}: {e}")
                     st.sidebar.error(f"Backtest failed for {pair}: {e}")
@@ -913,13 +913,21 @@ if run_backtest_btn:
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
                 # **This block was duplicated, removed redundant call**
-                backtest_result = run_backtest(
-                    signal=signal,
-                    pair=pair,
-                    interval=interval_used,
-                    limit=lookback_used,
-                    equity=current_capital,                                      
-                )
+
+                # --- Run backtest (fully updated arguments) ---
+
+                try:
+                    backtest_result = run_backtest(
+                        signal=signal,
+                        pair=pair,
+                        interval=interval_used,
+                        limit=lookback_used,
+                        equity=current_capital
+                    )
+                except Exception as e:
+                    logger.error(f"Backtest failed for {pair}: {e}")
+                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
+                    st.stop()
 
                 if backtest_df.empty:
                     logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
@@ -975,5 +983,3 @@ sys.excepthook = global_exception_handler
 
 # --- No broken legacy backtest_df calls remain ---
 # --- All valid results shown and saved above ---
-
-
