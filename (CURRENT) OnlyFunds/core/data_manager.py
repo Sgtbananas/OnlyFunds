@@ -7,19 +7,30 @@ from core.core_data import fetch_klines
 DATA_DIR = 'data/historical'
 
 def get_top_coinex_symbols(limit=250):
-    url = "https://api.coinex.com/v1/market/list"
-    response = requests.get(url)
+    # Get all market tickers with volume data
+    ticker_url = "https://api.coinex.com/v1/market/ticker/all"
+    response = requests.get(ticker_url)
     if response.status_code != 200:
-        raise Exception(f"Failed to fetch CoinEx markets: {response.text}")
+        raise Exception(f"Failed to fetch CoinEx ticker data: {response.text}")
 
-    all_pairs = response.json().get("data", [])
-    spot_pairs = []
-    for pair in all_pairs:
-        if ":" not in pair and any(q in pair for q in ["USDT", "BTC", "ETH"]):
-            spot_pairs.append(pair)
+    ticker_data = response.json().get("data", {}).get("ticker", {})
 
-    spot_pairs = sorted(spot_pairs)[:limit]
-    return spot_pairs
+    pairs_and_volumes = []
+
+    for symbol, stats in ticker_data.items():
+        if ":" not in symbol and any(q in symbol for q in ["USDT", "BTC", "ETH"]):
+            try:
+                vol = float(stats.get("vol", 0))
+                last = float(stats.get("last", 0))
+                volume_usd = vol * last  # Approximate 24h trading volume in USD
+                pairs_and_volumes.append((symbol, volume_usd))
+            except:
+                continue
+
+    # Sort descending by volume
+    sorted_pairs = sorted(pairs_and_volumes, key=lambda x: x[1], reverse=True)
+    top_symbols = [pair for pair, vol in sorted_pairs[:limit]]
+    return top_symbols
 
 def update_historical_data(symbol, interval='5m', limit=1000):
     os.makedirs(DATA_DIR, exist_ok=True)

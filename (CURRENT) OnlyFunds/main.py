@@ -238,6 +238,9 @@ ml_cfg = config.get("ml", {})
 # --- Sidebar Setup (no manual ATR multipliers anymore)
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
 st.sidebar.header("⚙️ Configuration")
+interval_used = st.sidebar.selectbox('Interval', options=['5m', '15m', '1h'], index=0)
+lookback_used = st.sidebar.slider('Lookback Candles', min_value=100, max_value=1000, value=500)
+current_capital = st.sidebar.number_input('Starting Capital ($)', value=1000)
 st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
 
 # --- Trading Mode
@@ -356,12 +359,10 @@ def safe_load_json(file_path, default):
 
 open_positions = safe_load_json(POSITIONS_FILE, {})
 trade_log = safe_load_json(TRADE_LOG_FILE, [])
-current_capital = safe_load_json(CAPITAL_FILE, trading_cfg.get("default_capital", 10.0))
 if not isinstance(current_capital, (float, int)):
-    current_capital = trading_cfg.get("default_capital", 10.0)
 
 # --- Risk Manager
-risk_manager = RiskManager(config)
+ risk_manager = RiskManager(config)
 
 # --- ML Retraining & Meta Model Watchdog
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
@@ -472,8 +473,6 @@ def main_loop():
     for pair in [pair]:  # Using sidebar pair
         perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
         # Fetch Auto params
-        interval_used = trading_cfg.get("default_interval", "5m")
-        lookback_used = trading_cfg.get("backtest_lookback", 1000)
 
         df = load_data(pair, interval=interval_used, limit=lookback_used)
         st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
@@ -673,20 +672,15 @@ if run_backtest_btn:
         st.sidebar.success("Backtest started...")
         all_results = []
         starting_capital = trading_cfg.get("default_capital", 10.0)
-        current_capital = starting_capital
         day_returns = []
         total_trades = 0
 
         for pair in updated_pairs:
             # Auto params per pair if available, otherwise use sidebar values
             if st.session_state.sidebar.get("mode") == "Auto":
-                params = get_auto_pair_params(pair) or {}
-                interval_used = params.get("interval", "5m")
-                lookback_used = params.get("lookback", 1000)
+                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
                 threshold_used = params.get("threshold", 0.5)
             else:
-                interval_used = st.session_state.sidebar.get("interval", "5m")
-                lookback_used = st.session_state.sidebar.get("lookback", 1000)
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = load_data(pair, interval=interval_used, limit=lookback_used)
@@ -835,20 +829,14 @@ if run_backtest_btn:
         st.sidebar.success("Backtest started...")
         all_results = []
         starting_capital = trading_cfg.get("default_capital", 10.0)
-        current_capital = starting_capital
         day_returns = []
         total_trades = 0
 
         for pair in TRADING_PAIRS:
             # Auto params per pair if available, otherwise use sidebar values
             if st.session_state.sidebar.get("mode") == "Auto":
-                params = get_auto_pair_params(pair) or {}
-                interval_used = params.get("interval", "5m")
-                lookback_used = params.get("lookback", 1000)
                 threshold_used = params.get("threshold", 0.5)
             else:
-                interval_used = st.session_state.sidebar.get("interval", "5m")
-                lookback_used = st.session_state.sidebar.get("lookback", 1000)
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = load_data(pair, interval=interval_used, limit=lookback_used)
