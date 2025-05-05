@@ -31,7 +31,6 @@ if 'auto_mode' not in st.session_state:
 if 'next_run_time' not in st.session_state:
     st.session_state.next_run_time = None        # store next scheduled run time (if auto_mode)
 
-
 @st.cache_data(ttl=300)  # Refresh every 5 minutes
 def get_trading_pairs():
     return get_volatile_pairs(limit=10)
@@ -342,9 +341,10 @@ def safe_load_json(file_path, default):
 open_positions = safe_load_json(POSITIONS_FILE, {})
 trade_log = safe_load_json(TRADE_LOG_FILE, [])
 if not isinstance(current_capital, (float, int)):
+    pass
 
 # --- Risk Manager
- risk_manager = RiskManager(config)
+risk_manager = RiskManager(config)
 
 # --- ML Retraining & Meta Model Watchdog
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
@@ -389,6 +389,9 @@ def estimate_dynamic_atr_multipliers(df):
     """Based on ATR/Price ratios, optimize SL/TP/Trailing multipliers."""
     try:
         # Dynamic target bands
+        if df.empty or 'ATR' not in df.columns:
+            logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
+            return 1.0, 2.0, 1.0  # fallback safe values
         atr_avg = df["ATR"].rolling(50).mean().iloc[-1]
         close_price = df["Close"].iloc[-1]
         atr_pct = atr_avg / close_price if close_price > 0 else 0.01
@@ -456,6 +459,10 @@ def main_loop():
         perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
 
         df = load_data(pair, interval=interval_used, limit=lookback_used)
+        df = add_indicators(df)
+        if df.empty or 'ATR' not in df.columns:
+            logger.warning("Skipping pair — failed to add indicators or missing ATR.")
+            continue
         st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
         if df.empty or not validate_df(df):
             logger.warning(f"Invalid data for {pair}")
@@ -468,12 +475,18 @@ def main_loop():
         try:
             base_signal = generate_signal(df)  # Base strategy signal series
             st.write('🔎 Final signal values (last 10):', signal.tail(10))
+            if df.empty or 'ATR' not in df.columns:
+                logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
+                continue
             st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
             st.write('DEBUG: Is df empty?', df.empty)
             st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
             st.write('🔎 Final signal values (last 10):', signal.tail(10))
             st.write('DEBUG: Is df empty?', df.empty)
             st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
+            if df.empty or 'ATR' not in df.columns:
+                logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
+                continue
             st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
         except Exception as e:
             logger.error(f"Signal generation failed for {pair}: {e}")
@@ -505,6 +518,12 @@ def main_loop():
             threshold_final = st.session_state.sidebar.get("threshold", 0.5)
 
         # Dynamic ATR-based multipliers for SL/TP/Trailing
+        if df.empty or 'ATR' not in df.columns:
+            logger.warning(f"Skipping {pair} — missing ATR or no data.")
+            continue
+        if df.empty or 'ATR' not in df.columns:
+            logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
+            continue
         stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
 
         latest_base = base_signal.iloc[-1] if hasattr(base_signal, "iloc") else base_signal[-1]
@@ -521,6 +540,9 @@ def main_loop():
                 latest_conf = conf_series
 
         price = df["Close"].iloc[-1]
+        if df.empty or 'ATR' not in df.columns:
+            logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
+            continue
         atr_val = df["ATR"].iloc[-1] if "ATR" in df.columns else 0.0
 
         # BUY Condition (enter position)
@@ -658,11 +680,18 @@ if run_backtest_btn:
 
         for pair in updated_pairs:
             if st.session_state.sidebar.get("mode") == "Auto":
+                if df.empty or 'ATR' not in df.columns:
+                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
+                    continue
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = load_data(pair, interval=interval_used, limit=lookback_used)
+            df = add_indicators(df)
+            if df.empty or 'ATR' not in df.columns:
+                logger.warning("Skipping pair — failed to add indicators or missing ATR.")
+                continue
             if df.empty or not validate_df(df):
                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
                 continue
@@ -745,6 +774,9 @@ if run_backtest_btn:
                 logger.info(f"🚀 Preparing backtest for {pair}")
                 st.write(f"🚀 Preparing backtest for {pair}")
 
+                if df.empty or 'ATR' not in df.columns:
+                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
+                    continue
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
@@ -813,10 +845,15 @@ if run_backtest_btn:
 
         for pair in TRADING_PAIRS:
             if st.session_state.sidebar.get("mode") == "Auto":
+                pass
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
             df = load_data(pair, interval=interval_used, limit=lookback_used)
+            df = add_indicators(df)
+            if df.empty or 'ATR' not in df.columns:
+                logger.warning("Skipping pair — failed to add indicators or missing ATR.")
+                continue
             if df.empty or not validate_df(df):
                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
                 continue
@@ -899,6 +936,9 @@ if run_backtest_btn:
                 logger.info(f"🚀 Preparing backtest for {pair}")
                 st.write(f"🚀 Preparing backtest for {pair}")
 
+                if df.empty or 'ATR' not in df.columns:
+                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
+                    continue
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
