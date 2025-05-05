@@ -1,4 +1,3 @@
-
 import os
 import pandas as pd
 import requests
@@ -38,29 +37,32 @@ def update_historical_data(symbol, interval='5m', limit=1000):
 
     # If no CSV exists, fetch fresh data
     if not os.path.exists(file_path):
+        from core.core_data import add_indicators
         df = fetch_klines(symbol, interval=interval, limit=limit)
         if df.empty:
             raise ValueError(f"No data fetched for {symbol}.")
+        df = add_indicators(df)  # ✅ ADD INDICATORS
         df.to_csv(file_path, index=False)
         return df
 
     # CSV exists — load it
-    existing = pd.read_csv(file_path)
-
-    # Fetch latest data
-    latest_df = fetch_klines(symbol, interval=interval, limit=limit)
-    if latest_df.empty:
-        return existing  # Keep using the old data
-
-    # If the new data has timestamps newer than the existing data, update
-    latest_close = latest_df["Close"].iloc[-1]
-    existing_close = existing["Close"].iloc[-1]
-
-    if latest_close != existing_close:
-        latest_df.to_csv(file_path, index=False)
-        return latest_df
     else:
-        return existing  # Data is already up to date
+        existing = pd.read_csv(file_path)
+
+        # Fetch latest data
+        latest_df = fetch_klines(symbol, interval=interval, limit=limit)
+        if latest_df.empty:
+            return existing  # Keep using the old data
+
+        # If the new data has timestamps newer than the existing data, update
+        latest_close = latest_df["Close"].iloc[-1]
+        existing_close = existing["Close"].iloc[-1]
+
+        if latest_close != existing_close:
+            latest_df.to_csv(file_path, index=False)
+            return latest_df
+        else:
+            return existing  # Data is already up to date
 
 def load_data(symbol, interval="5m", limit=1000):
     file_path = os.path.join(DATA_DIR, f"{symbol}_{interval}_{limit}.csv")

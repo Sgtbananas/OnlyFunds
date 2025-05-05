@@ -26,7 +26,10 @@ def load_backtest_data(pair, interval=DEFAULT_INTERVAL, limit=DEFAULT_LOOKBACK):
 
     if os.path.exists(file_path):
         logging.info(f"Loading data for {pair} from {file_path}")
-        return pd.read_csv(file_path)
+        df = pd.read_csv(file_path)
+        from core.core_data import add_indicators
+        df = add_indicators(df)  # ✅ ENSURE INDICATORS PRESENT
+        return df
     else:
         logging.warning(f"Data file not found for {pair} at {file_path}. Attempting to fetch live data.")
         from core.core_data import fetch_klines, add_indicators
