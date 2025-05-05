@@ -87,24 +87,6 @@ def sidebar(key, default=None, set_value=None):
 if "sidebar" not in st.session_state:
     st.session_state.sidebar = get_config_defaults()
 
-# --- Safe get_pair_params fallback ---
-def get_pair_params(pair):
-    from utils.helpers import load_json
-    try:
-        params = load_json("state/auto_params.json", default={})
-        return params.get(pair, {
-            "interval": "5m",
-            "lookback": 1000,
-            "threshold": 0.5
-        })
-    except Exception as e:
-        print(f"[WARN] get_pair_params fallback: {e}")
-        return {
-            "interval": "5m",
-            "lookback": 1000,
-            "threshold": 0.5
-        }
-
 # --- Core App Imports (no more TRADING_PAIRS here!)
 from core.core_data import fetch_klines, validate_df, add_indicators
 from core.core_signals import (
@@ -472,7 +454,6 @@ def main_loop():
 
     for pair in [pair]:  # Using sidebar pair
         perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
-        # Fetch Auto params
 
         df = load_data(pair, interval=interval_used, limit=lookback_used)
         st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
@@ -676,10 +657,8 @@ if run_backtest_btn:
         total_trades = 0
 
         for pair in updated_pairs:
-            # Auto params per pair if available, otherwise use sidebar values
             if st.session_state.sidebar.get("mode") == "Auto":
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-                threshold_used = params.get("threshold", 0.5)
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
@@ -833,9 +812,7 @@ if run_backtest_btn:
         total_trades = 0
 
         for pair in TRADING_PAIRS:
-            # Auto params per pair if available, otherwise use sidebar values
             if st.session_state.sidebar.get("mode") == "Auto":
-                threshold_used = params.get("threshold", 0.5)
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 

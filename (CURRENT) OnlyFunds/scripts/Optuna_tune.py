@@ -44,9 +44,7 @@ if __name__ == "__main__":
     study.optimize(objective, n_trials=50)
 
     best = {
-        "best_params": study.best_params,
         "best_value": study.best_value,
     }
     with open("state/optuna_best.json", "w") as f:
         json.dump(best, f, indent=2)
-    print("✅ Best params saved to state/optuna_best.json")

@@ -8,7 +8,6 @@ from joblib import Parallel, delayed
 
 RESULTS = []
 
-# Window params
 window_len = 1000
 test_len = 200
 max_data = 1500

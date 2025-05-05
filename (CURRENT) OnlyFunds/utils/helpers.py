@@ -184,14 +184,6 @@ def load_json(filepath, default=None):
         return default
 
 
-def get_pair_params(pair):
-    try:
-        params = load_json("state/auto_params.json")
-    except Exception:
-        params = {}
-
-    if params and pair in params:
-        return params[pair]
 
     # --- Volatility-based fallback ---
     try:
@@ -215,7 +207,6 @@ def get_pair_params(pair):
         return dict(interval=interval, lookback=lookback, threshold=0.5)
 
     except Exception as e:
-        print(f"[WARN] get_pair_params fallback: {e}")
         return dict(interval="5m", lookback=1000, threshold=0.5)
 def validate_pair(pair: str):
     if not isinstance(pair, str):
