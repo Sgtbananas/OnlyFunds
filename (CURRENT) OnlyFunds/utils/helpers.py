@@ -7,7 +7,6 @@ import string
 import random
 from datetime import datetime
 import requests
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 
 BLACKLISTED_TOKENS = {
@@ -15,13 +14,11 @@ BLACKLISTED_TOKENS = {
     "ZEROUSDT", "PSPUSDT", "CWIFUSDT", "AZEROUSDT", "BITCOINUSDT"
 }
 
-def check_rate_limit(last_call_ts: float, min_interval: float = 1.0):
-    elapsed = time.time() - last_call_ts
-    if elapsed < min_interval:
-        time.sleep(min_interval - elapsed)
-    return time.time()
-
 def get_volatile_pairs(limit=10, interval="1h", market="USDT", min_volume=50000, min_change=1.0):
+    """
+    Return the top volatile pairs that meet volume and change requirements,
+    excluding blacklisted tokens.
+    """
     try:
         url = "https://api.coinex.com/v1/market/ticker/all"
         resp = requests.get(url, timeout=10)
@@ -51,7 +48,8 @@ def get_volatile_pairs(limit=10, interval="1h", market="USDT", min_volume=50000,
         return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
 
 def validate_trade(amount, price, capital):
-    return capital >= amount * price * 1.01
+    estimated_cost = amount * price
+    return capital >= estimated_cost * 1.01  # Allow buffer for fees
 
 def compute_trade_metrics(trade_log, initial_capital):
     if not trade_log:
@@ -85,15 +83,17 @@ def compute_trade_metrics(trade_log, initial_capital):
     capital = initial_capital
     wins = (returns > 0).sum()
     trades = len(returns)
-    win_rate = (wins / trades * 100) if trades else 0
-    total_return = (capital * (1 + returns).prod() / initial_capital - 1) * 100
-    average_return = returns.mean() * 100
 
+    for r in returns:
+        capital *= (1 + r)
+
+    win_rate = (wins / trades * 100) if trades else 0
+    total_return = (capital / initial_capital - 1) * 100
+    average_return = returns.mean() * 100
     cumulative = (1 + returns).cumprod()
     peak = cumulative.cummax()
     drawdown = 1 - cumulative / peak
     max_drawdown = drawdown.max() * 100 if not drawdown.empty else 0
-
     sharpe_ratio = (returns.mean() / returns.std()) if returns.std() != 0 else 0
 
     return {
@@ -102,7 +102,7 @@ def compute_trade_metrics(trade_log, initial_capital):
         "average_return": average_return,
         "max_drawdown": max_drawdown,
         "sharpe_ratio": sharpe_ratio,
-        "current_capital": capital * (1 + returns).prod()
+        "current_capital": capital
     }
 
 def compute_grid_metrics(grid_orders):
@@ -113,27 +113,26 @@ def compute_grid_metrics(grid_orders):
             "fills": 0,
             "buy_fills": 0,
             "sell_fills": 0,
-            "avg_fill_price": 0
+            "avg_fill_price": 0,
         }
 
     fills = df[df["filled"]]
+    total_pnl = 0
     buy_fills = fills[fills["side"] == "buy"]
     sell_fills = fills[fills["side"] == "sell"]
     min_fills = min(len(buy_fills), len(sell_fills))
-    total_pnl = 0
+
     if min_fills > 0:
-        total_pnl = (
-            (sell_fills["fill_price"].iloc[:min_fills].values -
-             buy_fills["fill_price"].iloc[:min_fills].values) *
-            buy_fills["size"].iloc[:min_fills].values
-        ).sum()
+        total_pnl = ((sell_fills["fill_price"].iloc[:min_fills].values -
+                      buy_fills["fill_price"].iloc[:min_fills].values) *
+                     buy_fills["size"].iloc[:min_fills].values).sum()
 
     return {
         "total_pnl": total_pnl,
         "fills": len(fills),
         "buy_fills": len(buy_fills),
         "sell_fills": len(sell_fills),
-        "avg_fill_price": fills["fill_price"].mean() if not fills.empty else 0
+        "avg_fill_price": fills["fill_price"].mean() if not fills.empty else 0,
     }
 
 def suggest_tuning(trade_log):
@@ -142,7 +141,6 @@ def suggest_tuning(trade_log):
 
     df = pd.DataFrame(trade_log)
     suggestions = []
-
     if "return_pct" in df.columns:
         avg_return = df["return_pct"].mean()
         if avg_return < 0:
@@ -164,7 +162,11 @@ def save_json(data, filepath, **json_kwargs):
     tmpfile = filepath + ".tmp"
     with open(tmpfile, "w") as f:
         json.dump(data, f, **json_kwargs)
-    os.replace(tmpfile, filepath)
+    try:
+        os.replace(tmpfile, filepath)
+    except Exception:
+        os.remove(filepath)
+        os.rename(tmpfile, filepath)
 
 def load_json(filepath, default=None):
     try:
@@ -172,13 +174,13 @@ def load_json(filepath, default=None):
             return default
         with open(filepath, "r") as f:
             return json.load(f)
-    except Exception as e:
-        print(f"[WARN] Failed to load JSON from {filepath}: {e}")
+    except Exception:
         return default
 
 def validate_pair(pair: str):
     if not isinstance(pair, str):
         raise ValueError(f"Invalid trading pair: {pair!r}")
+
     p = pair.strip().upper()
     if "/" in p:
         base, quote = p.split("/", 1)
@@ -191,9 +193,29 @@ def validate_pair(pair: str):
                 break
         else:
             raise ValueError(f"Invalid trading pair: {pair!r}")
+
+    if not base or not quote:
+        raise ValueError(f"Invalid trading pair: {pair!r}")
+
     return base, quote
 
+def check_rate_limit(last_call_ts: float, min_interval: float = 1.0):
+    elapsed = time.time() - last_call_ts
+    if elapsed < min_interval:
+        time.sleep(min_interval - elapsed)
+    return time.time()
+
+def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S"):
+    return datetime.fromtimestamp(ts).strftime(fmt)
+
+def generate_random_string(length: int = 8):
+    chars = string.ascii_letters + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
 def dynamic_threshold(df):
+    """
+    Estimate a dynamic buy threshold based on recent volatility.
+    """
     try:
         returns = df["Close"].pct_change()
         vol = returns.std()
@@ -207,35 +229,26 @@ def dynamic_threshold(df):
         return 0.5
 
 def estimate_dynamic_atr_multipliers(df, window=50):
+    """
+    AI dynamic tuning of ATR multipliers.
+    """
     try:
         if "ATR" not in df.columns:
             raise ValueError("ATR missing from dataframe.")
-
         df = df.dropna().copy()
-        atr_mean = df["ATR"].rolling(window=window).mean()
-        volatility = df["Close"].pct_change().rolling(window=window).std()
-
-        atr_norm = atr_mean / df["Close"]
-
-        X = np.column_stack([
-            atr_norm.fillna(0).values,
-            volatility.fillna(0).values
-        ])
+        df["volatility"] = df["Close"].pct_change().rolling(window).std()
+        df["atr_norm"] = df["ATR"] / df["Close"]
+        X = np.column_stack([df["atr_norm"].fillna(0).values, df["volatility"].fillna(0).values])
         y = df["Close"].pct_change(periods=5).abs().shift(-5).fillna(0).values
-
         model = LinearRegression()
         model.fit(X, y)
         pred = model.predict(X)
         avg_pred = np.mean(pred)
-
         stop_mult = max(0.8, min(2.0, 1.5 - avg_pred * 5))
         tp_mult = max(1.5, min(4.0, 2.5 + avg_pred * 8))
         trail_mult = max(0.8, min(2.5, 1.0 + avg_pred * 4))
-
         return stop_mult, tp_mult, trail_mult
-
-    except Exception as e:
-        print(f"[ERROR] estimate_dynamic_atr_multipliers failed: {e}")
+    except Exception:
         return None, None, None
 
 def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fee_pct=0.001):
@@ -248,17 +261,16 @@ def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fe
             buys = (signal > thr)
             sells = (signal < -thr)
             profits = []
-
             for i in range(1, len(prices)):
                 if buys.iloc[i - 1]:
                     entry = prices.iloc[i - 1]
-                    exit_price = prices.iloc[i]
-                    ret = (exit_price - entry) / entry - fee_pct
+                    exit = prices.iloc[i]
+                    ret = (exit - entry) / entry - fee_pct
                     profits.append(ret * risk_pct)
                 elif sells.iloc[i - 1]:
                     entry = prices.iloc[i - 1]
-                    exit_price = prices.iloc[i]
-                    ret = (entry - exit_price) / entry - fee_pct
+                    exit = prices.iloc[i]
+                    ret = (entry - exit) / entry - fee_pct
                     profits.append(ret * risk_pct)
 
             avg_profit = np.mean(profits) if profits else -999
@@ -267,7 +279,5 @@ def estimate_optimal_threshold(df, signal, prices, n_steps=20, risk_pct=0.01, fe
                 best_thr = thr
 
         return best_thr
-
-    except Exception as e:
-        print(f"[WARN] estimate_optimal_threshold failed: {e}")
+    except Exception:
         return 0.5

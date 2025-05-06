@@ -20,7 +20,7 @@ _INTERVAL_MAP = {
     "1w": "1week"
 }
 
-def fetch_klines(pair: str, interval: str = "5m", limit: int = 500) -> pd.DataFrame:
+def fetch_klines(pair: str, interval: str = "5m", limit: int = 1000) -> pd.DataFrame:
     resolution = _INTERVAL_MAP.get(interval)
     if not resolution:
         logging.error(f"Invalid interval: {interval}")
@@ -54,7 +54,9 @@ def fetch_klines(pair: str, interval: str = "5m", limit: int = 500) -> pd.DataFr
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="s")
         df.set_index("Timestamp", inplace=True)
 
-        return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+
+        return df
 
     except requests.exceptions.RequestException as e:
         logging.error(f"RequestException in fetch_klines for {pair}: {e}")
@@ -75,6 +77,13 @@ def validate_df(df: pd.DataFrame) -> bool:
     return True
 
 def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
+    """
+    Adds RSI, MACD, ATR, and other technical indicators to the DataFrame.
+    """
+    if df is None or df.empty:
+        logging.error("add_indicators received empty DataFrame.")
+        return df
+
     df2 = df.copy()
     close = df2["Close"]
 
@@ -84,15 +93,24 @@ def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
     macd_slow = indicator_params.get("macd_slow", 26)
     macd_signal = indicator_params.get("macd_signal", 9)
 
-    df2["rsi"] = ta.momentum.RSIIndicator(close, window=rsi_window).rsi()
-    macd = ta.trend.MACD(close, macd_fast, macd_slow, macd_signal)
-    df2["macd"] = macd.macd()
-    df2["macd_signal"] = macd.macd_signal()
-    df2["atr"] = ta.volatility.AverageTrueRange(
-        df2["High"], df2["Low"], close, window=14
-    ).average_true_range()
+    try:
+        df2["rsi"] = ta.momentum.RSIIndicator(close, window=rsi_window).rsi()
+        macd = ta.trend.MACD(close, macd_fast, macd_slow, macd_signal)
+        df2["macd"] = macd.macd()
+        df2["macd_signal"] = macd.macd_signal()
+        df2["atr"] = ta.volatility.AverageTrueRange(
+            df2["High"], df2["Low"], close, window=14
+        ).average_true_range()
 
-    # Always add ATR as "ATR" column for consistency
-    df2["ATR"] = df2["atr"]
+        # Always provide ATR as 'ATR' (capitalized)
+        df2["ATR"] = df2["atr"]
+
+    except Exception as e:
+        logging.error(f"Error calculating indicators: {e}")
+        df2["rsi"] = 0
+        df2["macd"] = 0
+        df2["macd_signal"] = 0
+        df2["atr"] = 0
+        df2["ATR"] = 0
 
     return df2

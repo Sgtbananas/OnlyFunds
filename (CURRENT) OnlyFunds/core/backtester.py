@@ -26,9 +26,15 @@ def load_backtest_data(pair, interval='5m', limit=1000):
 
     # Always ensure indicators + ATR applied
     df = add_indicators(df)
+
+    # Patch: check if ATR column is missing or empty
     if "ATR" not in df.columns or df["ATR"].isnull().all():
-        logging.warning("ATR missing or invalid, recalculating indicators.")
+        logging.warning("ATR missing or invalid after add_indicators. Forcing recalculation.")
         df = add_indicators(df)
+
+    if "ATR" not in df.columns or df["ATR"].isnull().all():
+        logging.error("ATR still missing after recalculation. Backtest will abort for this pair.")
+        return pd.DataFrame()
 
     return df
 
@@ -47,13 +53,16 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
         return None
 
     prices = data[['Close', 'ATR']]
-
     signals = signal
 
-    strategy, params = select_strategy(performance_dict, meta_model)
-
-    # SAFETY PATCH — prevent NoneType errors
-    if not params or not isinstance(params, dict):
+    # --- STRATEGY SELECTION ---
+    try:
+        strategy, params = select_strategy(performance_dict, meta_model)
+        if not params or not isinstance(params, dict):
+            params = {}
+    except Exception as e:
+        logging.error(f"Strategy selection failed: {e}. Using fallback strategy.")
+        strategy = "default"
         params = {}
 
     capital = equity
