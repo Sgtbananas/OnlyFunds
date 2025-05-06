@@ -4,79 +4,63 @@ import logging
 from core.grid_trader import GridTrader
 from core.meta_learner import select_strategy
 from core import risk_manager
+from core.core_data import add_indicators
 import os
-import yaml
 
-# --- Load defaults from YAML automatically ---
-with open('config/config.yaml', 'r') as f:
-    CONFIG = yaml.safe_load(f)
-
-DEFAULT_INTERVAL = CONFIG.get('DEFAULT_INTERVAL', '5m')
-DEFAULT_LOOKBACK = CONFIG.get('DEFAULT_LOOKBACK', 1000)
-DEFAULT_EQUITY = CONFIG.get('DEFAULT_EQUITY', 1000)
-DEFAULT_ATR_MULTIPLIER = CONFIG.get('DEFAULT_ATR_MULTIPLIER', 2)
-DEFAULT_RISK_PCT = CONFIG.get('DEFAULT_RISK_PCT', 0.01)
-DEFAULT_FEE = CONFIG.get('DEFAULT_FEE', 0.002)
-
-def load_backtest_data(pair, interval=DEFAULT_INTERVAL, limit=DEFAULT_LOOKBACK):
+def load_backtest_data(pair, interval='5m', limit=1000):
     """
     Load backtest data from CSV or fetch it if not available.
     """
+    from core.core_data import fetch_klines
     file_path = os.path.join('data/historical', f'{pair}_{interval}_{limit}.csv')
 
     if os.path.exists(file_path):
         logging.info(f"Loading data for {pair} from {file_path}")
         df = pd.read_csv(file_path)
-        from core.core_data import add_indicators
-        df = add_indicators(df)  # ✅ ENSURE INDICATORS PRESENT
-        return df
     else:
         logging.warning(f"Data file not found for {pair} at {file_path}. Attempting to fetch live data.")
-        from core.core_data import fetch_klines, add_indicators
         df = fetch_klines(pair, interval, limit)
         if df.empty:
             logging.error(f"No data fetched for {pair} at {interval}")
             return pd.DataFrame()
-        df = add_indicators(df)
-        os.makedirs('data/historical', exist_ok=True)
-        df.to_csv(file_path, index=False)
-        logging.info(f"Fetched and saved new data for {pair} at {interval}")
-        return df
 
-def run_backtest(signal,
-                 pair="BTCUSDT",
-                 interval=DEFAULT_INTERVAL,
-                 limit=DEFAULT_LOOKBACK,
-                 equity=DEFAULT_EQUITY,
-                 performance_dict=None,
-                 meta_model=None,
-                 risk_pct=DEFAULT_RISK_PCT,
-                 atr_multiplier=DEFAULT_ATR_MULTIPLIER,
-                 grid_mode=False,
-                 grid_kwargs=None,
-                 fee_pct=DEFAULT_FEE,
-                 verbose=False,
-                 log_every_n=100):
+    # Always ensure indicators + ATR applied
+    df = add_indicators(df)
+    if "ATR" not in df.columns or df["ATR"].isnull().all():
+        logging.warning("ATR missing or invalid, recalculating indicators.")
+        df = add_indicators(df)
+
+    return df
+
+def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
+                 performance_dict=None, meta_model=None,
+                 risk_pct=0.01, atr_multiplier=2,
+                 grid_mode=False, grid_kwargs=None,
+                 fee_pct=0.002, verbose=False, log_every_n=100):
     """
     Run the backtest for the selected strategy.
     """
     data = load_backtest_data(pair, interval, limit)
 
-    if data.empty:
-        logging.error("No valid data available for backtesting.")
+    if data.empty or "ATR" not in data.columns:
+        logging.error("No valid data available for backtesting or ATR missing.")
         return None
 
     prices = data[['Close', 'ATR']]
+
     signals = signal
 
-    strategy, _ = select_strategy(performance_dict, meta_model)
+    strategy, params = select_strategy(performance_dict, meta_model)
+
+    # SAFETY PATCH — prevent NoneType errors
+    if not params or not isinstance(params, dict):
+        params = {}
 
     capital = equity
     position = None
     entry_price = None
     stop_loss = None
     take_profit = None
-    trailing_stop = None
     trades = []
     equity_curve = [capital]
 
@@ -99,7 +83,6 @@ def run_backtest(signal,
             entry_price = price * (1 + fee_pct)
             stop_loss = entry_price - (atr_multiplier * atr)
             take_profit = entry_price + (atr_multiplier * atr)
-            trailing_stop = None
             position = {
                 "size": position_size,
                 "entry_price": entry_price
@@ -116,17 +99,12 @@ def run_backtest(signal,
             exit = False
             exit_reason = ""
 
-            # Stop Loss
             if price <= stop_loss:
                 exit = True
                 exit_reason = "stop_loss"
-
-            # Take Profit
             elif price >= take_profit:
                 exit = True
                 exit_reason = "take_profit"
-
-            # Signal flip
             elif sig < 0:
                 exit = True
                 exit_reason = "signal_flip"
@@ -146,7 +124,6 @@ def run_backtest(signal,
                 entry_price = None
                 stop_loss = None
                 take_profit = None
-                trailing_stop = None
 
         equity_curve.append(capital)
 
@@ -167,10 +144,10 @@ def run_backtest(signal,
     trades_df = pd.DataFrame(trades)
 
     if not trades_df.empty:
-        trade_returns = trades_df[trades_df['type'].str.contains('exit')]['profit'] / equity
+        trade_returns = trades_df[trades_df['type'] == 'exit']['profit'] / equity
         win_rate = (trade_returns > 0).mean() * 100
         avg_return = trade_returns.mean()
-        total_pnl = trades_df[trades_df['type'].str.contains('exit')]['profit'].sum()
+        total_pnl = trades_df[trades_df['type'].isin(['exit', 'forced_exit'])]['profit'].sum()
         sharpe = (trade_returns.mean() / trade_returns.std()) if trade_returns.std() != 0 else 0
     else:
         win_rate = 0
