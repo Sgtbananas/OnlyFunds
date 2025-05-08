@@ -1,116 +1,73 @@
-import logging
-import os
-import requests
 import pandas as pd
-import ta
-import yaml
-from utils.helpers import get_volatile_pairs
+import numpy as np
+import os
+import logging
+import time
+import requests
+from datetime import datetime
+from utils.helpers import add_indicators
 
-# Load YAML config
-with open('config/config.yaml', 'r') as f:
-    CONFIG = yaml.safe_load(f)
+logger = logging.getLogger(__name__)
 
-TRADING_PAIRS = CONFIG.get("TRADING_PAIRS", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
-COINEX_BASE = CONFIG.get("API_BASE_URL", "https://api.coinex.com/v1")
+DATA_DIR = "data/historical"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-_INTERVAL_MAP = {
-    "1m": "1min", "3m": "3min", "5m": "5min", "15m": "15min",
-    "30m": "30min", "1h": "1hour", "2h": "2hour", "4h": "4hour",
-    "6h": "6hour", "12h": "12hour", "1d": "1day", "3d": "3day",
-    "1w": "1week"
-}
-
-def fetch_klines(pair: str, interval: str = "5m", limit: int = 1000) -> pd.DataFrame:
-    resolution = _INTERVAL_MAP.get(interval)
-    if not resolution:
-        logging.error(f"Invalid interval: {interval}")
+def fetch_klines(pair, interval="5m", limit=1000):
+    """
+    Fetch historical kline/candle data from CoinEx.
+    """
+    url = f"https://api.coinex.com/v1/market/kline?market={pair}&type={interval}&limit={limit}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()["data"]
+    except Exception as e:
+        logger.error(f"Failed to fetch klines for {pair}: {e}")
         return pd.DataFrame()
 
-    try:
-        resp = requests.get(
-            f"{COINEX_BASE}/market/kline",
-            params={"market": pair, "type": resolution, "limit": limit},
-            timeout=15
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if not data:
-            logging.warning(f"No kline data for {pair}@{interval}")
+    if not data:
+        logger.warning(f"No kline data returned for {pair}.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="s")
+    df.set_index("Timestamp", inplace=True)
+    df = df.astype(float)
+
+    # Always add indicators on fetch
+    df = add_indicators(df)
+
+    return df
+def save_data(df, pair, interval="5m", limit=1000):
+    """
+    Save DataFrame to CSV in the historical data directory.
+    """
+    filename = f"{pair}_{interval}_{limit}.csv"
+    filepath = os.path.join(DATA_DIR, filename)
+    df.to_csv(filepath)
+    logger.info(f"Saved data for {pair} to {filepath}.")
+
+
+def load_data(pair, interval="5m", limit=1000):
+    """
+    Load historical data from CSV. If missing, fetches new data.
+    Always ensures indicators are added.
+    """
+    filename = f"{pair}_{interval}_{limit}.csv"
+    filepath = os.path.join(DATA_DIR, filename)
+
+    if os.path.exists(filepath):
+        logger.info(f"Loading data from {filepath}")
+        df = pd.read_csv(filepath, index_col="Timestamp", parse_dates=True)
+        # Ensure indicators exist
+        df = add_indicators(df)
+        return df
+    else:
+        logger.warning(f"Data file not found for {pair}, fetching new data.")
+        df = fetch_klines(pair, interval, limit)
+        if not df.empty:
+            save_data(df, pair, interval, limit)
+            return df
+        else:
+            logger.error(f"Failed to fetch data for {pair}. Returning empty DataFrame.")
             return pd.DataFrame()
-
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume", "turnover"
-        ]).drop(columns=["turnover"])
-
-        df.rename(columns={
-            "timestamp": "Timestamp",
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume"
-        }, inplace=True)
-
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="s")
-        df.set_index("Timestamp", inplace=True)
-
-        df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
-
-        return df
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"RequestException in fetch_klines for {pair}: {e}")
-    except ValueError as e:
-        logging.error(f"ValueError in fetch_klines for {pair}, possibly malformed data: {e}")
-
-    return pd.DataFrame()
-
-def validate_df(df: pd.DataFrame) -> bool:
-    required = {"Open", "High", "Low", "Close", "Volume"}
-    missing_columns = required - set(df.columns)
-    if missing_columns:
-        logging.error(f"validate_df missing columns: {missing_columns}")
-        return False
-    if df[list(required)].isnull().any().any():
-        logging.error("validate_df found NaNs in OHLCV")
-        return False
-    return True
-
-def add_indicators(df: pd.DataFrame, indicator_params=None) -> pd.DataFrame:
-    """
-    Adds RSI, MACD, ATR, and other technical indicators to the DataFrame.
-    """
-    if df is None or df.empty:
-        logging.error("add_indicators received empty DataFrame.")
-        return df
-
-    df2 = df.copy()
-    close = df2["Close"]
-
-    indicator_params = indicator_params or {}
-    rsi_window = indicator_params.get("rsi_window", 14)
-    macd_fast = indicator_params.get("macd_fast", 12)
-    macd_slow = indicator_params.get("macd_slow", 26)
-    macd_signal = indicator_params.get("macd_signal", 9)
-
-    try:
-        df2["rsi"] = ta.momentum.RSIIndicator(close, window=rsi_window).rsi()
-        macd = ta.trend.MACD(close, macd_fast, macd_slow, macd_signal)
-        df2["macd"] = macd.macd()
-        df2["macd_signal"] = macd.macd_signal()
-        df2["atr"] = ta.volatility.AverageTrueRange(
-            df2["High"], df2["Low"], close, window=14
-        ).average_true_range()
-
-        # Always provide ATR as 'ATR' (capitalized)
-        df2["ATR"] = df2["atr"]
-
-    except Exception as e:
-        logging.error(f"Error calculating indicators: {e}")
-        df2["rsi"] = 0
-        df2["macd"] = 0
-        df2["macd_signal"] = 0
-        df2["atr"] = 0
-        df2["ATR"] = 0
-
-    return df2

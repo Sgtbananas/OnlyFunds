@@ -5,96 +5,75 @@ from core.grid_trader import GridTrader
 from core.meta_learner import select_strategy
 from core import risk_manager
 from core.core_data import add_indicators
-import os
 
-def load_backtest_data(pair, interval='5m', limit=1000):
-    """
-    Load backtest data from CSV or fetch it if not available.
-    """
-    from core.core_data import fetch_klines
-    file_path = os.path.join('data/historical', f'{pair}_{interval}_{limit}.csv')
-
-    if os.path.exists(file_path):
-        logging.info(f"Loading data for {pair} from {file_path}")
-        df = pd.read_csv(file_path)
-    else:
-        logging.warning(f"Data file not found for {pair} at {file_path}. Attempting to fetch live data.")
-        df = fetch_klines(pair, interval, limit)
-        if df.empty:
-            logging.error(f"No data fetched for {pair} at {interval}")
-            return pd.DataFrame()
-
-    # Always ensure indicators + ATR applied
-    df = add_indicators(df)
-
-    # Patch: check if ATR column is missing or empty
-    if "ATR" not in df.columns or df["ATR"].isnull().all():
-        logging.warning("ATR missing or invalid after add_indicators. Forcing recalculation.")
-        df = add_indicators(df)
-
-    if "ATR" not in df.columns or df["ATR"].isnull().all():
-        logging.error("ATR still missing after recalculation. Backtest will abort for this pair.")
-        return pd.DataFrame()
-
-    return df
+logger = logging.getLogger(__name__)
 
 def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
                  performance_dict=None, meta_model=None,
                  risk_pct=0.01, atr_multiplier=2,
                  grid_mode=False, grid_kwargs=None,
-                 fee_pct=0.002, verbose=False, log_every_n=100):
+                 fee_pct=0.002, verbose=False, log_every_n=100, data=None):
     """
     Run the backtest for the selected strategy.
     """
-    data = load_backtest_data(pair, interval, limit)
 
-    if data.empty or "ATR" not in data.columns:
-        logging.error("No valid data available for backtesting or ATR missing.")
+    # --- Validate data ---
+    if data is None:
+        logger.error("Backtest called without data.")
         return None
 
-    prices = data[['Close', 'ATR']]
-    signals = signal
+    df = data.copy()
 
-    # --- STRATEGY SELECTION ---
-    try:
-        strategy, params = select_strategy(performance_dict, meta_model)
-        if not params or not isinstance(params, dict):
-            params = {}
-    except Exception as e:
-        logging.error(f"Strategy selection failed: {e}. Using fallback strategy.")
-        strategy = "default"
-        params = {}
+    # Ensure indicators are present
+    required_cols = ["ATR", "Close"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        logger.warning(f"Data missing columns {missing_cols} — recalculating indicators for {pair}.")
+        df = add_indicators(df)
+
+    if df.empty or "ATR" not in df.columns:
+        logger.error(f"Backtest aborted: No ATR data available for {pair}.")
+        return None
+
+    prices = df["Close"]
+    atr = df["ATR"]
+
+    if isinstance(signal, pd.Series):
+        signals = signal
+    else:
+        signals = pd.Series(signal, index=df.index)
+
+    strategy, _ = select_strategy(performance_dict, meta_model)
 
     capital = equity
     position = None
-    entry_price = None
-    stop_loss = None
-    take_profit = None
     trades = []
     equity_curve = [capital]
 
     for i in range(len(signals)):
         sig = signals.iloc[i]
-        price = prices['Close'].iloc[i]
-        atr = prices['ATR'].iloc[i] if not pd.isna(prices['ATR'].iloc[i]) else 0
+        price = prices.iloc[i]
+        this_atr = atr.iloc[i] if not pd.isna(atr.iloc[i]) else 0
 
         if verbose and i % log_every_n == 0:
-            logging.debug(f"Step {i}: Signal={sig}, Price={price}, Capital={capital}")
+            logger.debug(f"Step {i}: Signal={sig}, Price={price}, Capital={capital}")
 
         # --- Entry ---
         if position is None and sig > 0:
             position_size = risk_manager.position_size(
                 capital, price,
                 risk_pct=risk_pct,
-                volatility=atr,
+                volatility=this_atr,
                 v_adj=True
             )
             entry_price = price * (1 + fee_pct)
-            stop_loss = entry_price - (atr_multiplier * atr)
-            take_profit = entry_price + (atr_multiplier * atr)
+            stop_loss = entry_price - (atr_multiplier * this_atr)
+            take_profit = entry_price + (atr_multiplier * this_atr)
             position = {
                 "size": position_size,
-                "entry_price": entry_price
+                "entry_price": entry_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit
             }
             capital -= position_size * entry_price
             trades.append({
@@ -103,15 +82,15 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
                 "bar": i
             })
 
-        # --- Exit conditions ---
-        if position is not None:
+        # --- Exit ---
+        if position:
             exit = False
             exit_reason = ""
 
-            if price <= stop_loss:
+            if price <= position["stop_loss"]:
                 exit = True
                 exit_reason = "stop_loss"
-            elif price >= take_profit:
+            elif price >= position["take_profit"]:
                 exit = True
                 exit_reason = "take_profit"
             elif sig < 0:
@@ -120,7 +99,7 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
 
             if exit:
                 exit_price = price * (1 - fee_pct)
-                pnl = position["size"] * (exit_price - entry_price)
+                pnl = position["size"] * (exit_price - position["entry_price"])
                 capital += position["size"] * exit_price
                 trades.append({
                     "type": "exit",
@@ -130,16 +109,13 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
                     "bar": i
                 })
                 position = None
-                entry_price = None
-                stop_loss = None
-                take_profit = None
 
         equity_curve.append(capital)
 
-    # Close any open position at end
-    if position is not None:
-        exit_price = prices['Close'].iloc[-1] * (1 - fee_pct)
-        pnl = position["size"] * (exit_price - entry_price)
+    # --- Forced exit if still open ---
+    if position:
+        exit_price = prices.iloc[-1] * (1 - fee_pct)
+        pnl = position["size"] * (exit_price - position["entry_price"])
         capital += position["size"] * exit_price
         trades.append({
             "type": "forced_exit",
@@ -147,22 +123,19 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
             "profit": pnl,
             "bar": len(signals)-1
         })
-        position = None
 
     # --- Metrics ---
     trades_df = pd.DataFrame(trades)
 
     if not trades_df.empty:
-        trade_returns = trades_df[trades_df['type'] == 'exit']['profit'] / equity
-        win_rate = (trade_returns > 0).mean() * 100
-        avg_return = trade_returns.mean()
-        total_pnl = trades_df[trades_df['type'].isin(['exit', 'forced_exit'])]['profit'].sum()
-        sharpe = (trade_returns.mean() / trade_returns.std()) if trade_returns.std() != 0 else 0
+        profits = trades_df[trades_df["type"].isin(["exit", "forced_exit"])]["profit"]
+        total_pnl = profits.sum()
+        win_rate = (profits > 0).mean() * 100 if not profits.empty else 0
+        avg_return = profits.mean() / equity if not profits.empty else 0
     else:
+        total_pnl = 0
         win_rate = 0
         avg_return = 0
-        total_pnl = 0
-        sharpe = 0
 
     curve = np.array(equity_curve)
     peak = np.maximum.accumulate(curve)
@@ -176,13 +149,15 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
         "win_rate": win_rate,
         "average_return": avg_return,
         "total_pnl": total_pnl,
-        "max_drawdown": max_drawdown,
-        "sharpe_ratio": sharpe
+        "max_drawdown": max_drawdown
     }
 
     summary_df = pd.DataFrame([summary])
     combined_df = pd.concat([summary_df, trades_df], ignore_index=True)
 
-    logging.info(f"Backtest complete. Trades: {len(trades_df)}, Win rate: {win_rate:.2f}%, Max DD: {max_drawdown:.2f}%")
+    if trades_df.empty:
+        logger.warning("No trades executed during backtest.")
+    else:
+        logger.info(f"Backtest complete: {len(trades_df)} trades, Win rate: {win_rate:.2f}%, Max DD: {max_drawdown:.2f}%")
 
     return combined_df
