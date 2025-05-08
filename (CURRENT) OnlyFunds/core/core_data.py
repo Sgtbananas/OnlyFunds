@@ -2,15 +2,34 @@ import pandas as pd
 import numpy as np
 import os
 import logging
-import time
 import requests
 from datetime import datetime
-from utils.helpers import add_indicators
 
 logger = logging.getLogger(__name__)
 
 DATA_DIR = "data/historical"
 os.makedirs(DATA_DIR, exist_ok=True)
+
+def add_indicators(df):
+    """
+    Adds ATR and any other indicators to the dataframe.
+    """
+    import ta
+
+    if "ATR" not in df.columns:
+        try:
+            high = df["High"]
+            low = df["Low"]
+            close = df["Close"]
+            df["ATR"] = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
+        except Exception as e:
+            logger.warning(f"[add_indicators] Failed to compute ATR: {e}")
+            df["ATR"] = np.nan
+
+    return df
+
+def validate_df(df):
+    return df is not None and not df.empty and "Close" in df.columns
 
 def fetch_klines(pair, interval="5m", limit=1000):
     """
@@ -34,24 +53,22 @@ def fetch_klines(pair, interval="5m", limit=1000):
     df.set_index("Timestamp", inplace=True)
     df = df.astype(float)
 
-    # Always add indicators on fetch
     df = add_indicators(df)
 
     return df
+
 def save_data(df, pair, interval="5m", limit=1000):
     """
-    Save DataFrame to CSV in the historical data directory.
+    Save DataFrame to CSV.
     """
     filename = f"{pair}_{interval}_{limit}.csv"
     filepath = os.path.join(DATA_DIR, filename)
     df.to_csv(filepath)
     logger.info(f"Saved data for {pair} to {filepath}.")
 
-
 def load_data(pair, interval="5m", limit=1000):
     """
-    Load historical data from CSV. If missing, fetches new data.
-    Always ensures indicators are added.
+    Load CSV. If missing or missing ATR, fetches fresh data.
     """
     filename = f"{pair}_{interval}_{limit}.csv"
     filepath = os.path.join(DATA_DIR, filename)
@@ -59,15 +76,14 @@ def load_data(pair, interval="5m", limit=1000):
     if os.path.exists(filepath):
         logger.info(f"Loading data from {filepath}")
         df = pd.read_csv(filepath, index_col="Timestamp", parse_dates=True)
-        # Ensure indicators exist
         df = add_indicators(df)
         return df
     else:
-        logger.warning(f"Data file not found for {pair}, fetching new data.")
+        logger.warning(f"No data file found for {pair}. Fetching new data.")
         df = fetch_klines(pair, interval, limit)
         if not df.empty:
             save_data(df, pair, interval, limit)
             return df
         else:
-            logger.error(f"Failed to fetch data for {pair}. Returning empty DataFrame.")
+            logger.error(f"Failed to fetch data for {pair}.")
             return pd.DataFrame()
