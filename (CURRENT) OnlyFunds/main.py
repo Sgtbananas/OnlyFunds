@@ -31,11 +31,36 @@ if 'auto_mode' not in st.session_state:
 if 'next_run_time' not in st.session_state:
     st.session_state.next_run_time = None        # store next scheduled run time (if auto_mode)
 
-@st.cache_data(ttl=300)  # Refresh every 5 minutes
-def get_trading_pairs():
-    return get_volatile_pairs(limit=10)
+@st.cache_data(ttl=300)
+def get_top_coinex_symbols_by_market_cap(limit=250):
+    import requests
 
-TRADING_PAIRS = get_trading_pairs()
+    # Step 1: Get top coins from CoinGecko
+    coingecko_url = 'https://api.coingecko.com/api/v3/coins/markets'
+    response = requests.get(coingecko_url, params={
+        'vs_currency': 'usd',
+        'order': 'market_cap_desc',
+        'per_page': 250,
+        'page': 1
+    })
+    top_coins = response.json()
+
+    # Step 2: Get CoinEx trading pairs
+    coinex_url = 'https://api.coinex.com/v1/market/list'
+    response = requests.get(coinex_url)
+    coinex_pairs = response.json()['data']
+    coinex_pairs_set = set(pair.upper() for pair in coinex_pairs)
+
+    # Step 3: Cross-reference
+    matched_symbols = []
+    for coin in top_coins:
+        symbol = coin['symbol'].upper() + 'USDT'
+        if symbol in coinex_pairs_set:
+            matched_symbols.append(symbol)
+
+    return matched_symbols[:limit]
+
+TRADING_PAIRS = get_top_coinex_symbols_by_market_cap()
 
 # --- Background auto-refresh of volatile pairs
 def auto_refresh_pairs(interval=300):  # 5 minutes
@@ -49,7 +74,6 @@ def auto_refresh_pairs(interval=300):  # 5 minutes
 
 # --- Initialize volatile pairs on startup
 if "TRADING_PAIRS" not in st.session_state:
-    st.session_state["TRADING_PAIRS"] = get_volatile_pairs(limit=10)
     threading.Thread(target=auto_refresh_pairs, args=(300,), daemon=True).start()
 
 # --- Early folder creation
@@ -99,7 +123,7 @@ from utils.helpers import (
 )
 from core.ml_filter import load_model, ml_confidence, train_and_save_model
 from core.risk_manager import RiskManager
-from core.data_manager import get_top_coinex_symbols, update_historical_data, load_data
+from core.data_manager import get_top_coinex_symbols_marketcap as get_top_coinex_symbols, update_historical_data, load_data
 from utils.config import load_config
 
 # --- Prometheus Metrics
@@ -214,7 +238,7 @@ def load_config_safe(config_path, fallback=None):
 config = load_config_safe(CONFIG_PATH, fallback={})
 risk_cfg = config.get("risk", {})
 trading_cfg = config.get("trading", {})
-ml_cfg = config.get("ml", {})
+ml_discrimination_cfg = config.get("ml", {})
 
 # --- Sidebar Setup (no manual ATR multipliers anymore)
 st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
@@ -254,7 +278,7 @@ dry_run = st.sidebar.checkbox("Dry Run Mode", value=trading_cfg.get("dry_run", T
 autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=True)
 
 # --- Show current volatile pairs in the sidebar ---
-with st.sidebar.expander("📈 Auto-Selected Pairs (Top Volatility)", expanded=False):
+with st.sidebar.expander("📊 Auto-Selected Pairs (Top Market Cap)", expanded=False):
     current_pairs = st.session_state.get("TRADING_PAIRS", [])
     if current_pairs:
         for i, pair in enumerate(current_pairs, 1):
@@ -371,7 +395,7 @@ def retrain_ml_if_needed(trade_log):
     now = time.time()
     last = read_last_retrain_time()
     need_time = (now - last) > RETRAIN_TIME_INTERVAL
-    need_trades = (len(trade_log) > 0 and len(trade_log) % RETRAIN_TRADE_INTERVAL == 0)
+    need_trades = (len(trade_log) > 0 and len(trade_log) % RETRAIN_TRADE.interval == 0)
     if need_time or need_trades:
         logger.info("Triggering ML model retrain.")
         success, msg = train_and_save_model()
@@ -659,14 +683,18 @@ run_backtest_btn = st.sidebar.button("Run Backtest")
 pair = st.sidebar.text_input('Trading Pair', value='BTCUSDT')
 if run_backtest_btn:
     st.write("🔎 Fetching latest top CoinEx symbols...")
-    TRADING_PAIRS = get_top_coinex_symbols(limit=250)
+    if "TRADING_PAIRS" not in st.session_state:
+        st.session_state["TRADING_PAIRS"] = get_top_coinex_symbols_by_market_cap()
+
+    TRADING_PAIRS = st.session_state["TRADING_PAIRS"]
+
     st.write("Top symbols:", TRADING_PAIRS[:5], "...")
 
     updated_pairs = []
     for sym in TRADING_PAIRS:
         try:
             st.write(f"🔄 Updating data for {sym}...")
-            update_historical_data(sym, interval=interval_used, limit=lookback_used)
+            update_historical_data(sym, interval=interval_used, lookback=lookback_used)
             updated_pairs.append(sym)
         except Exception as e:
             st.write(f"⚠ Skipping {sym} due to data error: {e}")
@@ -680,10 +708,7 @@ if run_backtest_btn:
 
         for pair in updated_pairs:
             if st.session_state.sidebar.get("mode") == "Auto":
-                if df.empty or 'ATR' not in df.columns:
-                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
-                    continue
-                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
+                pass
             else:
                 threshold_used = st.session_state.sidebar.get("threshold", 0.5)
 
@@ -728,8 +753,8 @@ if run_backtest_btn:
                 # --- Run backtest (corrected call matching new backtester.py) ---
                 try:
                     # --- Run backtest (fully updated arguments) ---
-
                     backtest_result = run_backtest(
+                        data=df,
                         signal=signal,
                         pair=pair,
                         interval=interval_used,
@@ -781,19 +806,19 @@ if run_backtest_btn:
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
 
                 # **This block was duplicated, removed redundant call**
-                # Removed invalid backtest_df call
+                # Removed invalid backtest_resultcall
 
-                if backtest_df.empty:
+                if backtest_result.empty:
                     logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
                     st.write(f"⚠ No valid trades for {pair}.")
                 else:
                     logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
                     st.write(f"✅ Backtest completed for {pair}.")
-                    st.write(backtest_df.head(5))  # Show first 5 trades
+                    st.write(backtest_result.head(5))  # Show first 5 trades
 
-                    all_results.append(backtest_df)
+                    all_results.append(backtest_result)
 
-                    summaries = backtest_df[backtest_df["type"] == "summary"]
+                    summaries = backtest_result[backtest_result["type"] == "summary"]
                     for _, row in summaries.iterrows():
                         day_return = row.get("daily_return_pct", 0.0)
                         current_capital *= (1 + day_return / 100.0)
@@ -855,8 +880,8 @@ if run_backtest_btn:
                 logger.warning("Skipping pair — failed to add indicators or missing ATR.")
                 continue
             if df.empty or not validate_df(df):
-                st.sidebar.error(f"Backtest failed: No valid data for {pair}")
-                continue
+                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
+                 continue
             else:
                 df = add_indicators(df)
 
@@ -890,8 +915,8 @@ if run_backtest_btn:
                 # --- Run backtest (corrected call matching new backtester.py) ---
                 try:
                     # --- Run backtest (fully updated arguments) ---
-
                     backtest_result = run_backtest(
+                        data=df,
                         signal=signal,
                         pair=pair,
                         interval=interval_used,
@@ -945,9 +970,9 @@ if run_backtest_btn:
                 # **This block was duplicated, removed redundant call**
 
                 # --- Run backtest (fully updated arguments) ---
-
                 try:
                     backtest_result = run_backtest(
+                        data=df,
                         signal=signal,
                         pair=pair,
                         interval=interval_used,
@@ -959,17 +984,17 @@ if run_backtest_btn:
                     st.sidebar.error(f"Backtest failed for {pair}: {e}")
                     st.stop()
 
-                if backtest_df.empty:
+                if backtest_result.empty:
                     logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
                     st.write(f"⚠ No valid trades for {pair}.")
                 else:
                     logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
                     st.write(f"✅ Backtest completed for {pair}.")
-                    st.write(backtest_df.head(5))  # Show first 5 trades
+                    st.write(backtest_result.head(5))  # Show first 5 trades
 
-                    all_results.append(backtest_df)
+                    all_results.append(backtest_result)
 
-                    summaries = backtest_df[backtest_df["type"] == "summary"]
+                    summaries = backtest_result[backtest_result["type"] == "summary"]
                     for _, row in summaries.iterrows():
                         day_return = row.get("daily_return_pct", 0.0)
                         current_capital *= (1 + day_return / 100.0)
@@ -1011,5 +1036,5 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = global_exception_handler
 
-# --- No broken legacy backtest_df calls remain ---
+# --- No broken legacy backtest_resultcalls remain ---
 # --- All valid results shown and saved above ---
