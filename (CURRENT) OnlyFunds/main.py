@@ -754,12 +754,13 @@ if run_backtest_btn:
                 try:
                     # --- Run backtest (fully updated arguments) ---
                     backtest_result = run_backtest(
-                        data=df,
                         signal=signal,
                         pair=pair,
                         interval=interval_used,
                         limit=lookback_used,
-                        equity=current_capital
+                        equity=current_capital,
+                        data=df
+
                     )
                 except Exception as e:
                     logger.error(f"Backtest failed for {pair}: {e}")
@@ -916,12 +917,12 @@ if run_backtest_btn:
                 try:
                     # --- Run backtest (fully updated arguments) ---
                     backtest_result = run_backtest(
-                        data=df,
                         signal=signal,
                         pair=pair,
                         interval=interval_used,
                         limit=lookback_used,
-                        equity=current_capital
+                        equity=current_capital,
+                        data=df,
                     )
                 except Exception as e:
                     logger.error(f"Backtest failed for {pair}: {e}")
@@ -966,40 +967,6 @@ if run_backtest_btn:
                     continue
                 stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
                 logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
-
-                # **This block was duplicated, removed redundant call**
-
-                # --- Run backtest (fully updated arguments) ---
-                try:
-                    backtest_result = run_backtest(
-                        data=df,
-                        signal=signal,
-                        pair=pair,
-                        interval=interval_used,
-                        limit=lookback_used,
-                        equity=current_capital
-                    )
-                except Exception as e:
-                    logger.error(f"Backtest failed for {pair}: {e}")
-                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
-                    st.stop()
-
-                if backtest_result.empty:
-                    logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
-                    st.write(f"⚠ No valid trades for {pair}.")
-                else:
-                    logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
-                    st.write(f"✅ Backtest completed for {pair}.")
-                    st.write(backtest_result.head(5))  # Show first 5 trades
-
-                    all_results.append(backtest_result)
-
-                    summaries = backtest_result[backtest_result["type"] == "summary"]
-                    for _, row in summaries.iterrows():
-                        day_return = row.get("daily_return_pct", 0.0)
-                        current_capital *= (1 + day_return / 100.0)
-                        day_returns.append(day_return)
-                        total_trades += row.get("trades", 0)
 
         # --- Results ---
         if all_results:

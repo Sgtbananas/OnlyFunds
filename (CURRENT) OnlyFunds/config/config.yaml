@@ -1,14 +1,6 @@
 api:
   default_exchange: coinex
   exchanges:
-    binance:
-      api_base_url: https://api.binance.com/api
-      api_key: your_binance_api_key_here
-      api_proxy: http://proxy.example.com
-      api_secret: your_binance_api_secret_here
-      rate_limit: 1200
-      retry_attempts: 3
-      timeout: 30
     coinex:
       api_base_url: https://api.coinex.com/v1
       api_key: your_api_key_here

@@ -13,6 +13,8 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
                  risk_pct=0.01, atr_multiplier=2,
                  grid_mode=False, grid_kwargs=None,
                  fee_pct=0.002, verbose=False, log_every_n=100, data=None):
+    import logging
+
     """
     Run the backtest for the selected strategy.
     """
@@ -40,6 +42,7 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
 
     if isinstance(signal, pd.Series):
         signals = signal
+        logging.info(f'SIGNAL DEBUG: mean={signals.mean():.4f}, >0 count={(signals > 0).sum()}, max={signals.max()}')
     else:
         signals = pd.Series(signal, index=df.index)
 
@@ -59,7 +62,7 @@ def run_backtest(signal, pair="BTCUSDT", interval="5m", limit=1000, equity=1000,
             logger.debug(f"Step {i}: Signal={sig}, Price={price}, Capital={capital}")
 
         # --- Entry ---
-        if position is None and sig > 0:
+        if position is None and sig > 0.05:
             position_size = risk_manager.position_size(
                 capital, price,
                 risk_pct=risk_pct,

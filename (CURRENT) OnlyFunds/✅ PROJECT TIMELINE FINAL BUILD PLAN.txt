@@ -1,0 +1,85 @@
+✅ PROJECT TIMELINE: FINAL BUILD PLAN FOR ONLYFUNDS
+Each phase is modular, ensuring your system makes real profit, with full control, ML-driven logic, and optional live trading.
+
+🔹 PHASE 1 — STABLE CORE REBUILD ✅ (CURRENT)
+🧩 Goal: Make the app run error-free with placeholders stubbed in
+
+ Fix all import errors
+
+ Reinstate main.py execution logic
+
+ Add fallback trading + signal engines (simulate, dry run)
+
+ Enable strategy stacking (ema, rsi, macd, bollinger, trend_score)
+
+ Streamlit UI restored with mode + profile selection
+
+ top 200 CoinEx pair selection fetched live
+
+ ML filter enabled
+
+👉 Where we are now
+
+🔹 PHASE 2 — BACKTESTING ENGINE REPLACEMENT 🔄 (IN PROGRESS)
+🎯 Goal: Replace simulate_trades() with full strategy-aware trading logic
+
+ Load price data into enriched indicator frame
+
+ Apply entry/exit logic using:
+
+Signal gating (meta + trend + volatility)
+
+SL / TP / Trailing Stop
+
+ Enforce 1 USDT or 5% of profit position sizing logic
+
+ Log PnL, Win %, Avg return
+
+⏱ ETA: ~1 work session
+
+🔹 PHASE 3 — DRY RUN MODE
+🚦 Goal: Live paper trades with full logs
+
+ Hook up place_live_order() to dry-run executor
+
+ Add visual trade ledger (Streamlit table)
+
+ Timestamp + log each decision
+
+⏱ ETA: 1 session after Phase 2
+
+🔹 PHASE 4 — LIVE TRADING ENGINE
+💸 Goal: Trade real money using CoinEx
+
+ Add CoinEx API interface (w/ secret key injection)
+
+ Route place_live_order() to live trades when enabled
+
+ Position state manager: open, closed, cancel, fail
+
+ Rate limit and fallback failovers
+
+⚠️ Manual toggle (config.yaml) to protect capital
+
+⏱ ETA: ~1–2 sessions
+
+🔹 PHASE 5 — ML AUTOTUNING + PROFIT MODE
+🧠 Goal: Automatically learn best parameters for entry/exit/profit maximization
+
+ Meta model selects regime + strategy
+
+ Confidence gating
+
+ Threshold autotune
+
+ Strategy rotation when performance drops
+
+⏱ ETA: Ongoing after live launch
+
+✅ SUMMARY OF NEXT STEPS
+Step	What to do
+✅ 1	Run Phase 2 upgrade (backtesting logic)
+🔜 2	Test with full trading rules
+🔜 3	Enable dry run logging
+🔜 4	Enable live CoinEx execution (safely)
+🔜 5	Final AI tuning and autoprofit loop
