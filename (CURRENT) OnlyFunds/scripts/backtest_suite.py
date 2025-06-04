@@ -6,7 +6,8 @@ def ensure_state_dir():
     """
     Ensure that the state directory exists.
     """
-    state_dir = os.path.join(os.path.dirname(__file__), "..", "state")
+    here = os.path.dirname(os.path.abspath(__file__))
+    state_dir = os.path.normpath(os.path.join(here, "..", "state"))
     os.makedirs(state_dir, exist_ok=True)
     return state_dir
 
@@ -16,8 +17,10 @@ def run_backtests():
     If no results are found, write a dummy result so the UI always displays something.
     """
     results = []
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    here = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.normpath(os.path.join(here, "..", "data"))
     print("DEBUG: Current working directory:", os.getcwd())
+    print("DEBUG: This script's directory:", here)
     print("DEBUG: Files in ./data/:", os.listdir(data_dir) if os.path.exists(data_dir) else "NO DATA DIR")
 
     for pair in TRADING_PAIRS:
@@ -64,6 +67,12 @@ def run_backtests():
         json.dump(results, f, indent=2)
     print(f"DEBUG: Wrote backtest results to {out_path}")
     print(f"DEBUG: Results: {results}")
+
+    # Double-check for UI: print absolute path and file content
+    print("DEBUG: Absolute path for UI to read:", os.path.abspath(out_path))
+    with open(out_path, "r") as f:
+        print("DEBUG: File contents for UI:")
+        print(f.read())
 
 if __name__ == "__main__":
     run_backtests()

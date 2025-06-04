@@ -1002,6 +1002,48 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
+# --- PATCHED: Robust Backtest Results Loader and Display ---
+import os
+import json
 
-# --- No broken legacy backtest_resultcalls remain ---
-# --- All valid results shown and saved above ---
+def load_backtest_results():
+    """
+    Robustly load backtest results from the correct absolute path.
+    """
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    RESULTS_PATH = os.path.normpath(os.path.join(BASE_DIR, "state", "backtest_results.json"))
+
+    # Debug block: Show path and file list for troubleshooting (optional, remove/comment for production)
+    with st.expander("🔎 Backtest Results Debug Info", expanded=False):
+        st.write("Current working directory:", os.getcwd())
+        st.write("__file__:", __file__)
+        st.write("Looking for results at:", RESULTS_PATH)
+        state_dir = os.path.dirname(RESULTS_PATH)
+        if os.path.exists(state_dir):
+            st.write("Files in ./state/:", os.listdir(state_dir))
+        else:
+            st.write("NO STATE DIR")
+
+    try:
+        with open(RESULTS_PATH, "r") as f:
+            results = json.load(f)
+    except FileNotFoundError:
+        st.warning(f"❗ No backtest results file found at {RESULTS_PATH}")
+        results = []
+    except Exception as e:
+        st.error(f"Error reading backtest results: {e}")
+        results = []
+
+    return results
+
+# --- Display Backtest Results ---
+st.header("Backtest Results (Latest)")
+results = load_backtest_results()
+if not results:
+    st.warning("❗ No valid backtest results to display.")
+else:
+    # Show as table if list of dicts, else fallback to JSON
+    if isinstance(results, list) and all(isinstance(r, dict) for r in results):
+        st.dataframe(results)
+    else:
+        st.json(results)
