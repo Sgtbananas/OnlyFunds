@@ -1002,18 +1002,13 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
     st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
 
 sys.excepthook = global_exception_handler
-# --- PATCHED: Robust Backtest Results Loader and Display ---
 import os
 import json
+import streamlit as st
 
 def load_backtest_results():
-    """
-    Robustly load backtest results from the correct absolute path.
-    """
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     RESULTS_PATH = os.path.normpath(os.path.join(BASE_DIR, "state", "backtest_results.json"))
-
-    # Debug block: Show path and file list for troubleshooting (optional, remove/comment for production)
     with st.expander("🔎 Backtest Results Debug Info", expanded=False):
         st.write("Current working directory:", os.getcwd())
         st.write("__file__:", __file__)
@@ -1023,17 +1018,44 @@ def load_backtest_results():
             st.write("Files in ./state/:", os.listdir(state_dir))
         else:
             st.write("NO STATE DIR")
-
+    if not os.path.exists(RESULTS_PATH):
+        st.warning(f"❗ backtest_results.json does not exist at {RESULTS_PATH}")
+        return []
     try:
         with open(RESULTS_PATH, "r") as f:
-            results = json.load(f)
-    except FileNotFoundError:
-        st.warning(f"❗ No backtest results file found at {RESULTS_PATH}")
-        results = []
+            raw = f.read()
+        # Try JSON array
+        try:
+            results = json.loads(raw)
+            if isinstance(results, dict):
+                results = [results]
+            elif isinstance(results, list):
+                # Already correct
+                pass
+            else:
+                # Unknown JSON, wrap in list
+                results = [results]
+        except json.JSONDecodeError:
+            # Try tab-separated or CSV
+            import csv
+            from io import StringIO
+            # Try headers
+            lines = raw.strip().splitlines()
+            # If first line has no letters, assume no header and use default
+            first_line = lines[0]
+            if all(not c.isalpha() for c in first_line.replace('\t','').replace(',','')):
+                keys = ["pair", "entry", "exit", "profit"]
+            else:
+                # Use header row
+                keys = [k.strip() for k in next(csv.reader([first_line], delimiter='\t'))]
+                lines = lines[1:]
+            results = []
+            for row in csv.reader(lines, delimiter='\t'):
+                if len(row) == len(keys):
+                    results.append(dict(zip(keys, row)))
     except Exception as e:
-        st.error(f"Error reading backtest results: {e}")
-        results = []
-
+        st.error(f"❗ Error loading backtest results: {e}")
+        return []
     return results
 
 # --- Display Backtest Results ---
@@ -1042,8 +1064,13 @@ results = load_backtest_results()
 if not results:
     st.warning("❗ No valid backtest results to display.")
 else:
-    # Show as table if list of dicts, else fallback to JSON
-    if isinstance(results, list) and all(isinstance(r, dict) for r in results):
-        st.dataframe(results)
-    else:
+    # Try DataFrame. If that fails, fallback to JSON.
+    import pandas as pd
+    try:
+        df = pd.DataFrame(results)
+        if len(df):
+            st.dataframe(df)
+        else:
+            st.json(results)
+    except Exception:
         st.json(results)
