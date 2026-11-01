@@ -28,7 +28,7 @@ def _lines(path):
     if not os.path.exists(path):
         return []
     with open(path, encoding="utf-8") as f:
-        return [x.rstrip("\n") for x in f if x.strip()]
+        return [x.rstrip("\r\n") for x in f if x.strip()]      # tolerant of git's CRLF checkout
 
 
 def _digest(line):

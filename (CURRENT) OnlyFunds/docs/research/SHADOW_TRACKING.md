@@ -46,13 +46,54 @@ RS3 has **not** demonstrated an edge. Its evidence (DEV/VAL 2019–2024 and hold
 - It gives T50 a comparison under identical forward conditions.
 - **Prior: lower than T50.**
 
+**Update (2026-11-02, `05_rs3_scrutiny.md`, rule H2-RS3 registered before its results):** RS3 is **not** explained by one
+or two trades.
+- **Main 9, 2019–24:** 186 trades. Without the top 2 trades the mean is +0.35R, with a lower bound of +0.11R.
+- **Against random 3-coin baskets on the same Mondays:** 100th percentile on both the main 9 and the holdout 16
+  (p = 0.002 each).
+- **Holdout without its top 2 trades:** +0.21R.
+- **Weaknesses that remain:**
+  - Negative without the top 10% of trades, as with T50.
+  - The holdout lost money in 2023 and 2024.
+  - VAL without its single largest trade is not significant.
+- **Decision:** RS3 research continues. It is **not** promoted, and its frozen tracking is unchanged.
+
+## Experimental variants tracked alongside (separate fingerprints; `ROUND2_PROGRAMME.md` section A)
+- **The variants:** X1 `T50-PM` (frozen T50 + R3 position management) and X2 `T50-PM-B` (X1 + BTC > 100-day SMA entry
+  gate). Both were frozen on 2026-11-01 at 14:23 UTC, before the first forward decision, in
+  `research/shadow/EXPERIMENTAL_FROZEN.json`.
+  - X1 fingerprint: `3de65f01…`
+  - X2 fingerprint: `c2edc9f7…`
+- **How they run:** `research/forward_experimental.py` runs after each successful frozen run, inside the same
+  scheduled job and lock. It reads that run's data snapshot read-only and re-verifies its SHA-256 hashes. It writes
+  only to `state/shadow_experimental/`.
+- **Isolation:** a crash or fingerprint failure there is journaled and cannot fail the frozen run.
+- **Comparator:** the frozen T50 portfolio book, recomputed and cross-checked against the frozen run's own equity.
+  Any difference is logged as `COMPARATOR_MISMATCH`.
+- **Decision:** only after ≥ 24 months and ≥ 40 closed positions per book, under the criteria pre-registered in
+  `ROUND2_PROGRAMME.md`. These are experiments, not approved strategies.
+
 ## How it works
 - **Daily:** `python research/forward_shadow.py update`.
-  - **Schedule:** registered 2026-11-02 with the user's approval. `powershell -NoProfile -ExecutionPolicy Bypass -File
-    research\register_shadow_task.ps1` creates `\OnlyFunds\OF2 Shadow Daily Update` (00:30 UTC daily, runs late if
-    the PC was off); `-Remove` deletes it without touching records.
-    - Test run through the scheduler (run `20261101T135519Z`): result 0, fingerprints verified, status "waiting",
-      because no completed day on or after the start exists yet.
+  - **Schedule:** registered 2026-11-02 with the user's approval.
+    - Task: `\OnlyFunds\OF2 Shadow Daily Update`, daily at **00:30 UTC**. The trigger is stored with an explicit
+      UTC offset ("synchronize across time zones"), so it does not move when daylight saving changes.
+    - It runs `pythonw research\shadow_task.py`, a wrapper around `forward_shadow.py update`. The wrapper is not
+      part of the frozen fingerprint, and it changes nothing that is evaluated.
+    - Register again: `powershell -NoProfile -ExecutionPolicy Bypass -File research
+egister_shadow_task.ps1`.
+      Add `-Remove` to delete the task; the records are untouched.
+  - **Verification (2026-11-02), each check tested:**
+    | Requirement | How it is met | Checked by |
+    |---|---|---|
+    | Daily at 00:30 UTC | Calendar trigger, `StartBoundary 2026-11-01T11:30:00+11:00` = 00:30 UTC, synchronised across time zones | task XML |
+    | Independent of Claude Code | Launched by Task Scheduler: the process's parent is `svchost.exe`, not Claude or a terminal | live run, `Win32_Process` parent |
+    | No overlapping runs | Scheduler `MultipleInstances IgnoreNew` (a second start while running was ignored: one journal line). The wrapper also takes an exclusive OS lock (`state/shadow/tracker.lock`), so a manual run during a scheduled one exits with code 9. | live run; `test_second_instance_is_refused` |
+    | Missed runs and data gaps | `StartWhenAvailable` runs a missed day once the PC is back. Every run recomputes from the start, so nothing is lost. Missing days, stale and unavailable coins are reported in `run.json` and the journal; an unexpected download failure computes nothing (exit 5). | `test_network_failure_computes_nothing`, `test_stale_coin_stays_in_evaluation`, `test_delisted_mid_tracking_keeps_its_record` |
+    | Snapshots preserved, revisions flagged | Each run keeps its own `runs/<id>/data/` with SHA-256 hashes; a changed earlier trade is logged as `DATA_REVISION` | `test_rerun_is_deterministic_and_revisions_are_flagged` |
+    | Fingerprints verified every run | `update` re-hashes the spec and all 13 implementing files first; any change stops tracking (exit 3) and keeps earlier results | `test_changed_implementation_stops_tracking`; live run `problems: []` |
+    | Failures are not silent | stdout and stderr go to `state/shadow/logs/task_<date>.log`. Every run appends to `state/shadow/task_journal.jsonl`: exit code, status, data warnings, and the traceback on a crash (exit 10). | `test_crash_is_journaled_with_traceback`, `test_full_update_through_wrapper_never_touches_the_exchange` |
+    | No orders, keys or live execution | The tracker and wrapper contain no order or credential code. The wrapper deletes `COINEX_*` and other exchange-key variables before importing anything. A full offline run passes with the exchange client made to fail if created. Only public Binance GET requests for daily candles are made. | `test_shadow_code_has_no_order_or_credential_paths`, `test_wrapper_has_no_order_paths`, `test_credentials_are_removed_before_the_tracker_runs` |
   - **Missing a day loses nothing.** Every run recomputes from Binance's history, so a missed day only means a missing
     point-in-time snapshot in the audit trail.
   - Each run does the following.
