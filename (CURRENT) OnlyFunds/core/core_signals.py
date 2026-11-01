@@ -116,43 +116,54 @@ def generate_signals(df: pd.DataFrame, strategy: str = "auto", threshold: float 
     ind = df if "trend_score" in df.columns else add_indicators(df, indicator_params)
     comps = component_signals(ind, p)
     regime = classify_regime(ind, p)
-    stacks = {name: stack(comps, name) for name in STRATEGIES}
 
+    n = len(ind)
+    carr = {c: comps[c].to_numpy(float) for c in comps.columns}
+    reg = regime.to_numpy(object)
+    reg_ok = np.array([r is not None and r == r for r in reg], dtype=bool)
     if strategy == "auto":
-        chosen = regime.map(REGIME_STRATEGY)
+        chosen = np.array([REGIME_STRATEGY.get(r) if ok else None for r, ok in zip(reg, reg_ok)], dtype=object)
     else:
-        chosen = pd.Series(strategy, index=ind.index, dtype=object)
+        chosen = np.full(n, strategy, dtype=object)
+    chosen_ok = np.array([c is not None for c in chosen], dtype=bool)
 
-    signal = pd.Series(np.nan, index=ind.index)
-    conf_count = pd.Series(0, index=ind.index)
-    n_components = pd.Series(np.nan, index=ind.index)
-    for name in STRATEGIES:
-        mask = chosen == name
-        if not mask.any():
-            continue
-        signal[mask] = stacks[name][mask]
-        direction = np.sign(stacks[name]).replace(0, 1)
-        conf_count[mask] = confirmations(comps, name, direction)[mask]
-        n_components[mask] = len(STRATEGIES[name])
+    signal = np.full(n, np.nan)
+    conf_count = np.zeros(n, dtype=int)
+    n_components = np.full(n, np.nan)
+    stacks = {}
+    with np.errstate(invalid="ignore"):
+        for name, weights in STRATEGIES.items():
+            st = sum(carr[c] * w for c, w in weights.items()) / sum(weights.values())
+            stacks[name] = st
+            mask = chosen == name
+            if not mask.any():
+                continue
+            signal[mask] = st[mask]
+            direction = np.sign(st)
+            direction[direction == 0] = 1
+            cols = np.vstack([carr[c] for c in weights])
+            votes = np.sign(np.where(np.abs(cols) > 0.1, cols, 0.0))
+            agree = ((votes * direction) > 0).sum(axis=0)
+            conf_count[mask] = agree[mask]
+            n_components[mask] = len(weights)
 
-    # Trending-down regime under "auto": no new longs, and a mild exit bias via the trend stack.
-    stand_aside = chosen.isna() & regime.notna()
-    signal[stand_aside] = np.minimum(stacks["trend_following"][stand_aside], 0.0)
+        # Trending-down regime under "auto": no new longs, and a mild exit bias via the trend stack.
+        stand_aside = ~chosen_ok & reg_ok
+        signal[stand_aside] = np.minimum(stacks["trend_following"][stand_aside], 0.0)
 
-    confidence = (signal.abs() * (conf_count / n_components)).fillna(0.0).clip(0, 1)
-    min_conf = min(int(p["min_confirmations"]), 99)
-    need = np.minimum(min_conf, n_components.fillna(0))
-    entry = (signal >= threshold) & (conf_count >= need) & chosen.notna()
-    exit_ = signal <= -float(p["exit_threshold"])
-    warm = comps.notna().all(axis=1) & regime.notna()
-    entry &= warm
-    exit_ &= warm
+        confidence = np.clip(np.nan_to_num(np.abs(signal) * (conf_count / n_components), nan=0.0), 0, 1)
+        need = np.minimum(min(int(p["min_confirmations"]), 99), np.nan_to_num(n_components, nan=0.0))
+        warm = comps.notna().all(axis=1).to_numpy() & reg_ok
+        entry = (signal >= threshold) & (conf_count >= need) & chosen_ok & warm
+        exit_ = (signal <= -float(p["exit_threshold"])) & warm
 
     out = ind.copy() if with_indicators else pd.DataFrame(index=ind.index)
-    out["signal"] = signal.where(warm, 0.0).fillna(0.0)
-    out["confidence"] = confidence.where(warm, 0.0)
+    out["signal"] = np.where(warm, np.nan_to_num(signal, nan=0.0), 0.0)
+    out["confidence"] = np.where(warm, confidence, 0.0)
     out["regime"] = regime
-    out["strategy"] = chosen.where(~stand_aside, "stand_aside")
+    strat = chosen.copy()
+    strat[stand_aside] = "stand_aside"
+    out["strategy"] = strat
     out["confirmations"] = conf_count
     out["entry"] = entry.astype(bool)
     out["exit"] = exit_.astype(bool)

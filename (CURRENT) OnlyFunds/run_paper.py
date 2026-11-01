@@ -19,7 +19,7 @@ APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_ROOT)
 
 from core.core_data import get_client  # noqa: E402
-from core.paper_trader import LedgerBusy, PaperTrader  # noqa: E402
+from core.paper_trader import LedgerBusy, LedgerCorrupt, PaperTrader  # noqa: E402
 from core.trade_execution import LIVE_TRADING_LOCKED, PaperExecutor  # noqa: E402
 from utils.config import load_config, build_settings  # noqa: E402
 
@@ -103,6 +103,11 @@ def main(argv=None) -> int:
                     gauges["heartbeat"].set(time.time())
             except LedgerBusy as exc:
                 logging.warning("%s; skipping this step", exc)
+            except LedgerCorrupt as exc:
+                logging.critical("%s. Stopping: fix or quarantine the ledger before restarting.", exc)
+                return 1
+            except Exception:
+                logging.exception("paper step failed; will retry next interval")
             n += 1
             if args.steps and n >= args.steps:
                 break

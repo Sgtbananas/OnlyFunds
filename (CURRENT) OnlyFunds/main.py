@@ -25,13 +25,13 @@ try:
 except ImportError:
     pass
 
-from core import autotune, dashboard
+from core import autotune, dashboard, evaluation
 from core.backtester import run_backtest, run_out_of_sample
 from core.coinex_client import INTERVAL_MAP, CoinExError, top_usdt_markets
 from core.core_data import fetch_klines, get_client, normalize_ohlcv
 from core.core_signals import STRATEGY_NAMES, generate_signals
 from core.ml_filter import load_bundle, train_filter
-from core.paper_trader import LedgerBusy, PaperTrader
+from core.paper_trader import LedgerBusy, LedgerCorrupt, PaperTrader, quarantine_ledger
 from core.trade_execution import LIVE_TRADING_LOCKED, PaperExecutor
 from utils.config import PROFILES, Config, build_settings
 from utils.helpers import BLACKLISTED_TOKENS
@@ -259,6 +259,19 @@ with tab_bt:
                 k[3].metric("Max drawdown", f"{m['max_drawdown_pct']:.2f}%")
                 k[4].metric("Profit factor", f"{m['profit_factor']:.2f}")
                 k[5].metric("Fees paid", f"{m['fees_paid']:.2f}")
+                k2 = st.columns(6)
+                k2[0].metric("Expectancy / trade", f"{m['expectancy']:.4f}")
+                k2[1].metric("Trades / day", f"{m['trades_per_day']:.2f}")
+                k2[2].metric("Sharpe", f"{m['sharpe']:.2f}")
+                k2[3].metric("Sortino", f"{m['sortino']:.2f}")
+                k2[4].metric("Return / max DD", f"{m['return_over_max_dd']:.2f}")
+                k2[5].metric("Exposure", f"{m['exposure_pct']:.1f}%")
+                if m["missing_candles"]:
+                    st.warning(f"{m['missing_candles']} missing candle(s) in this data; indicators around gaps "
+                               "are less reliable.")
+                if m["by_regime"]:
+                    st.caption("Results by market regime at entry:")
+                    st.dataframe(pd.DataFrame(m["by_regime"]).T, use_container_width=True)
                 st.plotly_chart(dashboard.equity_chart(res.equity, f"{name} equity"), use_container_width=True)
                 if len(res.trades):
                     st.dataframe(res.trades.drop(columns=["id"]), use_container_width=True, height=260)
@@ -301,6 +314,9 @@ def make_trader() -> PaperTrader:
 
 
 def render_paper(trader: PaperTrader) -> None:
+    issues = trader.reconcile()
+    if issues:
+        st.error("Ledger reconciliation failed; new entries are blocked: " + "; ".join(issues))
     m = trader.metrics()
     k = st.columns(7)
     k[0].metric("Equity", f"{m['equity']:.2f}", f"{m['total_return_pct']:+.2f}%")
@@ -348,11 +364,18 @@ with tab_paper:
     run_once = c1.button("▶ Run one step now", type="primary", disabled=not pairs)
     auto = c2.toggle("Auto-run", key="paper_auto", help="Runs a step every refresh interval while this tab is open.")
     refresh_s = int(tcfg.get("paper_refresh_seconds", 60))
+    trader = None
     try:
         trader = make_trader()
+    except LedgerCorrupt as exc:
+        st.error(f"Paper ledger cannot be read: {exc}")
+        st.caption("Nothing was overwritten. Inspect state/paper/ first if you need the history.")
+        if st.checkbox("I understand the corrupt ledger will be moved aside, not deleted") and \
+                st.button("Move corrupt ledger aside and start a new paper account"):
+            moved = quarantine_ledger(PAPER_DIR)
+            st.success(f"Moved: {moved}. Reload the page.")
     except Exception as exc:
         show_error("Could not open paper ledger", exc)
-        st.stop()
 
     def do_step():
         try:
@@ -370,10 +393,14 @@ with tab_paper:
         except Exception as exc:
             show_error("Paper step failed", exc)
 
-    if run_once:
+    if trader is None:
+        pass
+    elif run_once:
         do_step()
 
-    if auto:
+    if trader is None:
+        pass
+    elif auto:
         @st.fragment(run_every=refresh_s)
         def auto_panel():
             do_step()
@@ -388,14 +415,16 @@ with tab_paper:
 with tab_ml:
     st.subheader("ML entry filter")
     st.caption("Predicts whether an entry hits take-profit before stop-loss. Trained on a chronological split with "
-               "a purge gap; it's only flagged useful if it beats the base win rate on held-out data.")
+               "a purge gap. Flagged useful only if, on held-out data, the trades it accepts earn more per trade "
+               "after fees and slippage than taking every signal (win rate alone is not enough).")
     bundle = load_bundle(ML_MODEL_PATH)
     if bundle:
         rep = bundle["report"]
         (st.success if rep["useful"] else st.warning)(
             f"Saved model: {'shows an out-of-sample edge' if rep['useful'] else 'NO demonstrated edge'} — "
-            f"validation AUC {rep['validation_auc']:.3f}, precision {rep['validation_precision_at_threshold']:.3f} "
-            f"vs base win rate {rep['validation_base_win_rate']:.3f} (trained {rep['trained_at'][:16]}).")
+            f"validation AUC {rep['validation_auc']:.3f}; expectancy after costs "
+            f"{rep['validation_expectancy_r_accepted']:+.3f}R on accepted trades vs "
+            f"{rep['validation_expectancy_r_all']:+.3f}R taking every signal (trained {rep['trained_at'][:16]}).")
         with st.expander("Model report"):
             st.json(rep)
     else:
@@ -434,6 +463,30 @@ with tab_ml:
                 st.caption(f"Model trained only on the first 70% of {pairs[0]}; useful={r['report']['useful']}.")
             except Exception as exc:
                 show_error("ML comparison failed", exc)
+
+    st.divider()
+    st.subheader("Strategy comparison (does anything have an edge?)")
+    st.caption("Every strategy on the selected pairs: fixed defaults plus walk-forward out-of-sample. "
+               "'credible_edge' requires profit factor > 1.1, beating buy-and-hold, positive walk-forward "
+               "results on most folds and at least 30 trades. Slow: a few backtests per pair and strategy.")
+    cmp_pairs = st.multiselect("Pairs to compare", pairs, default=pairs[:1], key="cmp_pairs")
+    if st.button("Compare strategies", disabled=not cmp_pairs):
+        frames = {}
+        for p in cmp_pairs:
+            df, source, err = cached_klines(p, interval, 1000)
+            if err:
+                st.error(f"{p}: {err}")
+            else:
+                frames[p] = df
+        if frames:
+            try:
+                with st.spinner("Evaluating…"):
+                    ev = evaluation.evaluate(frames, bt_cfg)
+                st.dataframe(ev["verdict"], use_container_width=True)
+                st.dataframe(ev["fixed"], use_container_width=True)
+                st.dataframe(ev["walk_forward"], use_container_width=True)
+            except Exception as exc:
+                show_error("Strategy comparison failed", exc)
 
     st.divider()
     st.subheader("Parameter optimisation (train → out-of-sample)")
@@ -503,6 +556,8 @@ with tab_status:
                 st.success("Paper account reset.")
     except LedgerBusy as exc:
         st.warning(str(exc))
+    except LedgerCorrupt as exc:
+        st.error(f"Paper ledger cannot be read: {exc} (see the Paper trading tab)")
     except Exception as exc:
         show_error("Status panel error", exc)
 

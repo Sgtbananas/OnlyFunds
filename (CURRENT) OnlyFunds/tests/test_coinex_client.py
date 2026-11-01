@@ -46,7 +46,11 @@ MARKET = {"market": "BTCUSDT", "base_ccy": "BTC", "quote_ccy": "USDT", "base_ccy
 def client(responses, **kw):
     kw.setdefault("api_key", "KEY")
     kw.setdefault("api_secret", "SECRET")
-    return cx.CoinExClient(session=FakeSession(responses), min_interval=0, backoff=0, **kw)
+    synced = kw.pop("synced", True)
+    c = cx.CoinExClient(session=FakeSession(responses), min_interval=0, backoff=0, **kw)
+    if synced:
+        c.time_offset_ms = 0  # most tests are not about clock sync
+    return c
 
 
 def test_signature_matches_documented_construction(monkeypatch):
@@ -208,3 +212,29 @@ def test_gateway_html_error_is_readable():
     with pytest.raises(cx.CoinExError) as e:
         client([FakeResp(None, status=503, text=html)] * 3).get_markets()
     assert "503 Service Temporarily Unavailable" in str(e.value) and "<html>" not in str(e.value)
+
+
+def test_time_sync_offsets_signed_timestamps(monkeypatch):
+    monkeypatch.setattr(cx.time, "time", lambda: 1000.0)
+    c = client([ok({"timestamp": 1_000_000 + 3_000}), ok([])], synced=False)  # server 3 s ahead
+    c.get_spot_balance()
+    assert c.time_offset_ms == 3000
+    assert c.session.calls[0]["url"].endswith("/v2/time")
+    assert c.session.calls[1]["headers"]["X-COINEX-TIMESTAMP"] == str(1_000_000 + 3_000)
+
+
+def test_time_sync_failure_falls_back_to_local_clock():
+    c = client([FakeResp({"code": 4001, "message": "down"})] * 3 + [ok([])], synced=False)
+    c.get_spot_balance()
+    assert c.time_offset_ms == 0
+
+
+def test_reconciliation_queries_are_signed_and_shaped():
+    c = client([ok([{"order_id": 1, "client_id": "of2-a"}]), ok([])])
+    c.time_offset_ms = 0
+    assert c.get_pending_orders("BTCUSDT", client_id="of2-a")[0]["order_id"] == 1
+    url = c.session.calls[0]["url"]
+    assert "/v2/spot/pending-order?" in url and "client_id=of2-a" in url and "market_type=SPOT" in url
+    assert "X-COINEX-SIGN" in c.session.calls[0]["headers"]
+    c.get_finished_orders("BTCUSDT")
+    assert "/v2/spot/finished-order?" in c.session.calls[1]["url"]

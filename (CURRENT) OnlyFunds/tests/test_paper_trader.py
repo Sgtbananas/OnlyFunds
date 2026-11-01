@@ -1,4 +1,5 @@
 """Paper trading tests: simulated clock, synthetic candles, network blocked."""
+import os
 from datetime import timedelta
 
 import pandas as pd
@@ -40,7 +41,8 @@ class Market:
 
 def make(tmp_path, market, executor=None, **kw):
     s = PaperSettings(interval="5m", lookback=400, risk=RiskLimits(kill_switch_file=str(tmp_path / "KS"),
-                                                                    max_drawdown_pct=0.5, max_daily_loss_pct=0.5),
+                                                                    max_drawdown_pct=0.5, max_daily_loss_pct=0.5,
+                                                                    max_cost_to_risk=10.0), # mechanics test on 5m data: cost filter off
                       **kw)
     return PaperTrader(s, str(tmp_path), data_fn=market.klines, price_fn=market.price,
                        executor=executor, now_fn=market.now)
@@ -104,11 +106,14 @@ def test_ledger_persists_across_restart(tmp_path):
     assert t2.reconcile() == []
 
 
-def test_corrupt_ledger_is_quarantined(tmp_path):
+def test_corrupt_ledger_can_be_quarantined_explicitly(tmp_path):
+    from core.paper_trader import LedgerCorrupt, quarantine_ledger
     (tmp_path / "paper_ledger.json").write_text("{not json")
-    t = make(tmp_path, Market())
-    assert t.ledger["cash"] == 1000
-    assert (tmp_path / "paper_ledger.json.corrupt").exists()
+    with pytest.raises(LedgerCorrupt):
+        make(tmp_path, Market())
+    moved = quarantine_ledger(str(tmp_path))
+    assert len(moved) == 1 and os.path.exists(moved[0])
+    assert make(tmp_path, Market()).ledger["cash"] == 1000
 
 
 def test_failed_orders_are_handled(tmp_path):

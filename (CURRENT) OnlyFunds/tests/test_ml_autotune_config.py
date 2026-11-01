@@ -71,7 +71,8 @@ def test_grid_and_apply():
 
 def test_optimise_selects_on_train_only():
     df = synthetic_ohlcv(3000, seed=4)
-    r = optimise(df, grid=SMALL_GRID, min_trades=3)
+    base = BacktestConfig(risk=RiskLimits(kill_switch_file="", max_cost_to_risk=10.0))  # 5m data: cost filter off
+    r = optimise(df, base, grid=SMALL_GRID, min_trades=3)
     assert r["best_params"] is not None
     top = r["table"].iloc[0]
     assert top["threshold"] == r["best_params"]["threshold"]
@@ -80,7 +81,8 @@ def test_optimise_selects_on_train_only():
 
 
 def test_walk_forward():
-    r = walk_forward(synthetic_ohlcv(3000, seed=4), grid=SMALL_GRID, n_folds=3, min_trades=2)
+    base = BacktestConfig(risk=RiskLimits(kill_switch_file="", max_cost_to_risk=10.0))
+    r = walk_forward(synthetic_ohlcv(3000, seed=4), base, grid=SMALL_GRID, n_folds=3, min_trades=2)
     assert len(r["folds"]) == 3 and np.isfinite(r["oos_compounded_return_pct"])
 
 

@@ -22,7 +22,7 @@ Or double-click `(CURRENT) OnlyFunds/START.bat`. The app opens at http://localho
 Headless paper trading (same ledger as the app):
 
 ```bat
-python run_paper.py --pairs BTCUSDT ETHUSDT --interval 15m
+python run_paper.py --pairs BTCUSDT ETHUSDT --interval 1h
 ```
 
 Tests:

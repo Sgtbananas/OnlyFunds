@@ -70,6 +70,7 @@ def test_slippage_is_adverse():
 
 # ------------------------------------------------------------------ risk
 def rm(**kw):
+    kw.setdefault("risk_per_trade", 0.01)  # explicit: tests below were written against 1% risk
     return RiskManager(RiskLimits(kill_switch_file="", **kw))
 
 

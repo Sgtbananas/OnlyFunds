@@ -65,8 +65,8 @@ class Config:
 
     @property
     def profile(self) -> str:
-        p = self.trading.get("profile", "Normal")
-        return p if p in PROFILES else "Normal"
+        p = self.trading.get("profile", "Conservative")
+        return p if p in PROFILES else "Conservative"
 
     def profile_settings(self, profile: Optional[str] = None) -> Dict[str, Any]:
         profiles = self._data.get("profiles") or {}
@@ -120,6 +120,8 @@ def build_settings(cfg: Config, profile: Optional[str] = None, overrides: Option
         threshold=float(o.get("threshold", prof.get("threshold", 0.35))),
         fee_rate=float(t.get("fee_rate", 0.002)),
         slippage_pct=float(t.get("slippage_pct", 0.0005)),
+        stop_slippage_pct=float(t.get("stop_slippage_pct", 0.002)),
+        max_volume_participation=t.get("max_volume_participation", 0.10),
         ml_threshold=float(ml.get("threshold", 0.55)),
         signal_params=cfg.section("signals"),
         indicator_params=cfg.section("indicators"),

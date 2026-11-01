@@ -98,3 +98,20 @@ def test_optimisation_and_ml_from_ui(app_env):
     assert not at.exception, [e.value for e in at.exception]
     assert not at.error, [e.value for e in at.error]
     assert os.path.exists(os.path.join(app_env, "state", "ml_filter.pkl"))
+
+
+def test_corrupt_ledger_does_not_take_down_other_tabs(app_env):
+    paper = app_env / "state" / "paper"
+    paper.mkdir(parents=True)
+    (paper / "paper_ledger.json").write_text("{broken")
+    at = run_app()
+    assert any("cannot be read" in e.value for e in at.error)
+    assert any(b.label == "Test CoinEx connection" for b in at.button), "status tab must still render"
+    assert (paper / "paper_ledger.json").exists()
+
+
+def test_backtest_shows_new_metrics(app_env):
+    at = run_app()
+    button(at, "▶ Run backtest").click().run()
+    labels = {m.label for m in at.metric}
+    assert {"Expectancy / trade", "Trades / day", "Sortino"} <= labels

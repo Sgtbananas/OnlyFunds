@@ -11,10 +11,13 @@ Leakage controls:
 - Train / validation split is chronological per pair, with a purge gap of
   ``horizon`` bars so no training label overlaps validation features.
 
-The model is only marked ``useful`` if, on the held-out validation period,
-its ROC AUC beats 0.55 *and* the precision of the trades it accepts beats
-the base win rate of all candidate entries. Otherwise the app reports it as
-"no demonstrated edge" and does not gate entries with it by default.
+The model is only marked ``useful`` if, on the held-out validation period:
+- ROC AUC >= 0.55, and
+- the trades it accepts have a positive expectancy in R-multiples *after
+  fees and stop slippage*, higher than taking every candidate entry.
+Win rate alone is never enough: a filter can raise win rate while cutting
+profit. Otherwise the app reports "no demonstrated edge" and does not gate
+entries with it by default.
 """
 from __future__ import annotations
 
@@ -40,7 +43,7 @@ MODEL_PATH = os.path.join(APP_ROOT, "state", "ml_filter.pkl")
 FEATURES = ["rsi", "ema_diff", "macd_hist_n", "bb_pctb", "bb_width", "atr_pct", "volatility", "trend_score",
             "ret_1", "ret_3", "ret_12", "vol_ratio", "ema_cross", "rsi_reversion", "macd_momentum",
             "bollinger_reversion", "signal", "confidence"]
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 
 
 def build_features(sig: pd.DataFrame) -> pd.DataFrame:
@@ -90,15 +93,54 @@ def triple_barrier_labels(df: pd.DataFrame, atr: pd.Series, rules: ExitRules, ho
     return pd.Series(out, index=df.index)
 
 
+def barrier_outcomes(df: pd.DataFrame, atr: pd.Series, rules: ExitRules, horizon: int = 48,
+                     fee_rate: float = 0.002, stop_slippage_pct: float = 0.002) -> pd.Series:
+    """Net outcome of a long entered at open[t+1], in R (1R = stop distance), after costs.
+
+    take-profit -> +tp/stop R; stop -> -1R minus slippage; neither -> close at the horizon.
+    Costs (two fees, stop slippage) are converted to R and subtracted. NaN where unknown.
+    """
+    o, h, l, c = (df[k].to_numpy(float) for k in ("Open", "High", "Low", "Close"))
+    a = atr.to_numpy(float)
+    n = len(df)
+    out = np.full(n, np.nan)
+    for t in range(n - 1):
+        end = t + 1 + horizon
+        if end > n or not np.isfinite(a[t]) or a[t] <= 0:
+            continue
+        entry = o[t + 1]
+        risk = rules.stop_atr_mult * a[t]
+        stop, tp = entry - risk, entry + rules.tp_atr_mult * a[t]
+        exit_px = c[end - 1]
+        for j in range(t + 1, end):   # same order as core.positions.check_exit
+            if o[j] <= stop:
+                exit_px = o[j] * (1 - stop_slippage_pct)
+                break
+            if o[j] >= tp:
+                exit_px = o[j]
+                break
+            if l[j] <= stop:
+                exit_px = stop * (1 - stop_slippage_pct)
+                break
+            if h[j] >= tp:
+                exit_px = tp
+                break
+        net = exit_px * (1 - fee_rate) - entry * (1 + fee_rate)
+        out[t] = net / risk
+    return pd.Series(out, index=df.index)
+
+
 def build_dataset(frames: Dict[str, pd.DataFrame], rules: ExitRules, horizon: int = 48,
                   strategy: str = "auto", threshold: float = 0.35, val_frac: float = 0.3,
-                  candidates_only: bool = True):
+                  candidates_only: bool = True, return_r: bool = False, fee_rate: float = 0.002,
+                  stop_slippage_pct: float = 0.002):
     """Chronological per-pair split with a purge gap. Returns (Xtr, ytr, Xva, yva)."""
-    tr_X, tr_y, va_X, va_y = [], [], [], []
+    tr_X, tr_y, va_X, va_y, va_r = [], [], [], [], []
     for pair, df in frames.items():
         sig = generate_signals(df.reset_index(drop=True), strategy=strategy, threshold=threshold)
         X = build_features(sig)
         y = triple_barrier_labels(sig, sig["ATR"], rules, horizon)
+        r = barrier_outcomes(sig, sig["ATR"], rules, horizon, fee_rate, stop_slippage_pct)
         mask = y.notna() & X.notna().all(axis=1)
         if candidates_only:
             mask &= sig["entry"]
@@ -107,22 +149,26 @@ def build_dataset(frames: Dict[str, pd.DataFrame], rules: ExitRules, horizon: in
         train_m = mask & (idx < cut - horizon)        # purge: labels must end before validation starts
         val_m = mask & (idx >= cut)
         tr_X.append(X[train_m]); tr_y.append(y[train_m])
-        va_X.append(X[val_m]); va_y.append(y[val_m])
+        va_X.append(X[val_m]); va_y.append(y[val_m]); va_r.append(r[val_m])
     cat = lambda parts: pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    if return_r:
+        return cat(tr_X), cat(tr_y), cat(va_X), cat(va_y), cat(va_r)
     return cat(tr_X), cat(tr_y), cat(va_X), cat(va_y)
 
 
 def train_filter(frames: Dict[str, pd.DataFrame], rules: Optional[ExitRules] = None, horizon: int = 48,
                  threshold: float = 0.55, strategy: str = "auto", signal_threshold: float = 0.35,
-                 min_samples: int = 150, save_path: Optional[str] = MODEL_PATH) -> Dict:
+                 min_samples: int = 150, save_path: Optional[str] = MODEL_PATH, fee_rate: float = 0.002,
+                 stop_slippage_pct: float = 0.002) -> Dict:
     """Train and validate the filter. Returns the model bundle (also saved when ``save_path``)."""
     rules = rules or ExitRules()
-    Xtr, ytr, Xva, yva = build_dataset(frames, rules, horizon, strategy, signal_threshold)
+    kw = dict(return_r=True, fee_rate=fee_rate, stop_slippage_pct=stop_slippage_pct)
+    Xtr, ytr, Xva, yva, rva = build_dataset(frames, rules, horizon, strategy, signal_threshold, **kw)
     candidates_only = True
     if len(Xtr) < min_samples:
         # Too few rule-based entries: learn from all bars instead (documented in the report).
-        Xtr, ytr, Xva, yva = build_dataset(frames, rules, horizon, strategy, signal_threshold,
-                                           candidates_only=False)
+        Xtr, ytr, Xva, yva, rva = build_dataset(frames, rules, horizon, strategy, signal_threshold,
+                                                candidates_only=False, **kw)
         candidates_only = False
     if len(Xtr) < min_samples or len(Xva) < 30:
         raise ValueError(f"not enough labelled samples (train={len(Xtr)}, validation={len(Xva)}); "
@@ -149,13 +195,30 @@ def train_filter(frames: Dict[str, pd.DataFrame], rules: Optional[ExitRules] = N
         "validation_accept_rate": float(accepted.mean()),
         "exit_rules": rules.__dict__,
     }
-    report["useful"] = bool(np.isfinite(auc) and auc >= 0.55 and np.isfinite(precision)
-                            and precision > base_rate + 0.02 and accepted.sum() >= 10)
+    base_r = float(rva.mean()) if len(rva) else float("nan")
+    gated_r = float(rva[accepted].mean()) if accepted.any() else float("nan")
+    report.update({
+        "validation_expectancy_r_all": base_r,          # take every candidate
+        "validation_expectancy_r_accepted": gated_r,    # take only what the model accepts
+        "validation_accepted_trades": int(accepted.sum()),
+        "costs": {"fee_rate": fee_rate, "stop_slippage_pct": stop_slippage_pct},
+    })
+    report["useful"] = edge_check(auc, int(accepted.sum()), gated_r, base_r)
     bundle = {"model": model, "features": FEATURES, "report": report}
     if save_path:
         save_bundle(bundle, save_path)
     logger.info("ML filter trained: %s", report)
     return bundle
+
+
+def edge_check(auc: float, accepted_trades: int, expectancy_r_accepted: float, expectancy_r_all: float,
+               min_auc: float = 0.55, min_trades: int = 10) -> bool:
+    """The filter is useful only if it ranks well AND the trades it keeps make more money after costs."""
+    vals = (auc, expectancy_r_accepted, expectancy_r_all)
+    if not all(isinstance(v, (int, float)) and np.isfinite(v) for v in vals):
+        return False
+    return bool(auc >= min_auc and accepted_trades >= min_trades and expectancy_r_accepted > 0
+                and expectancy_r_accepted > expectancy_r_all)
 
 
 def save_bundle(bundle: Dict, path: str = MODEL_PATH) -> None:

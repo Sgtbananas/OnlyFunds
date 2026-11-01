@@ -12,13 +12,15 @@ api:
 
 trading:
   mode: paper            # only "paper" is supported. Live trading is locked in code.
-  profile: Normal        # Conservative | Normal | Aggressive (see profiles below)
+  profile: Conservative  # Conservative | Normal | Aggressive (see profiles below)
   strategy: auto         # auto | trend_following | mean_reversion | stacked
-  default_interval: 15m
+  default_interval: 1h   # at CoinEx's 0.2% fees, shorter candles give stops too tight for the costs
   backtest_lookback: 1000
   initial_capital: 1000
   fee_rate: 0.002        # CoinEx default spot taker fee; the live market fee is used if higher
   slippage_pct: 0.0005
+  stop_slippage_pct: 0.002   # stops fill worse than normal exits
+  max_volume_participation: 0.10  # max fraction of the last candle's volume per order
   pairs:
   - BTCUSDT
   - ETHUSDT
@@ -32,13 +34,15 @@ trading:
     timezone: UTC
 
 risk:
-  risk_per_trade: 0.01     # fraction of equity lost if the stop is hit
-  max_position_pct: 0.20   # max notional per position, fraction of equity
-  max_exposure_pct: 0.60   # max total open notional, fraction of equity
-  max_open_positions: 4
-  max_daily_loss_pct: 0.05
-  max_drawdown_pct: 0.15   # engages the kill switch in paper trading
+  # Conservative defaults. Profiles below override the first three fields only.
+  risk_per_trade: 0.005    # fraction of equity lost if the stop is hit (fees + stop slippage included)
+  max_position_pct: 0.10   # max notional per position, fraction of equity
+  max_exposure_pct: 0.30   # max total open notional, fraction of equity
+  max_open_positions: 3
+  max_daily_loss_pct: 0.03
+  max_drawdown_pct: 0.10   # engages the kill switch in paper trading
   min_notional: 1.0        # USDT; smaller orders are rejected, never rounded up
+  max_cost_to_risk: 0.25   # skip trades whose round-trip costs exceed 25% of the stop distance
 
 exits:
   stop_atr_mult: 1.5
@@ -84,6 +88,6 @@ profiles:
     max_exposure_pct: 0.60
   Aggressive:
     threshold: 0.25
-    risk_per_trade: 0.02
-    max_position_pct: 0.30
-    max_exposure_pct: 0.90
+    risk_per_trade: 0.015
+    max_position_pct: 0.25
+    max_exposure_pct: 0.60

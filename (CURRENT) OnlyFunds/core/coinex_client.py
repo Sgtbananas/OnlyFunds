@@ -156,6 +156,7 @@ class CoinExClient:
         self._last_call = 0.0
         self._markets: Dict[str, MarketInfo] = {}
         self._markets_ts = 0.0
+        self.time_offset_ms: Optional[int] = None  # server_time - local_time, set by sync_time()
 
     def __repr__(self) -> str:
         return f"CoinExClient(has_credentials={self.has_credentials}, allow_trading={self.allow_trading})"
@@ -181,7 +182,9 @@ class CoinExClient:
         if signed:
             if not self.has_credentials:
                 raise CoinExAuthError(None, "API credentials not configured (set COINEX_API_KEY / COINEX_API_SECRET)")
-            ts = str(int(time.time() * 1000))
+            if self.time_offset_ms is None:
+                self.sync_time()
+            ts = str(int(time.time() * 1000) + (self.time_offset_ms or 0))
             headers["X-COINEX-KEY"] = self._key
             headers["X-COINEX-TIMESTAMP"] = ts
             headers["X-COINEX-SIGN"] = sign_request(self._secret, method, request_path, body_str, ts)
@@ -289,6 +292,39 @@ class CoinExClient:
         data = self._request("GET", "/assets/spot/balance", signed=True) or []
         return {d["ccy"]: {"available": float(d.get("available", 0)), "frozen": float(d.get("frozen", 0))}
                 for d in data}
+
+    def sync_time(self) -> int:
+        """Measure the clock offset against GET /time (signed requests are only valid for 5 s by default)."""
+        t0 = time.time()
+        try:
+            data = self._request("GET", "/time") or {}
+            server_ms = int(data["timestamp"])
+        except (CoinExError, KeyError, TypeError, ValueError) as exc:
+            logger.warning("CoinEx time sync failed (%s); using local clock", exc)
+            self.time_offset_ms = 0
+            return 0
+        local_mid_ms = int((t0 + time.time()) / 2 * 1000)
+        self.time_offset_ms = server_ms - local_mid_ms
+        if abs(self.time_offset_ms) > 2000:
+            logger.warning("Local clock differs from CoinEx by %d ms", self.time_offset_ms)
+        return self.time_offset_ms
+
+    def get_maintenance(self) -> Any:
+        """GET /maintain/info (public): scheduled or ongoing maintenance windows."""
+        return self._request("GET", "/maintain/info")
+
+    def get_pending_orders(self, market: Optional[str] = None, client_id: Optional[str] = None,
+                           side: Optional[str] = None, page: int = 1, limit: int = 100) -> List[Dict[str, Any]]:
+        """Read-only. The only documented way to find an unfilled order by client_id (reconciliation)."""
+        params = {"market": market, "market_type": "SPOT", "side": side, "client_id": client_id,
+                  "page": page, "limit": limit}
+        return self._request("GET", "/spot/pending-order", params=params, signed=True) or []
+
+    def get_finished_orders(self, market: str, side: Optional[str] = None, page: int = 1,
+                            limit: int = 100) -> List[Dict[str, Any]]:
+        """Read-only. Note: orders cancelled with no fills are not stored by CoinEx and never appear."""
+        params = {"market": market, "market_type": "SPOT", "side": side, "page": page, "limit": limit}
+        return self._request("GET", "/spot/finished-order", params=params, signed=True) or []
 
     def get_order_status(self, market: str, order_id: int) -> Dict[str, Any]:
         return self._request("GET", "/spot/order-status", params={"market": market, "order_id": int(order_id)},

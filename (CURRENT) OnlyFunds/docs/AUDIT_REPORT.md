@@ -1,5 +1,7 @@
 # OF2 audit and completion report (2026-11-01, branch `of2-completion`)
 
+> **Read `AUDIT_REPORT_2.md` as well.** The second-pass audit found and fixed 24 issues in this first rebuild, including several that made results look better than reality. Where the two reports differ, the second one is correct.
+
 ## 1. Starting state (audit of `main` @ 5a19aaa)
 
 The build plan marked Phase 1 complete and Phase 2 in progress. The code did not support that.

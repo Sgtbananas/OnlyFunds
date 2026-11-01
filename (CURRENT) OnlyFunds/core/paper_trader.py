@@ -26,7 +26,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
+from core.coinex_client import INTERVAL_SECONDS
 from core.core_signals import generate_signals
+from core.data_quality import missing_candles
 from core.indicators import validate_ohlcv
 from core.meta_learner import StrategyRotation
 from core.positions import ExitRules, Position, close_trade_record, check_exit
@@ -46,17 +48,42 @@ class LedgerBusy(RuntimeError):
     pass
 
 
+class LedgerCorrupt(RuntimeError):
+    """Ledger (and its backup) unreadable. Never silently replaced with a fresh account."""
+
+
+STOP_REASONS = ("stop_loss", "trailing_stop", "emergency_stop")
+REQUIRED_KEYS = {"cash": (int, float), "initial_capital": (int, float), "positions": dict, "trades": list}
+
+
+def _touch(path: str) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
 @contextmanager
-def ledger_lock(path: str, stale_after: float = LOCK_STALE_SECONDS):
+def ledger_lock(path: str, stale_after: Optional[float] = None):
     """Cross-process lock so the UI and ``run_paper.py`` never write the ledger at once."""
     lock = path + ".lock"
+    stale_after = LOCK_STALE_SECONDS if stale_after is None else stale_after
     os.makedirs(os.path.dirname(lock) or ".", exist_ok=True)
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        if time.time() - os.path.getmtime(lock) > stale_after:
-            os.remove(lock)  # holder crashed
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except (FileExistsError, PermissionError):
+        # PermissionError: on Windows a lock file that is being deleted can't be re-created yet.
+        try:
+            age = time.time() - os.path.getmtime(lock)
+        except (FileNotFoundError, PermissionError):
+            # The holder released the lock between our two calls: just report busy, never crash.
+            raise LedgerBusy("paper ledger lock changed hands; try again")
+        if age > stale_after:
+            try:
+                os.remove(lock)  # holder crashed
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except (FileExistsError, FileNotFoundError, PermissionError):
+                raise LedgerBusy("paper ledger lock was taken over by another process")
         else:
             raise LedgerBusy("paper ledger is being updated by another process")
     try:
@@ -79,6 +106,9 @@ class PaperSettings:
     initial_capital: float = 1000.0
     fee_rate: float = 0.002
     slippage_pct: float = 0.0005
+    stop_slippage_pct: float = 0.002
+    max_volume_participation: Optional[float] = 0.10
+    gap_check_bars: int = 100   # no entries if any candle is missing in this many recent bars
     use_ml: bool = False
     ml_threshold: float = 0.55
     exit_rules: ExitRules = field(default_factory=ExitRules)
@@ -95,9 +125,25 @@ def _now() -> datetime:
 def _atomic_write_json(path: str, data: Any) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
+    text = json.dumps(data, default=str, separators=(",", ":"))  # C encoder: ~10x faster than indented dump
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1, default=str)
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())  # the ledger must survive a power cut, not just a crash
     os.replace(tmp, path)
+
+
+def quarantine_ledger(state_dir: str) -> List[str]:
+    """Move an unreadable ledger (and backup) aside so a new one can start. Returns the new paths."""
+    moved = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    for name in ("paper_ledger.json", "paper_ledger.json.bak"):
+        src = os.path.join(state_dir, name)
+        if os.path.exists(src):
+            dst = f"{src}.corrupt-{stamp}"
+            os.replace(src, dst)
+            moved.append(dst)
+    return moved
 
 
 def new_ledger(initial_capital: float) -> Dict[str, Any]:
@@ -135,18 +181,39 @@ class PaperTrader:
         self.rotation.load(self.ledger.get("rotation"))
 
     # ------------------------------------------------------------ ledger
+    @staticmethod
+    def _read_ledger(path: str) -> Dict[str, Any]:
+        with open(path, "r", encoding="utf-8") as f:
+            led = json.load(f)
+        if not isinstance(led, dict):
+            raise ValueError("ledger is not an object")
+        for key, typ in REQUIRED_KEYS.items():
+            if not isinstance(led.get(key), typ):
+                raise ValueError(f"ledger field {key!r} missing or wrong type")
+        for pair, d in led["positions"].items():
+            Position.from_dict(d)
+        return led
+
     def _load(self) -> Dict[str, Any]:
-        if os.path.exists(self.ledger_path):
+        """Load the ledger, falling back to the last good backup. Never silently starts over."""
+        bak = self.ledger_path + ".bak"
+        errors = []
+        for path in (self.ledger_path, bak):
+            if not os.path.exists(path):
+                continue
             try:
-                with open(self.ledger_path, "r", encoding="utf-8") as f:
-                    led = json.load(f)
-                base = new_ledger(led.get("initial_capital", self.settings.initial_capital))
-                base.update(led)
-                return base
-            except (OSError, ValueError) as exc:
-                bad = self.ledger_path + ".corrupt"
-                os.replace(self.ledger_path, bad)
-                logger.error("Paper ledger unreadable (%s); moved to %s and starting fresh", exc, bad)
+                led = self._read_ledger(path)
+            except (OSError, ValueError, TypeError) as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+                continue
+            if path == bak:
+                logger.error("Paper ledger unreadable (%s); recovered from backup", errors)
+            base = new_ledger(led.get("initial_capital", self.settings.initial_capital))
+            base.update(led)
+            return base
+        if errors:
+            raise LedgerCorrupt("paper ledger and backup are unreadable: " + "; ".join(errors)
+                                + ". Inspect or move the file, or use quarantine_ledger() to start a new one.")
         return new_ledger(self.settings.initial_capital)
 
     def save(self) -> None:
@@ -155,6 +222,8 @@ class PaperTrader:
         led["equity_history"] = led["equity_history"][-MAX_EQUITY_POINTS:]
         led["client_ids"] = led["client_ids"][-5000:]
         led["rotation"] = self.rotation.to_dict()
+        if os.path.exists(self.ledger_path):
+            os.replace(self.ledger_path, self.ledger_path + ".bak")  # keep the last good copy
         _atomic_write_json(self.ledger_path, led)
 
     def reset(self, initial_capital: Optional[float] = None) -> None:
@@ -198,7 +267,9 @@ class PaperTrader:
     def _sell(self, pos: Position, ref_price: float, reason: str) -> Dict[str, Any]:
         cid = new_client_id()
         self.ledger["client_ids"].append(cid)
-        res = self.executor.market_order(pos.pair, "sell", pos.qty, ref_price, client_id=cid)
+        base_reason = reason.split(":", 1)[-1]
+        slip = self.settings.stop_slippage_pct if base_reason in STOP_REASONS else None
+        res = self.executor.market_order(pos.pair, "sell", pos.qty, ref_price, client_id=cid, slippage_pct=slip)
         if not res.ok:
             self.ledger["pending_exits"][pos.pair] = reason
             self.ledger["failed_orders"].append(res.to_dict())
@@ -209,7 +280,7 @@ class PaperTrader:
         if not sold_all:  # precision floor left dust; record the sold part
             pos_for_record = Position.from_dict({**pos.to_dict(), "qty": res.qty,
                                                  "entry_fee": pos.entry_fee * res.qty / pos.qty})
-        rec = close_trade_record(pos_for_record, res.price, fee_rate, res.timestamp, reason)
+        rec = close_trade_record(pos_for_record, res.price, fee_rate, self.now_fn().isoformat(), reason)
         rec["client_id"] = res.client_id
         self.ledger["cash"] += res.qty * res.price - res.fee
         self.ledger["trades"].append(rec)
@@ -224,7 +295,7 @@ class PaperTrader:
         return self._decide(pos.pair, "SELL", reason, price=res.price, qty=res.qty, pnl=rec["pnl"],
                             client_id=res.client_id)
 
-    def _buy(self, pair: str, row: pd.Series, ref_price: float) -> Dict[str, Any]:
+    def _buy(self, pair: str, row: pd.Series, ref_price: float, bar_volume: Optional[float] = None) -> Dict[str, Any]:
         rules = self.settings.exit_rules
         atr = float(row["ATR"])
         fee = self.executor.fee_for(pair)
@@ -233,7 +304,11 @@ class PaperTrader:
         size = self.risk.position_size(self.equity(), self.ledger["cash"], ref_price, stop,
                                        self.open_exposure(), fee,
                                        min_amount=info.min_amount if info else 0.0,
-                                       amount_precision=info.base_precision if info else None)
+                                       amount_precision=info.base_precision if info else None,
+                                       stop_slippage_pct=self.settings.stop_slippage_pct,
+                                       max_qty=(self.settings.max_volume_participation * bar_volume
+                                                if self.settings.max_volume_participation and bar_volume is not None
+                                                and bar_volume == bar_volume else None))
         meta = dict(signal=float(row["signal"]), confidence=float(row["confidence"]),
                     regime=str(row["regime"]), strategy=str(row["strategy"]), price=ref_price)
         if not size.ok:
@@ -246,7 +321,9 @@ class PaperTrader:
             return self._decide(pair, "BUY_FAILED", res.error, **meta)
         # Levels are set from the actual fill price.
         stop_fill = res.price - rules.stop_atr_mult * atr
-        pos = Position(pair=pair, qty=res.qty, entry_price=res.price, entry_time=res.timestamp, entry_fee=res.fee,
+        # Timestamps come from the trader's clock, the same one candles are compared against.
+        pos = Position(pair=pair, qty=res.qty, entry_price=res.price, entry_time=self.now_fn().isoformat(),
+                       entry_fee=res.fee,
                        atr_at_entry=atr, stop_loss=stop_fill, take_profit=res.price + rules.tp_atr_mult * atr,
                        trail_mult=rules.trail_atr_mult if rules.use_trailing else 0.0, highest=res.price,
                        trailing_stop=max(0.0, res.price - rules.trail_atr_mult * atr) if rules.use_trailing else 0.0,
@@ -272,7 +349,12 @@ class PaperTrader:
     def _step(self, pairs: List[str]) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         self._roll_day()
+        issues = self.reconcile()
+        self._entry_block = f"ledger reconciliation failed: {'; '.join(issues)}" if issues else ""
+        if issues:
+            logger.error(self._entry_block)
         for pair in pairs:
+            _touch(self.ledger_path + ".lock")  # heartbeat: a long step must not look like a crashed holder
             try:
                 out.extend(self._process_pair(pair))
             except Exception as exc:  # one bad pair must not stop the others
@@ -317,13 +399,19 @@ class PaperTrader:
                 self.ledger["last_bar"][pair] = last_ms
                 return decisions
             entry_ms = int(pd.Timestamp(pos.entry_time).value // 10**6)
-            new_bars = df[(df["created_at"] > (prev_ms or 0)) & (df["created_at"] >= entry_ms)] \
+            step_ms = INTERVAL_SECONDS.get(s.interval, 300) * 1000
+            # Every completed bar not yet processed that was open at or after the entry, including
+            # the bar the entry happened in (its pre-entry open is replaced by the entry price).
+            new_bars = df[(df["created_at"] > (prev_ms or 0)) & (df["created_at"] + step_ms > entry_ms)] \
                 if "created_at" in df.columns else df.tail(0)
             for _, bar in new_bars.iterrows():
-                reason, raw = check_exit(pos, bar["Open"], bar["High"], bar["Low"], s.exit_rules)
+                bar_open = pos.entry_price if bar["created_at"] < entry_ms else bar["Open"]
+                reason, raw = check_exit(pos, bar_open, bar["High"], bar["Low"], s.exit_rules)
                 if reason:
                     self._store_position(pos)
-                    decisions.append(self._sell(pos, raw if raw is not None else ref, reason))
+                    # We are executing now: never assume a better price than the current market.
+                    px = ref if raw is None else min(raw, ref)
+                    decisions.append(self._sell(pos, px, reason))
                     self.ledger["last_bar"][pair] = last_ms
                     return decisions
             self._store_position(pos)
@@ -348,8 +436,14 @@ class PaperTrader:
                                  f"{df.attrs.get('source', 'unknown')}); no new entries", price=ref)]
         meta = dict(signal=float(last["signal"]), confidence=float(last["confidence"]),
                     regime=str(last["regime"]), strategy=str(last["strategy"]), price=ref)
+        gaps = missing_candles(df, s.interval, last_n=s.gap_check_bars)
+        if gaps:
+            return [self._decide(pair, "DATA_GAP", f"{gaps} missing candle(s) in the last {s.gap_check_bars} bars; "
+                                 "indicators unreliable, no new entries", **meta)]
         if not bool(last["entry"]):
             return [self._decide(pair, "WAIT", "no entry signal", **meta)]
+        if getattr(self, "_entry_block", ""):
+            return [self._decide(pair, "BLOCKED", self._entry_block, **meta)]
         if s.trading_window.get("enabled") and not within_trading_hours({"trading_windows": s.trading_window},
                                                                          self.now_fn()):
             return [self._decide(pair, "SKIP", "outside configured trading window", **meta)]
@@ -363,13 +457,16 @@ class PaperTrader:
                 return [self._decide(pair, "FILTERED", f"ml proba {proba:.2f} < {s.ml_threshold}", **meta)]
         ok, why = self.risk.can_open(pair, list(self.ledger["positions"]), self.equity(),
                                      self.ledger["day_start_equity"], self.ledger["peak_equity"])
+        if ok:
+            ok, why = self.risk.costs_acceptable(ref, ref - s.exit_rules.stop_atr_mult * float(last["ATR"]),
+                                                 self.executor.fee_for(pair), s.slippage_pct, s.stop_slippage_pct)
         if not ok:
             return [self._decide(pair, "BLOCKED", why, **meta)]
-        return [self._buy(pair, last, ref)]
+        vol = float(df["Volume"].iloc[-1]) if "Volume" in df.columns else None
+        return [self._buy(pair, last, ref, vol)]
 
     def _is_stale(self, last_open_ms: int, interval: str) -> bool:
         """True if the newest completed candle is more than two intervals behind the clock."""
-        from core.coinex_client import INTERVAL_SECONDS
         step_ms = INTERVAL_SECONDS.get(interval, 300) * 1000
         now_ms = int(self.now_fn().timestamp() * 1000)
         return now_ms - (last_open_ms + step_ms) > 2 * step_ms

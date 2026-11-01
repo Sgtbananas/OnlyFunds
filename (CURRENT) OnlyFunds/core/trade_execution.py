@@ -79,7 +79,7 @@ class PaperExecutor:
         return max(self.fee_rate, info.taker_fee_rate) if info else self.fee_rate
 
     def market_order(self, pair: str, side: str, qty: float, ref_price: float,
-                     client_id: Optional[str] = None) -> OrderResult:
+                     client_id: Optional[str] = None, slippage_pct: Optional[float] = None) -> OrderResult:
         client_id = client_id or new_client_id()
         now = datetime.now(timezone.utc).isoformat()
         base = dict(client_id=client_id, pair=pair, side=side, timestamp=now)
@@ -107,7 +107,7 @@ class PaperExecutor:
         if self.failure_rate and self._rng.random() < self.failure_rate:
             return OrderResult(ok=False, qty=0, price=0, fee=0, status="failed",
                                error="simulated exchange failure", **base)
-        fill = apply_slippage(ref_price, side, self.slippage_pct)
+        fill = apply_slippage(ref_price, side, self.slippage_pct if slippage_pct is None else slippage_pct)
         fee = qty * fill * self.fee_for(pair)
         return OrderResult(ok=True, qty=qty, price=fill, fee=fee, status="filled",
                            order_id=f"PAPER-{uuid.uuid4().hex[:10]}", **base)

@@ -21,11 +21,14 @@ import numpy as np
 import pandas as pd
 
 from core.core_signals import generate_signals
+from core.data_quality import missing_candles
 from core.indicators import validate_ohlcv, warmup_bars
 from core.positions import ExitRules, Position, apply_slippage, check_exit, close_trade_record, open_position
 from core.risk_manager import RiskLimits, RiskManager
 
 logger = logging.getLogger(__name__)
+
+STOP_REASONS = ("stop_loss", "trailing_stop")
 
 BARS_PER_YEAR = {"1m": 525600, "3m": 175200, "5m": 105120, "15m": 35040, "30m": 17520, "1h": 8760,
                  "2h": 4380, "4h": 2190, "6h": 1460, "12h": 730, "1d": 365, "3d": 122, "1w": 52}
@@ -36,6 +39,8 @@ class BacktestConfig:
     initial_capital: float = 1000.0
     fee_rate: float = 0.002          # CoinEx default spot taker fee
     slippage_pct: float = 0.0005
+    stop_slippage_pct: float = 0.002  # stops trigger in fast markets: assume a worse fill than normal exits
+    max_volume_participation: Optional[float] = 0.10  # max fraction of the signal bar's base volume
     strategy: str = "auto"
     threshold: float = 0.35
     ml_threshold: float = 0.55
@@ -96,6 +101,8 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
     risk = RiskManager(cfg.risk)
     fee, slip = cfg.fee_rate, cfg.slippage_pct
     opens, highs, lows, closes = (df[c].to_numpy(float) for c in ("Open", "High", "Low", "Close"))
+    volumes = df["Volume"].to_numpy(float) if "Volume" in df.columns else None
+    stop_slip = cfg.stop_slippage_pct
     atr = sig["ATR"].to_numpy(float)
     days = (pd.to_datetime(df["timestamp"], utc=True).dt.date.to_numpy() if "timestamp" in df.columns
             else np.zeros(len(df), dtype=int))
@@ -125,8 +132,11 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
             atr_v = pending_meta["atr"]
             rules = cfg.exit_rules
             stop = fill - rules.stop_atr_mult * atr_v
-            equity_now = cash
-            size = risk.position_size(equity_now, cash, fill, stop, 0.0, fee)
+            max_qty = None
+            if cfg.max_volume_participation and volumes is not None and np.isfinite(volumes[i - 1]):
+                max_qty = cfg.max_volume_participation * volumes[i - 1]  # signal bar: known at decision time
+            size = risk.position_size(cash, cash, fill, stop, 0.0, fee, stop_slippage_pct=stop_slip,
+                                      max_qty=max_qty)
             if size.ok:
                 pos = open_position(pair, size.qty, fill, fee, atr_v, rules, _ts(df, i),
                                     pending_meta["strategy"], pending_meta["regime"], pending_meta["confidence"])
@@ -149,8 +159,9 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
         if pos is not None:
             reason, raw = check_exit(pos, opens[i], highs[i], lows[i], cfg.exit_rules)
             if reason and raw is not None:
-                # Market-order exit, same as the paper executor: always adverse slippage.
-                fill = apply_slippage(raw, "sell", slip)
+                # Market-order exit, same as the paper executor: always adverse slippage,
+                # wider for stops (they trigger when price is moving against us).
+                fill = apply_slippage(raw, "sell", stop_slip if reason in STOP_REASONS else slip)
                 rec = close_trade_record(pos, fill, fee, _ts(df, i), reason)
                 cash += pos.qty * fill - rec["exit_fee"]
                 fees_paid += rec["exit_fee"]
@@ -162,9 +173,10 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
 
         # 3) mark to market and decide at the close
         equity = cash + (pos.market_value(closes[i]) if pos else 0.0)
+        equity_low = cash + (pos.market_value(lows[i]) if pos else 0.0)  # worst mark inside the bar
         peak = max(peak, equity)
-        equity_rows.append({"bar": i, "time": _ts(df, i), "equity": equity, "cash": cash,
-                            "in_position": pos is not None})
+        equity_rows.append({"bar": i, "time": _ts(df, i), "equity": equity, "equity_low": min(equity, equity_low),
+                            "cash": cash, "in_position": pos is not None})
         if i < start or i == len(df) - 1 or pending:
             continue
         if risk.drawdown_hit(equity, peak) and not halted_reason:
@@ -181,6 +193,9 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
                                   "reason": f"ml proba {ml.iloc[i]:.2f} < {cfg.ml_threshold}", "price": closes[i]})
                 continue
             ok, why = risk.can_open(pair, [], equity, day_start_equity, peak, check_kill_switch=False)
+            if ok:
+                ok, why = risk.costs_acceptable(closes[i], closes[i] - cfg.exit_rules.stop_atr_mult * atr[i],
+                                                fee, slip, stop_slip)
             if not ok:
                 decisions.append({"bar": i, "time": _ts(df, i), "action": "BLOCKED", "reason": why,
                                   "price": closes[i]})
@@ -200,6 +215,7 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
             fees_paid += rec["exit_fee"]
             trades.append(rec)
             equity_rows[-1]["equity"] = cash
+            equity_rows[-1]["equity_low"] = min(equity_rows[-1]["equity_low"], cash)
             equity_rows[-1]["cash"] = cash
             pos = None
         else:
@@ -208,23 +224,30 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
 
     trades_df = pd.DataFrame(trades)
     equity_df = pd.DataFrame(equity_rows)
-    metrics = compute_metrics(trades_df, equity_df, cfg, df, unrealised, fees_paid)
+    metrics = compute_metrics(trades_df, equity_df, cfg, df, unrealised, fees_paid, start=start)
     metrics["halted"] = halted_reason
     return BacktestResult(pair=pair, trades=trades_df, equity=equity_df, metrics=metrics,
                           decisions=pd.DataFrame(decisions), open_position=open_pos_dict)
 
 
 def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame, cfg: BacktestConfig, df: pd.DataFrame,
-                    unrealised: float = 0.0, fees_paid: float = 0.0) -> Dict[str, Any]:
+                    unrealised: float = 0.0, fees_paid: float = 0.0, start: int = 0) -> Dict[str, Any]:
     init = cfg.initial_capital
     final_equity = float(equity["equity"].iloc[-1]) if not equity.empty else init
     curve = equity["equity"].to_numpy(float) if not equity.empty else np.array([init])
-    peak = np.maximum.accumulate(curve)
-    max_dd = float(np.max((peak - curve) / peak) * 100) if len(curve) else 0.0
+    lows = equity["equity_low"].to_numpy(float) if "equity_low" in equity else curve
+    # Drawdown: running peak of closing equity vs the worst intrabar mark of each bar.
+    prev_peak = np.maximum.accumulate(np.r_[init, curve[:-1]])
+    max_dd = float(np.max(np.maximum(prev_peak - lows, 0) / prev_peak) * 100) if len(curve) else 0.0
     bar_ret = np.diff(curve) / curve[:-1] if len(curve) > 1 else np.array([])
     ann = BARS_PER_YEAR.get(cfg.interval, 105120)
-    sharpe = float(np.mean(bar_ret) / np.std(bar_ret) * np.sqrt(ann)) if len(bar_ret) > 1 and np.std(bar_ret) > 0 else 0.0
+    sd = np.std(bar_ret) if len(bar_ret) > 1 else 0.0
+    sharpe = float(np.mean(bar_ret) / sd * np.sqrt(ann)) if sd > 0 else 0.0
+    downside = bar_ret[bar_ret < 0]
+    dsd = np.sqrt(np.mean(downside ** 2)) if len(downside) else 0.0
+    sortino = float(np.mean(bar_ret) / dsd * np.sqrt(ann)) if dsd > 0 else 0.0
     n = len(trades)
+    by_regime = {}
     if n:
         pnl = trades["pnl"]
         wins, losses = pnl[pnl > 0], pnl[pnl <= 0]
@@ -236,21 +259,42 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame, cfg: BacktestCon
         avg_win = float(trades.loc[pnl > 0, "return_pct"].mean()) if len(wins) else 0.0
         avg_loss = float(trades.loc[pnl <= 0, "return_pct"].mean()) if len(losses) else 0.0
         exit_reasons = trades["exit_reason"].value_counts().to_dict()
+        expectancy = float(pnl.mean())
+        for reg, g in trades.groupby(trades["regime"].fillna("unknown")):
+            by_regime[str(reg)] = {"trades": int(len(g)), "pnl": float(g["pnl"].sum()),
+                                   "win_rate_pct": float((g["pnl"] > 0).mean() * 100),
+                                   "expectancy": float(g["pnl"].mean())}
     else:
-        profit_factor = realised = win_rate = avg_ret = avg_win = avg_loss = 0.0
+        profit_factor = realised = win_rate = avg_ret = avg_win = avg_loss = expectancy = 0.0
         exit_reasons = {}
-    first_close = float(df["Close"].iloc[0])
-    bh = (float(df["Close"].iloc[-1]) / first_close - 1) * 100 if first_close else 0.0
-    exposure = float(equity["in_position"].mean() * 100) if not equity.empty else 0.0
+    # Buy-and-hold over the same tradable window, paying the same entry/exit costs.
+    first = min(start + 1, len(df) - 1)
+    o = float(df["Open"].iloc[first])
+    c = float(df["Close"].iloc[-1])
+    s_, f_ = cfg.slippage_pct, cfg.fee_rate
+    bh = (c * (1 - s_) * (1 - f_) / (o * (1 + s_) * (1 + f_)) - 1) * 100 if o > 0 else 0.0
+    exposure = float(equity["in_position"].iloc[start:].mean() * 100) if len(equity) > start else 0.0
+    days = _span_days(df, first)
+    total_ret = (final_equity / init - 1) * 100
     return {
-        "initial_capital": init, "final_equity": final_equity,
-        "total_return_pct": (final_equity / init - 1) * 100,
+        "initial_capital": init, "final_equity": final_equity, "total_return_pct": total_ret,
         "realised_pnl": realised, "unrealised_pnl": float(unrealised), "fees_paid": float(fees_paid),
-        "trades": n, "win_rate_pct": win_rate, "avg_return_pct": avg_ret,
-        "avg_win_pct": avg_win, "avg_loss_pct": avg_loss, "profit_factor": profit_factor,
-        "max_drawdown_pct": max_dd, "sharpe": sharpe, "exposure_pct": exposure,
-        "buy_and_hold_return_pct": bh, "bars": len(df), "exit_reasons": exit_reasons,
+        "trades": n, "trades_per_day": n / days if days > 0 else 0.0,
+        "win_rate_pct": win_rate, "avg_return_pct": avg_ret, "avg_win_pct": avg_win, "avg_loss_pct": avg_loss,
+        "expectancy": expectancy, "profit_factor": profit_factor,
+        "max_drawdown_pct": max_dd, "return_over_max_dd": total_ret / max_dd if max_dd > 0 else 0.0,
+        "sharpe": sharpe, "sortino": sortino, "exposure_pct": exposure,
+        "buy_and_hold_return_pct": bh, "bars": len(df), "tradable_bars": max(0, len(df) - first),
+        "missing_candles": missing_candles(df, cfg.interval), "exit_reasons": exit_reasons,
+        "by_regime": by_regime,
     }
+
+
+def _span_days(df: pd.DataFrame, first: int) -> float:
+    if "timestamp" in df.columns and len(df) > first:
+        t = pd.to_datetime(df["timestamp"], utc=True)
+        return max((t.iloc[-1] - t.iloc[first]).total_seconds() / 86400, 0.0)
+    return 0.0
 
 
 def train_test_split_time(df: pd.DataFrame, train_frac: float = 0.7, gap: int = 0):

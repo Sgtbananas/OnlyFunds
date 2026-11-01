@@ -15,7 +15,8 @@ def df():
 
 
 def cfg(**kw):
-    base = dict(strategy="auto", risk=RiskLimits(kill_switch_file="", max_drawdown_pct=1.0, max_daily_loss_pct=1.0))
+    base = dict(strategy="auto", risk=RiskLimits(kill_switch_file="", max_drawdown_pct=1.0, max_daily_loss_pct=1.0,
+                                                 max_cost_to_risk=10.0))  # mechanics test on 5m data: cost filter off
     base.update(kw)
     return BacktestConfig(**base)
 
@@ -91,12 +92,14 @@ def test_single_trade_exact_pnl():
     sig.loc[100, "entry"] = True
     atr = sig["ATR"].iloc[100]
     c = cfg(fee_rate=0.001, slippage_pct=0.0, exit_rules=ExitRules(1.0, 2.0, 1.0, use_trailing=False),
-            risk=RiskLimits(kill_switch_file="", risk_per_trade=0.01, max_position_pct=1.0, max_exposure_pct=1.0))
+            risk=RiskLimits(kill_switch_file="", risk_per_trade=0.01, max_position_pct=1.0, max_exposure_pct=1.0,
+                            max_cost_to_risk=10.0))
     res = run_backtest(data, c, "S", signals=sig)
     assert len(res.trades) == 1
     t = res.trades.iloc[0]
-    qty = 1000 * 0.01 / (1.0 * atr)
-    qty = min(qty, 1000 / (100 * 1.001))
+    stop = 100 - 1.0 * atr
+    loss_per_unit = 100 * 1.001 - stop * (1 - c.stop_slippage_pct) * 0.999  # fees + stop slippage budgeted
+    qty = min(1000 * 0.01 / loss_per_unit, 1000 / (100 * 1.001))
     tp = 100 + 2 * atr
     assert t["exit_reason"] == "take_profit"
     assert t["qty"] == pytest.approx(qty)
@@ -112,7 +115,7 @@ def test_ml_gate_blocks_entries(df):
 
 
 def test_drawdown_halt_stops_new_entries(df):
-    res = run_backtest(df, cfg(risk=RiskLimits(kill_switch_file="", max_drawdown_pct=0.005)), "S")
+    res = run_backtest(df, cfg(risk=RiskLimits(kill_switch_file="", max_drawdown_pct=0.005, max_cost_to_risk=10.0)), "S")
     if res.metrics["halted"]:
         halt_bar = res.decisions.loc[res.decisions["action"] == "HALT", "bar"].iloc[0]
         assert not ((res.decisions["action"] == "BUY") & (res.decisions["bar"] > halt_bar + 1)).any()
