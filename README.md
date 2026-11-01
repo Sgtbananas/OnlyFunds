@@ -25,6 +25,14 @@ Headless paper trading (same ledger as the app):
 python run_paper.py --pairs BTCUSDT ETHUSDT --interval 1h
 ```
 
+Forward paper trading on **live Binance public data** (no orders, no keys; entries only for strategies approved by
+a v2 validation run, and there are none today, so it observes, logs and shadow-tracks):
+
+```bat
+python run_forward_paper.py --symbols BTCUSDT ETHUSDT --interval 1h --websocket
+python run_forward_paper.py --interval 1h --report
+```
+
 Tests:
 
 ```bat
@@ -51,5 +59,8 @@ python -m pytest
 
 Configuration: `(CURRENT) OnlyFunds/config/config.yaml`. API keys are read only from environment
 variables / `.env` (see `.env.example`) and are needed only for the optional balance check.
+
+Validation: v1 results are frozen (`docs/validation/`); new validations use `scripts/validation_run.py` under
+`docs/VALIDATION_PROTOCOL_V2.md`. Live data and forward paper: `docs/LIVE_DATA_AND_FORWARD_PAPER.md`.
 
 Full audit, fixes and known limitations: `(CURRENT) OnlyFunds/docs/AUDIT_REPORT.md`.

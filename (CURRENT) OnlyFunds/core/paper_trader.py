@@ -162,8 +162,14 @@ class PaperTrader:
                  data_fn: Optional[Callable[[str, str, int], pd.DataFrame]] = None,
                  price_fn: Optional[Callable[[str], float]] = None,
                  executor: Optional[PaperExecutor] = None, ml_bundle: Optional[Dict] = None,
-                 now_fn: Callable[[], datetime] = _now):
+                 now_fn: Callable[[], datetime] = _now, quote_fn: Optional[Callable[[str], Any]] = None,
+                 entry_gate: Optional[Callable[[str, pd.Series, pd.DataFrame], Any]] = None,
+                 on_rejected: Optional[Callable[[Dict[str, Any]], None]] = None):
+        """``quote_fn(pair)`` -> object with ``bid``/``ask`` (raise to signal stale/unavailable): buys fill at
+        the ask, sells at the bid. ``entry_gate(pair, last_signal_row, candles)`` -> (allowed, reason).
+        ``on_rejected(record)`` is called for every entry signal that was not taken (shadow tracking)."""
         self.settings = settings
+        self.quote_fn, self.entry_gate, self.on_rejected = quote_fn, entry_gate, on_rejected
         self.ledger_path = os.path.join(state_dir, "paper_ledger.json")
         if data_fn is None:
             from core.core_data import fetch_klines
@@ -383,20 +389,34 @@ class PaperTrader:
         prev_ms = self.ledger["last_bar"].get(pair)
         new_bar = prev_ms is None or last_ms > prev_ms
         ref = None
-        if self.price_fn is not None:
+        quote_problem = ""
+        bid = ask = None
+        if self.quote_fn is not None:
+            try:
+                q = self.quote_fn(pair)
+                bid, ask = float(q.bid), float(q.ask)
+                if not (0 < bid < ask):
+                    raise ValueError(f"invalid quote {bid}/{ask}")
+                ref = (bid + ask) / 2
+            except Exception as exc:
+                quote_problem = f"no fresh quote ({type(exc).__name__}: {exc})"
+                bid = ask = None
+        elif self.price_fn is not None:
             try:
                 ref = float(self.price_fn(pair))
             except Exception as exc:
                 logger.warning("ticker failed for %s: %s; using last close", pair, exc)
         if not ref or ref <= 0:
             ref = float(df["Close"].iloc[-1])
+        ref_sell = bid if bid else ref   # selling hits the bid
+        ref_buy = ask if ask else ref    # buying lifts the ask
         self.ledger["last_prices"][pair] = ref
         decisions: List[Dict[str, Any]] = []
 
         pos = self.positions.get(pair)
         if pos is not None:
             if pair in self.ledger["pending_exits"]:
-                decisions.append(self._sell(pos, ref, "retry:" + self.ledger["pending_exits"][pair]))
+                decisions.append(self._sell(pos, ref_sell, "retry:" + self.ledger["pending_exits"][pair]))
                 self.ledger["last_bar"][pair] = last_ms
                 return decisions
             entry_ms = int(pd.Timestamp(pos.entry_time).value // 10**6)
@@ -411,18 +431,18 @@ class PaperTrader:
                 if reason:
                     self._store_position(pos)
                     # We are executing now: never assume a better price than the current market.
-                    px = ref if raw is None else min(raw, ref)
+                    px = ref_sell if raw is None else min(raw, ref_sell)
                     decisions.append(self._sell(pos, px, reason))
                     self.ledger["last_bar"][pair] = last_ms
                     return decisions
             self._store_position(pos)
-            if ref <= pos.effective_stop:
-                decisions.append(self._sell(pos, ref, "trailing_stop" if pos.trailing_stop > pos.stop_loss
+            if ref_sell <= pos.effective_stop:
+                decisions.append(self._sell(pos, ref_sell, "trailing_stop" if pos.trailing_stop > pos.stop_loss
                                             else "stop_loss"))
-            elif ref >= pos.take_profit:
-                decisions.append(self._sell(pos, ref, "take_profit"))
+            elif ref_sell >= pos.take_profit:
+                decisions.append(self._sell(pos, ref_sell, "take_profit"))
             elif new_bar and bool(last["exit"]):
-                decisions.append(self._sell(pos, ref, "signal_exit"))
+                decisions.append(self._sell(pos, ref_sell, "signal_exit"))
             elif new_bar:
                 decisions.append(self._decide(pair, "HOLD", "position open", signal=float(last["signal"]),
                                               price=ref, regime=str(last["regime"])))
@@ -432,39 +452,61 @@ class PaperTrader:
         if not new_bar:
             return decisions
         self.ledger["last_bar"][pair] = last_ms
-        if self._is_stale(last_ms, s.interval):
-            return [self._decide(pair, "DATA_STALE", f"latest candle too old (source: "
-                                 f"{df.attrs.get('source', 'unknown')}); no new entries", price=ref)]
         meta = dict(signal=float(last["signal"]), confidence=float(last["confidence"]),
-                    regime=str(last["regime"]), strategy=str(last["strategy"]), price=ref)
+                    regime=str(last["regime"]), strategy=str(last["strategy"]), price=ref,
+                    candle_ms=last_ms, atr=float(last["ATR"]) if last["ATR"] == last["ATR"] else None,
+                    ask=ask, bid=bid)
+        is_opportunity = bool(last["entry"])
+
+        def reject(action: str, reason: str) -> List[Dict[str, Any]]:
+            rec = self._decide(pair, action, reason, **meta)
+            if is_opportunity and self.on_rejected is not None:
+                self.on_rejected({**rec, "interval": s.interval, "ref_buy": ref_buy})
+            return [rec]
+
+        if self._is_stale(last_ms, s.interval):
+            return reject("DATA_STALE", f"latest candle too old (source: {df.attrs.get('source', 'unknown')}); "
+                                        "no new entries")
         gaps = missing_candles(df, s.interval, last_n=s.gap_check_bars)
         if gaps:
-            return [self._decide(pair, "DATA_GAP", f"{gaps} missing candle(s) in the last {s.gap_check_bars} bars; "
-                                 "indicators unreliable, no new entries", **meta)]
-        if not bool(last["entry"]):
+            return reject("DATA_GAP", f"{gaps} missing candle(s) in the last {s.gap_check_bars} bars; "
+                                      "indicators unreliable, no new entries")
+        if not is_opportunity:
             return [self._decide(pair, "WAIT", "no entry signal", **meta)]
+        if quote_problem:
+            return reject("DATA_STALE", quote_problem)
         if getattr(self, "_entry_block", ""):
-            return [self._decide(pair, "BLOCKED", self._entry_block, **meta)]
+            return reject("BLOCKED", self._entry_block)
+        if self.entry_gate is not None:
+            allowed, why = self.entry_gate(pair, last, df)
+            if not allowed:
+                return reject("REJECTED", why)
         if s.trading_window.get("enabled") and not within_trading_hours({"trading_windows": s.trading_window},
                                                                          self.now_fn()):
-            return [self._decide(pair, "SKIP", "outside configured trading window", **meta)]
+            return reject("SKIP", "outside configured trading window")
         if self.rotation.is_benched(meta["strategy"], self.now_fn()):
-            return [self._decide(pair, "SKIP", f"strategy {meta['strategy']} benched by rotation", **meta)]
+            return reject("SKIP", f"strategy {meta['strategy']} benched by rotation")
         if s.use_ml and self.ml_bundle is not None:
             from core.ml_filter import predict_proba
             proba = float(predict_proba(self.ml_bundle, sig).iloc[-1])
             meta["ml_proba"] = proba
             if not proba >= s.ml_threshold:
-                return [self._decide(pair, "FILTERED", f"ml proba {proba:.2f} < {s.ml_threshold}", **meta)]
+                return reject("FILTERED", f"ml proba {proba:.2f} < {s.ml_threshold}")
         ok, why = self.risk.can_open(pair, list(self.ledger["positions"]), self.equity(),
                                      self.ledger["day_start_equity"], self.ledger["peak_equity"])
         if ok:
-            ok, why = self.risk.costs_acceptable(ref, ref - s.exit_rules.stop_atr_mult * float(last["ATR"]),
+            ok, why = self.risk.costs_acceptable(ref_buy, ref_buy - s.exit_rules.stop_atr_mult * float(last["ATR"]),
                                                  self.executor.fee_for(pair), s.slippage_pct, s.stop_slippage_pct)
         if not ok:
-            return [self._decide(pair, "BLOCKED", why, **meta)]
+            return reject("BLOCKED", why)
         vol = float(df["Volume"].iloc[-1]) if "Volume" in df.columns else None
-        return [self._buy(pair, last, ref, vol)]
+        out = self._buy(pair, last, ref_buy, vol)
+        out.setdefault("bid", bid)       # the quote the fill was made against (execution-quality monitoring)
+        out.setdefault("ask", ask)
+        if out["action"] != "BUY" and self.on_rejected is not None:
+            self.on_rejected({**out, **{k: v for k, v in meta.items() if k not in out},
+                              "interval": s.interval, "ref_buy": ref_buy})
+        return [out]
 
     def _is_stale(self, last_open_ms: int, interval: str) -> bool:
         """True if the newest completed candle is more than two intervals behind the clock."""

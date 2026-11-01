@@ -59,3 +59,14 @@ it. Live trading stays disabled throughout. ✅ = done and covered by tests; ⏳
   - is `/v2` part of the signed path?
 - ⏳ Read-only key: balance, then a signed pending-order query
 - ⏳ Everything in `LIVE_TRADING_CHECKLIST.md` before any unlock
+
+## 9. Audit remediation, live data and forward paper (2026-11-01)
+- ✅ P1–P4 fixed: provenance fingerprint, immutable runs, VAL eligibility gate, ML promotion rules (`AUDIT_REPORT_4_REMEDIATION.md`)
+- ✅ Historical data: 1h / 4h / 1d, cost provenance in manifests, datasets never silently replaced
+- ✅ Live Binance public data: REST + WebSocket, staleness, gaps, rate limits, malformed data
+- ✅ Regime detector: describes the recent past, **no predictive value** (`REGIME_STUDY.md`)
+- ✅ Forward paper engine: bid/ask fills, evidence-gated selection (inactive: nothing approved), shadow tracking of
+  rejected opportunities, observation log, separated monitoring
+- ⏳ Forward evidence: needs weeks of running to reach meaningful sample sizes
+- ⏳ New strategy research, judged by the v2 protocol on data after 2026-10 (a fresh TEST window)
+- ⏳ CoinEx (final stage)
