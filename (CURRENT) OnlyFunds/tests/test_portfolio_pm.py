@@ -93,7 +93,7 @@ def test_correlation_uses_only_past_returns(inputs):
 def test_pm_code_is_isolated_from_frozen_and_experimental_fingerprints():
     import forward_experimental as FE
     import forward_shadow as FS
-    for f in ("portfolio_pm.py", "round3_pm.py", "reconcile.py"):
+    for f in ("portfolio_pm.py", "round3_pm.py", "reconcile.py", "portfolio_engine.py", "regime_engine.py", "round4.py"):
         p = os.path.join(ROOT, "research", f)
         if not os.path.exists(p):
             continue
