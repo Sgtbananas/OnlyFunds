@@ -37,7 +37,9 @@ class Session:
 
 
 def client(responses):
-    return L.BinancePublicClient(session=Session(responses), sleep=lambda s: None, min_interval=0)
+    c = L.BinancePublicClient(session=Session(responses), sleep=lambda s: None, min_interval=0)
+    c._synced_at = __import__("time").monotonic()     # treat the fake clock as already synced
+    return c
 
 
 def kline_row(t, o=100.0, h=101.0, l=99.0, c=100.5, v=10.0):
@@ -189,3 +191,37 @@ def test_same_completed_candles_give_same_signals_in_both_pipelines():
     for col in ("signal", "confidence", "entry", "exit", "regime", "strategy", "ATR", "rsi"):
         assert (a[col].astype(str) == b[col].astype(str)).all() if a[col].dtype == object else \
             np.allclose(a[col].astype(float), b[col].astype(float), equal_nan=True), col
+
+
+
+# ------------------------------------------------------------------ deployment hardening
+def test_only_allowlisted_market_data_endpoints():
+    c = client([])
+    for path in ("/api/v3/order", "/api/v3/order/test", "/sapi/v1/capital/withdraw/apply", "/api/v3/account"):
+        with pytest.raises(PermissionError):
+            c._get(path)
+    assert c.session.calls == []
+
+
+def test_completeness_uses_exchange_clock():
+    rows = [kline_row(k * H) for k in range(3)]
+    c = client([Resp(rows), Resp({"serverTime": 3 * H + 10})])   # klines fetched first, then the clock sync
+    c._synced_at = 0                                   # force a sync
+    real = L.utc_now_ms
+    L.utc_now_ms = lambda: 2 * H + 10                  # local clock one hour behind the exchange
+    try:
+        df = c.klines("BTCUSDT", "1h", 3)
+    finally:
+        L.utc_now_ms = real
+    assert len(df) == 3                                # exchange clock says all three candles are complete
+
+
+def test_long_gap_backfilled_in_pages_never_fabricated():
+    rows = [kline_row(k * H) for k in range(3)] + [kline_row(2500 * H)]
+    page1 = [kline_row(k * H) for k in range(3, 1003)]
+    page2 = [kline_row(k * H) for k in range(1003, 1500)]          # exchange has nothing after 1499
+    c = client([Resp(rows), Resp(page1), Resp(page2), Resp([])])
+    lm = L.LiveMarket(["BTCUSDT"], "1h", client=c, history=5000)
+    df = lm.refresh_candles("BTCUSDT")
+    assert len(df) == 1501 and lm.health["recovered_candles"] == 1497
+    assert lm.buffers["BTCUSDT"].missing_in_last(5000) == 2500 - 1500  # still missing, not invented

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.run_store import DEFAULT_ROOT
+from core.monitoring import read_json
 
 NO_TRADE = None
 
@@ -54,7 +55,7 @@ def load_approvals(root: str = DEFAULT_ROOT) -> List[Approval]:
             el_p = os.path.join(pdir, run, "stage1", "eligibility.json")
             if not (os.path.exists(res_p) and os.path.exists(el_p)):
                 continue
-            res, elig = json.load(open(res_p, encoding="utf-8")), json.load(open(el_p, encoding="utf-8"))
+            res, elig = read_json(res_p), read_json(el_p)
             for row in res.get("evaluated", []):
                 d = elig.get(row["candidate"], {})
                 if row.get("credible_edge") and d.get("eligible"):

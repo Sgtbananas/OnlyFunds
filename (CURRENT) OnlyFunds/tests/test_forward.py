@@ -115,6 +115,32 @@ def test_restart_continues_without_duplicates(tmp_path):
     assert eng2.state["steps"] == 101
 
 
+class _Killed(BaseException):
+    """Abrupt process death: nothing after it runs (not caught by ``except Exception``)."""
+
+
+@pytest.mark.parametrize("kill_point", ["trader_step", "engine_state_write"])
+def test_kill_mid_step_then_restart_no_duplicate_or_missing_candle(tmp_path, monkeypatch, kill_point):
+    import core.forward as fw
+    live = FakeLive()
+    eng = engine(tmp_path, live)
+    run(eng, live, 30)
+    if kill_point == "trader_step":
+        eng.trader.step = lambda *a, **k: (_ for _ in ()).throw(_Killed())
+    else:
+        real = fw._atomic_write_json
+        monkeypatch.setattr(fw, "_atomic_write_json", lambda p, d: (_ for _ in ()).throw(_Killed())
+                            if p.endswith("engine_state.json") else real(p, d))
+    with pytest.raises(_Killed):
+        eng.step()                      # observation of candle 31 appended, then the process dies
+    monkeypatch.undo()
+    engine(tmp_path, live).step()       # restart on the same candle
+    obs = [json.loads(x) for f in os.listdir(tmp_path / "observations")
+           for x in open(tmp_path / "observations" / f) if x.strip()]
+    keys = [(o["pair"], o["candle"]["created_at"]) for o in obs]
+    assert len(keys) == len(set(keys)) == 31
+
+
 # ---------------------------------------------------------------- with an approval (test-only)
 def approve_all(strategy):
     return StrategySelector([Approval(strategy, "fixed", None, "test", "run", 0.2, 500,

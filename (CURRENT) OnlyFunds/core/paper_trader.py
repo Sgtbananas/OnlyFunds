@@ -56,6 +56,60 @@ STOP_REASONS = ("stop_loss", "trailing_stop", "emergency_stop")
 REQUIRED_KEYS = {"cash": (int, float), "initial_capital": (int, float), "positions": dict, "trades": list}
 
 
+def pid_alive(pid: int) -> bool:
+    """Whether a process id is running (Windows and POSIX). Unknown -> assume alive (safe)."""
+    if pid <= 0:
+        return False
+    try:
+        import psutil  # optional
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
+        k32.CloseHandle(h)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _lock_holder_dead(lock: str) -> bool:
+    try:
+        with open(lock, encoding="utf-8") as f:
+            pid = int((f.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        return False
+    return pid > 0 and pid != os.getpid() and not pid_alive(pid)
+
+
+def _release_lock(lock: str, attempts: int = 200) -> None:
+    """Remove our lock file. On Windows another process may be reading the holder pid at this instant
+    (``_lock_holder_dead``), which makes removal fail briefly; retry for ~1 s, then raise."""
+    for _ in range(attempts):
+        try:
+            os.remove(lock)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.005)
+    try:
+        os.remove(lock)
+    except FileNotFoundError:
+        pass
+
+
 def _touch(path: str) -> None:
     try:
         os.utime(path, None)
@@ -78,7 +132,7 @@ def ledger_lock(path: str, stale_after: Optional[float] = None):
         except (FileNotFoundError, PermissionError):
             # The holder released the lock between our two calls: just report busy, never crash.
             raise LedgerBusy("paper ledger lock changed hands; try again")
-        if age > stale_after:
+        if age > stale_after or _lock_holder_dead(lock):  # crashed holder: recover immediately
             try:
                 os.remove(lock)  # holder crashed
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -91,10 +145,7 @@ def ledger_lock(path: str, stale_after: Optional[float] = None):
         os.close(fd)
         yield
     finally:
-        try:
-            os.remove(lock)
-        except FileNotFoundError:
-            pass
+        _release_lock(lock)
 
 
 @dataclass
@@ -222,10 +273,26 @@ class PaperTrader:
                                 + ". Inspect or move the file, or use quarantine_ledger() to start a new one.")
         return new_ledger(self.settings.initial_capital)
 
+    def _archive_overflow(self, key: str, keep: int) -> None:
+        """Move the oldest records beyond ``keep`` to an append-only archive (evidence is never deleted)."""
+        rows = self.ledger.get(key, [])
+        if len(rows) <= keep:
+            return
+        overflow, self.ledger[key] = rows[:-keep], rows[-keep:]
+        path = os.path.join(os.path.dirname(self.ledger_path), "archive", f"{key}.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            for r in overflow:
+                f.write(json.dumps(r, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self.ledger.setdefault("archived_counts", {})
+        self.ledger["archived_counts"][key] = self.ledger["archived_counts"].get(key, 0) + len(overflow)
+
     def save(self) -> None:
         led = self.ledger
-        led["decisions"] = led["decisions"][-MAX_DECISIONS:]
-        led["equity_history"] = led["equity_history"][-MAX_EQUITY_POINTS:]
+        self._archive_overflow("decisions", MAX_DECISIONS)
+        self._archive_overflow("equity_history", MAX_EQUITY_POINTS)
         led["client_ids"] = led["client_ids"][-5000:]
         led["rotation"] = self.rotation.to_dict()
         if os.path.exists(self.ledger_path):

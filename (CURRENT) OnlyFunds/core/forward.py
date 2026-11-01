@@ -30,6 +30,7 @@ from core.positions import ExitRules, Position, apply_slippage, check_exit, plan
 from core.regime import RegimeParams, detect
 from core.selection import StrategySelector
 from core.trade_execution import LIVE_TRADING_LOCKED, PaperExecutor
+from core.monitoring import read_json
 
 logger = logging.getLogger(__name__)
 STOP_REASONS = ("stop_loss", "trailing_stop")
@@ -122,8 +123,9 @@ class ForwardPaperEngine:
         self.shadow = ShadowTracker(os.path.join(state_dir, "shadow.json"), settings.exit_rules, settings.fee_rate,
                                     settings.slippage_pct, settings.stop_slippage_pct)
         self.state_path = os.path.join(state_dir, "engine_state.json")
-        self.state = json.load(open(self.state_path, encoding="utf-8")) if os.path.exists(self.state_path) \
+        self.state = read_json(self.state_path) if os.path.exists(self.state_path) \
             else {"last_observed_ms": {}, "steps": 0, "errors": 0}
+        self._sync_observed_from_disk()
         self._regime: Dict[str, Dict[str, Any]] = {}
         self.trader = PaperTrader(settings, os.path.join(state_dir, "paper"),
                                   data_fn=lambda p, iv, n: self.live.completed_klines(p, iv, n),
@@ -131,6 +133,25 @@ class ForwardPaperEngine:
                                   executor=PaperExecutor(settings.fee_rate, settings.slippage_pct,
                                                          min_notional=settings.risk.min_notional),
                                   now_fn=now_fn, entry_gate=self._gate, on_rejected=self._on_rejected)
+
+    def _sync_observed_from_disk(self, files: int = 2) -> None:
+        """The observation files are the record of what was logged. engine_state.json is only saved at the end
+        of a step, so a crash after an observation was appended would otherwise log that candle again on
+        restart. Advance each pair's marker to the newest candle already on disk (never moves it back)."""
+        od = os.path.join(self.dir, "observations")
+        if not os.path.isdir(od):
+            return
+        seen = self.state.setdefault("last_observed_ms", {})
+        for name in sorted(f for f in os.listdir(od) if f.endswith(".jsonl"))[-files:]:
+            with open(os.path.join(od, name), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        o = json.loads(line)
+                        pair, ms = o["pair"], int(o["candle"]["created_at"])
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if ms > int(seen.get(pair) or 0):
+                        seen[pair] = ms
 
     # --- gate used by the PaperTrader before any entry
     def _gate(self, pair: str, last: pd.Series, df: pd.DataFrame):
@@ -171,6 +192,8 @@ class ForwardPaperEngine:
             snap = self.live.snapshot(pair, with_depth=True).to_dict()
         except Exception as exc:
             snap = {"error": f"{type(exc).__name__}: {exc}"}
+            self.state["snapshot_errors"] = self.state.get("snapshot_errors", 0) + 1
+            logger.warning("snapshot failed for %s: %s", pair, snap["error"])
         obs = {"observed_utc": self.now_fn().isoformat(), "pair": pair, "interval": self.settings.interval,
                "candle": {k: (float(v) if k != "created_at" else int(v)) for k, v in df.iloc[-1][
                    ["created_at", "Open", "High", "Low", "Close", "Volume"]].items()},
@@ -205,7 +228,8 @@ class ForwardPaperEngine:
             self.state["last_step_utc"] = out["time"]
             self.state["feed_health"] = self.live.feed_health()
             _atomic_write_json(self.state_path, self.state)
-            health_path = os.path.join(self.dir, "feed_health.jsonl")
+            health_path = os.path.join(self.dir, "feed_health", f"{self.now_fn().strftime('%Y-%m-%d')}.jsonl")
+            os.makedirs(os.path.dirname(health_path), exist_ok=True)
             with open(health_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"time": out["time"], **self.state["feed_health"]}, default=str) + "\n")
         return out

@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 REST_BASE = "https://api.binance.com"
 WS_BASE = "wss://stream.binance.com:9443/stream?streams="
+# The ONLY endpoints this client may call: public, read-only market data. Anything else is refused.
+ALLOWED_PATHS = frozenset({"/api/v3/time", "/api/v3/klines", "/api/v3/ticker/bookTicker", "/api/v3/depth",
+                           "/api/v3/ticker/24hr"})
 WEIGHT_LIMIT_PER_MIN = 6000  # Binance spot REQUEST_WEIGHT limit (exchangeInfo); we stay well below it
 
 
@@ -62,8 +65,28 @@ class BinancePublicClient:
         self._last = 0.0
         self._lock = threading.Lock()
         self.stats = {"requests": 0, "retries": 0, "rate_limited": 0, "errors": 0}
+        self.time_offset_ms = 0          # Binance server time - local time
+        self._synced_at = 0.0
+
+    def now_ms(self) -> int:
+        """Exchange-aligned clock, used to decide whether a candle is complete."""
+        if time.monotonic() - self._synced_at > 3600:
+            try:
+                self.sync_time()
+            except FeedError:
+                pass
+        return utc_now_ms() + self.time_offset_ms
+
+    def sync_time(self) -> int:
+        t0 = utc_now_ms()
+        server = self.server_time_ms()
+        self.time_offset_ms = server - (t0 + utc_now_ms()) // 2
+        self._synced_at = time.monotonic()
+        return self.time_offset_ms
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        if path not in ALLOWED_PATHS:
+            raise PermissionError(f"refusing non-allowlisted endpoint {path} (market data only)")
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries):
             with self._lock:
@@ -114,7 +137,7 @@ class BinancePublicClient:
         if interval not in INTERVAL_SECONDS:
             raise ValueError(f"unsupported interval {interval}")
         rows = self._get("/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": int(min(limit, 1000))})
-        df = binance_rows_to_frame(rows, interval, now_ms=now_ms if now_ms is not None else utc_now_ms())
+        df = binance_rows_to_frame(rows, interval, now_ms=now_ms if now_ms is not None else self.now_ms())
         df.attrs.update({"source": "binance-rest", "symbol": symbol, "interval": interval,
                          "collected_utc": datetime.now(timezone.utc).isoformat()})
         return df
@@ -123,7 +146,7 @@ class BinancePublicClient:
         """Completed candles with open time in [start_ms, end_ms) (used for backfill after a gap)."""
         rows = self._get("/api/v3/klines", {"symbol": symbol, "interval": interval, "startTime": start_ms,
                                             "endTime": end_ms - 1, "limit": 1000})
-        return binance_rows_to_frame(rows, interval, now_ms=utc_now_ms())
+        return binance_rows_to_frame(rows, interval, now_ms=self.now_ms())
 
     def book_ticker(self, symbol: str) -> Dict[str, Any]:
         d = self._get("/api/v3/ticker/bookTicker", {"symbol": symbol})
@@ -320,8 +343,15 @@ class LiveMarket:
         buf.extend_frame(df)
         while buf.pending_gaps:
             start, end = buf.pending_gaps.pop(0)
-            buf.extend_frame(self.client.klines_range(symbol, self.interval, start, end))
-            self.health["rest_backfills"] += 1
+            cursor = start
+            while cursor < end:                      # long outages: page through the whole gap
+                got = self.client.klines_range(symbol, self.interval, cursor, end)
+                self.health["rest_backfills"] += 1
+                if got.empty:
+                    break                            # exchange has no candles there: stays missing (not fabricated)
+                buf.extend_frame(got)
+                self.health["recovered_candles"] = self.health.get("recovered_candles", 0) + len(got)
+                cursor = int(got["created_at"].iloc[-1]) + buf.step_ms
         return buf.to_frame()
 
     def completed_klines(self, symbol: str, interval: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:

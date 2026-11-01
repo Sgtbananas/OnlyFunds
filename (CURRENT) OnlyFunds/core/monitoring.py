@@ -19,6 +19,12 @@ import numpy as np
 import pandas as pd
 
 
+def read_json(path: str) -> Any:
+    """Read a JSON file and close it immediately (long-running processes must not leak handles)."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def r_stats(r: pd.Series, pnl: pd.Series = None) -> Dict[str, Any]:
     r = r.dropna().astype(float)
     if r.empty:
@@ -41,7 +47,7 @@ def forward_paper(state_dir: str) -> Dict[str, Any]:
     path = os.path.join(state_dir, "paper", "paper_ledger.json")
     if not os.path.exists(path):
         return {"note": "no forward paper ledger yet"}
-    led = json.load(open(path, encoding="utf-8"))
+    led = read_json(path)
     t = pd.DataFrame(led.get("trades", []))
     d = pd.DataFrame(led.get("decisions", []))
     out: Dict[str, Any] = {"cash": led.get("cash"), "initial_capital": led.get("initial_capital"),
@@ -69,7 +75,7 @@ def shadow(state_dir: str) -> Dict[str, Any]:
     path = os.path.join(state_dir, "shadow.json")
     if not os.path.exists(path):
         return {"note": "no shadow opportunities yet"}
-    s = json.load(open(path, encoding="utf-8"))
+    s = read_json(path)
     res = pd.DataFrame(s.get("resolved", []))
     out = {"open": len(s.get("open", [])), "resolved": len(res)}
     if len(res):
@@ -81,11 +87,34 @@ def shadow(state_dir: str) -> Dict[str, Any]:
     return out
 
 
-def data_feed(state_dir: str) -> Dict[str, Any]:
-    path = os.path.join(state_dir, "feed_health.jsonl")
+def read_jsonl(path: str) -> List[Dict[str, Any]]:
+    """Read JSON lines, skipping a partially written last line (crash-tolerant)."""
+    out = []
     if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def read_jsonl_dir(path: str) -> List[Dict[str, Any]]:
+    if not os.path.isdir(path):
+        return []
+    rows = []
+    for name in sorted(os.listdir(path)):
+        if name.endswith(".jsonl"):
+            rows += read_jsonl(os.path.join(path, name))
+    return rows
+
+
+def data_feed(state_dir: str) -> Dict[str, Any]:
+    rows = read_jsonl_dir(os.path.join(state_dir, "feed_health")) + read_jsonl(os.path.join(state_dir, "feed_health.jsonl"))
+    if not rows:
         return {"note": "no feed health records yet"}
-    rows = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
     last = rows[-1]
     buf = last.get("buffers", {})
     return {"samples": len(rows), "first": rows[0]["time"], "last": last["time"],
@@ -108,12 +137,12 @@ def validation_runs(root: str) -> List[Dict[str, Any]]:
             rec = {"plan": plan, "run": run}
             el = os.path.join(rd, "stage1", "eligibility.json")
             if os.path.exists(el):
-                e = json.load(open(el, encoding="utf-8"))
+                e = read_json(el)
                 rec["eligible"] = [k for k, v in e.items() if v.get("eligible")]
                 rec["candidates"] = len(e)
             res = os.path.join(rd, "stage2", "result.json")
             if os.path.exists(res):
-                r = json.load(open(res, encoding="utf-8"))
+                r = read_json(res)
                 rec["test"] = [{"candidate": x["candidate"], "credible_edge": x["credible_edge"]} for x in r.get("evaluated", [])] \
                     or r.get("note")
             out.append(rec)
