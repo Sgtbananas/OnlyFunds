@@ -1,8 +1,15 @@
+"""Fill the local candle cache for the configured pairs (run periodically to build longer history)."""
+import sys
+
 from data.historical.historical import save_historical_data
+from utils.config import load_config
 
-# Fetch and process historical data for a few major pairs
-save_historical_data("BTCUSDT", "5m", limit=1000)
-save_historical_data("ETHUSDT", "5m", limit=1000)
-save_historical_data("LTCUSDT", "5m", limit=1000)
-
-print("✅ Historical data generation complete.")
+if __name__ == "__main__":
+    cfg = load_config()
+    interval = sys.argv[1] if len(sys.argv) > 1 else cfg.default_interval
+    for pair in cfg.trading_pairs:
+        try:
+            save_historical_data(pair, interval, 1000)
+        except Exception as exc:
+            print(f"{pair}: failed ({exc})")
+    print("Historical data update complete.")

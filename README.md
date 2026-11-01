@@ -1,50 +1,55 @@
-# OnlyFunds
+# OnlyFunds 2 (OF2)
 
-## Getting Started
+Crypto spot trading research app for CoinEx: market data → indicators → regime-aware strategy
+signals → risk-managed backtesting and **paper trading**, with an optional ML entry filter.
 
-1. **Install dependencies**
-   ```
-   pip install -r requirements.txt
-   ```
-2. **Configure**
-   - Edit `config/config.yaml` for all trading, risk, strategy, and API settings.
-   - Secrets can be set as environment variables for security.
+> **Live trading is locked in code** (`core/trade_execution.py: LIVE_TRADING_LOCKED = True`).
+> The app never places real orders. See `(CURRENT) OnlyFunds/docs/LIVE_TRADING_CHECKLIST.md`.
 
-3. **Run the App**
-   - Double-click `START.bat` (Windows)
-   - Or run:
-     ```
-     streamlit run main.py
-     ```
+The application lives in **`(CURRENT) OnlyFunds/`**. `(Original) OnlyFunds.zip` is the untouched
+original backup.
 
-## Configuration
+## Quick start (Windows)
 
-- **All settings are in** `config/config.yaml`.
-- Use the sidebar to override key settings during a session.
-- Click **💾 Save Preferences** in the sidebar to persist your changes back to `config/config.yaml`.
-- Click **🔃 Reset Sidebar to Config Defaults** to reload the sidebar from your config.
+```bat
+cd "(CURRENT) OnlyFunds"
+pip install -r requirements.txt
+streamlit run main.py
+```
 
-## Prometheus Monitoring
+Or double-click `(CURRENT) OnlyFunds/START.bat`. The app opens at http://localhost:8501.
 
-- Prometheus config is in `config/prometheus.yml`.
-- Default scrape target: `localhost:8000`
-- Start the Prometheus server with this config:
-  ```
-  prometheus --config.file=config/prometheus.yml
-  ```
+Headless paper trading (same ledger as the app):
 
-## Repo Hygiene
+```bat
+python run_paper.py --pairs BTCUSDT ETHUSDT --interval 15m
+```
 
-- Runtime state/logs are ignored by `.gitignore` (`state/`, `logs/`).
-- Only `config/config.yaml` is used for configuration (no JSON configs).
-- Clean up obsolete files from `config/`.
+Tests:
 
-## Features
+```bat
+pip install -r requirements-dev.txt
+python -m pytest
+```
 
-- Streamlit sidebar for live parameter changes.
-- "Save Preferences" button for persistent config.
-- Robust, production-grade structure.
+## What's inside
 
----
+| Area | Module |
+|---|---|
+| CoinEx API v2 client (public data, signing, precision, rate limits; orders locked) | `core/coinex_client.py` |
+| Candle fetch + local cache, CSV import | `core/core_data.py` |
+| EMA, RSI, MACD, Bollinger, ATR, trend score, volatility | `core/indicators.py` |
+| Regime detection, strategy stacks, confirmation, confidence | `core/core_signals.py` |
+| Strategy selection by regime, rotation of losing strategies | `core/meta_learner.py` |
+| Position sizing, exposure caps, daily loss, drawdown halt, kill switch | `core/risk_manager.py` |
+| Stop-loss / take-profit / trailing stop rules (shared) | `core/positions.py` |
+| Backtester (next-bar execution, fees, slippage, out-of-sample) | `core/backtester.py` |
+| Paper trader (persistent ledger, reconciliation, emergency stop) | `core/paper_trader.py` |
+| ML entry filter (triple-barrier labels, purged validation) | `core/ml_filter.py` |
+| Parameter optimisation, walk-forward | `core/autotune.py` |
+| Streamlit UI | `main.py` |
 
-**Happy trading!**
+Configuration: `(CURRENT) OnlyFunds/config/config.yaml`. API keys are read only from environment
+variables / `.env` (see `.env.example`) and are needed only for the optional balance check.
+
+Full audit, fixes and known limitations: `(CURRENT) OnlyFunds/docs/AUDIT_REPORT.md`.

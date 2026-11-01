@@ -1,11 +1,5 @@
 @echo off
-REM ============================
-REM  OnlyFunds Quick Start Script
-REM ============================
-REM This batch file launches your Streamlit trading app.
-REM Double-click to run from Windows Explorer.
-
-REM Launch the Streamlit app
-streamlit run main.py
-
+REM OnlyFunds 2 - start the Streamlit app (paper trading only)
+cd /d "%~dp0"
+python -m streamlit run main.py
 pause

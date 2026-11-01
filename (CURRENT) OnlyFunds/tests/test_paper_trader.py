@@ -206,3 +206,15 @@ def test_second_instance_sees_first_instance_progress(tmp_path):
     assert b.ledger["cash"] == a.ledger["cash"]
     b.step(["SYN"])
     assert b.reconcile() == []
+
+
+def test_stale_data_blocks_entries(tmp_path):
+    m = Market()
+    later = lambda: m.now() + timedelta(hours=3)  # clock far ahead of the newest candle
+    t = PaperTrader(make(tmp_path, m).settings, str(tmp_path / "s"), data_fn=m.klines, price_fn=m.price,
+                    now_fn=later)
+    for _ in range(300):
+        out = t.step(["SYN"])
+        m.i += 1
+        assert all(d["action"] != "BUY" for d in out)
+    assert any(d["action"] == "DATA_STALE" for d in t.ledger["decisions"])

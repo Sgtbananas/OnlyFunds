@@ -45,12 +45,16 @@ def get_trading_pairs() -> List[str]:
 TRADING_PAIRS = get_trading_pairs()
 
 
+def cache_dir() -> str:
+    return os.environ.get("OF2_CACHE_DIR") or CACHE_DIR
+
+
 def _cache_path(pair: str, interval: str) -> str:
-    return os.path.join(CACHE_DIR, f"{pair}_{interval}.csv")
+    return os.path.join(cache_dir(), f"{pair}_{interval}.csv")
 
 
 def save_data(df: pd.DataFrame, pair: str, interval: str = "5m") -> None:
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(cache_dir(), exist_ok=True)
     path = _cache_path(pair, interval)
     tmp = path + ".tmp"
     df.to_csv(tmp, index=False)
@@ -113,5 +117,31 @@ def validate_df(df: Optional[pd.DataFrame]) -> bool:
     return validate_ohlcv(df)
 
 
-__all__ = ["fetch_klines", "load_data", "load_cached", "save_data", "validate_df", "add_indicators",
+def normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalise a user-supplied OHLCV table (any column case, common time column names)."""
+    cols = {c.lower().strip(): c for c in raw.columns}
+    out = pd.DataFrame()
+    for name in ("open", "high", "low", "close"):
+        if name not in cols:
+            raise ValueError(f"CSV is missing a '{name}' column")
+        out[name.capitalize()] = pd.to_numeric(raw[cols[name]], errors="coerce")
+    out["Volume"] = pd.to_numeric(raw[cols["volume"]], errors="coerce") if "volume" in cols else 0.0
+    tcol = next((cols[c] for c in ("timestamp", "time", "date", "datetime", "created_at", "open_time")
+                 if c in cols), None)
+    if tcol is not None:
+        t = raw[tcol]
+        if pd.api.types.is_numeric_dtype(t):
+            unit = "ms" if t.max() > 1e11 else "s"
+            out["timestamp"] = pd.to_datetime(t, unit=unit, utc=True)
+        else:
+            out["timestamp"] = pd.to_datetime(t, utc=True)
+        out = out.sort_values("timestamp")
+        out["created_at"] = out["timestamp"].astype("int64") // 10**6
+    out = out.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
+    if not validate_ohlcv(out):
+        raise ValueError("CSV has no valid OHLC rows (prices must be positive)")
+    return out
+
+
+__all__ = ["fetch_klines", "load_data", "load_cached", "save_data", "validate_df", "normalize_ohlcv", "add_indicators",
            "TRADING_PAIRS", "get_client", "DEFAULT_PAIRS"]

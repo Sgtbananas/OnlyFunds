@@ -201,3 +201,10 @@ def test_order_amount_floored_and_minimum_enforced():
     with pytest.raises(cx.CoinExError):
         c2.place_order("BTCUSDT", "sell", "market", 0.0001)
     assert len(c2.session.calls) == 1
+
+
+def test_gateway_html_error_is_readable():
+    html = "<html><head><title>503 Service Temporarily Unavailable</title></head><body>x</body></html>"
+    with pytest.raises(cx.CoinExError) as e:
+        client([FakeResp(None, status=503, text=html)] * 3).get_markets()
+    assert "503 Service Temporarily Unavailable" in str(e.value) and "<html>" not in str(e.value)

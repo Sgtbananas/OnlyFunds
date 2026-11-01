@@ -130,5 +130,6 @@ def build_settings(cfg: Config, profile: Optional[str] = None, overrides: Option
                         risk=RiskLimits.from_mapping(risk_map, kill_switch_file=""), **common)
     paper = PaperSettings(interval=interval, lookback=int(o.get("lookback", 500)),
                           use_ml=bool(o.get("use_ml", ml.get("enabled", False))),
-                          exit_rules=copy.deepcopy(exits), risk=RiskLimits.from_mapping(risk_map), **common)
+                          exit_rules=copy.deepcopy(exits), risk=RiskLimits.from_mapping(risk_map),
+                          trading_window=dict(t.get("trading_windows") or {}), **common)
     return bt, paper

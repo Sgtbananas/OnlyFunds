@@ -1,13 +1,21 @@
+# runtime state, logs, caches
 state/
 logs/
-*.log
-*.tmp
-*.pyc
-__pycache__/
-.DS_Store
+data/cache/
 data/logs/
 data/models/
-signals_log.json
+*.log
+*.tmp
+*.lock
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# secrets
+.env
+
+# editors / OS
 .vscode/
 .idea/
+.DS_Store
 Thumbs.db

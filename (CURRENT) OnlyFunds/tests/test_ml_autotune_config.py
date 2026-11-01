@@ -138,3 +138,17 @@ def test_config_never_saves_secrets_or_live(tmp_path):
     cfg.save({"trading": {"profile": "Aggressive"}})
     on_disk = yaml.safe_load(path.read_text())
     assert on_disk["trading"]["profile"] == "Aggressive" and "api_key" not in on_disk["api"]
+
+
+# ----------------------------------------------------------- trading window
+def test_trading_window():
+    from datetime import datetime, timezone
+    from core.strategy_utils import within_trading_hours
+    w = {"trading_windows": {"enabled": True, "start_time": "09:00", "end_time": "18:00", "timezone": "UTC"}}
+    at = lambda h: datetime(2026, 1, 1, h, 0, tzinfo=timezone.utc)
+    assert within_trading_hours(w, at(10)) and not within_trading_hours(w, at(20))
+    night = {"trading_windows": {"enabled": True, "start_time": "22:00", "end_time": "06:00", "timezone": "UTC"}}
+    assert within_trading_hours(night, at(23)) and within_trading_hours(night, at(3))
+    assert not within_trading_hours(night, at(12))
+    assert within_trading_hours({}, at(3))
+    assert not within_trading_hours({"trading_windows": {"enabled": True, "start_time": "bad"}}, at(3))

@@ -1,1076 +1,527 @@
-import streamlit as st
-st.set_page_config(page_title="CryptoTrader AI (A)", layout="wide")
+"""OnlyFunds 2 — Streamlit app.  Run:  streamlit run main.py
 
+PAPER TRADING ONLY. Live order placement is locked in code
+(core.trade_execution.LIVE_TRADING_LOCKED).
+"""
+from __future__ import annotations
+
+import json
+import logging
 import os
 import sys
 import time
-import threading
-import traceback
-import tempfile
-import shutil
-import json
-from datetime import datetime
-from utils.helpers import dynamic_threshold
-import pandas as pd
-from dotenv import load_dotenv
-import yaml
-import joblib
 from logging.handlers import RotatingFileHandler
-from pythonjsonlogger import jsonlogger
-import logging
-from utils.helpers import get_volatile_pairs
-from utils.helpers import BLACKLISTED_TOKENS
+
+import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta  # (Make sure to import datetime for scheduling)
 
-# === Initialize session state flags ===
-if 'backtest_triggered' not in st.session_state:
-    st.session_state.backtest_triggered = False  # flag to indicate a backtest run is requested
-if 'auto_mode' not in st.session_state:
-    st.session_state.auto_mode = False           # flag to indicate if automatic backtesting is on
-if 'next_run_time' not in st.session_state:
-    st.session_state.next_run_time = None        # store next scheduled run time (if auto_mode)
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
 
-@st.cache_data(ttl=300)
-def get_top_coinex_symbols_by_market_cap(limit=250):
-    import requests
-
-    # Step 1: Get top coins from CoinGecko
-    coingecko_url = 'https://api.coingecko.com/api/v3/coins/markets'
-    response = requests.get(coingecko_url, params={
-        'vs_currency': 'usd',
-        'order': 'market_cap_desc',
-        'per_page': 250,
-        'page': 1
-    })
-    top_coins = response.json()
-
-    # Step 2: Get CoinEx trading pairs
-    coinex_url = 'https://api.coinex.com/v1/market/list'
-    response = requests.get(coinex_url)
-    coinex_pairs = response.json()['data']
-    coinex_pairs_set = set(pair.upper() for pair in coinex_pairs)
-
-    # Step 3: Cross-reference
-    matched_symbols = []
-    for coin in top_coins:
-        symbol = coin['symbol'].upper() + 'USDT'
-        if symbol in coinex_pairs_set:
-            matched_symbols.append(symbol)
-
-    return matched_symbols[:limit]
-
-TRADING_PAIRS = get_top_coinex_symbols_by_market_cap()
-
-# --- Background auto-refresh of volatile pairs
-def auto_refresh_pairs(interval=300):  # 5 minutes
-    while True:
-        try:
-            st.session_state["TRADING_PAIRS"] = get_volatile_pairs(limit=10)
-            time.sleep(interval)
-        except Exception as e:
-            print(f"[WARN] Auto-refresh pairs failed: {e}")
-            time.sleep(60)
-
-# --- Initialize volatile pairs on startup
-if "TRADING_PAIRS" not in st.session_state:
-    threading.Thread(target=auto_refresh_pairs, args=(300,), daemon=True).start()
-
-# --- Early folder creation
-os.makedirs("state", exist_ok=True)
-os.makedirs("logs", exist_ok=True)
-
-# --- Safe Sidebar State Init ---
-def get_config_defaults():
-    return dict(
-        mode="Auto",
-        dry_run=True,
-        autotune=True,
-        interval="5m",
-        lookback=1000,
-        threshold=0.5,
-        max_positions=5,
-        stop_loss_pct=0.01,
-        take_profit_pct=0.02,
-        fee=0.001,
-        atr_stop_mult=1.0,
-        atr_tp_mult=2.0,
-        atr_trail_mult=1.0,
-        partial_exit=True,
-        capital_alloc_pct=0.05
-    )
-
-def sidebar(key, default=None, set_value=None):
-    if "sidebar" not in st.session_state:
-        st.session_state.sidebar = get_config_defaults()
-    if set_value is not None:
-        st.session_state.sidebar[key] = set_value
-    return st.session_state.sidebar.get(key, default)
-
-if "sidebar" not in st.session_state:
-    st.session_state.sidebar = get_config_defaults()
-
-# --- Core App Imports (no more TRADING_PAIRS here!)
-from core.core_data import fetch_klines, validate_df, add_indicators
-from core.core_signals import (
-    generate_signal, smooth_signal, generate_ensemble_signal
-)
-from core.trade_execution import place_live_order
-from core.backtester import run_backtest
-from utils.helpers import (
-    compute_trade_metrics, suggest_tuning, save_json, load_json, validate_pair,
-    get_volatile_pairs
-)
-from core.ml_filter import load_model, ml_confidence, train_and_save_model
-from core.risk_manager import RiskManager
-from core.data_manager import get_top_coinex_symbols_marketcap as get_top_coinex_symbols, update_historical_data, load_data
-from utils.config import load_config
-
-# --- Prometheus Metrics
-from prometheus_client import start_http_server, Counter, Gauge, REGISTRY
-
-# --- ENV Meta Model Selector
-SELECTOR_VARIANT = os.getenv("SELECTOR_VARIANT", "A")
-if SELECTOR_VARIANT == "A":
-    META_MODEL_PATH = "state/meta_model_A.pkl"
-    METRICS_PREFIX = "onlyfunds_A"
-elif SELECTOR_VARIANT == "B":
-    META_MODEL_PATH = "state/meta_model_B.pkl"
-    METRICS_PREFIX = "onlyfunds_B"
-else:
-    META_MODEL_PATH = "state/meta_model.pkl"
-    METRICS_PREFIX = "onlyfunds"
-
-# --- Meta Model Loading (stub fallback)
-def train_stub_meta_model(meta_model_path):
-    from sklearn.dummy import DummyClassifier
-    import numpy as np
-    X = np.random.rand(50, 4)
-    y = np.random.randint(0, 2, 50)
-    model = DummyClassifier(strategy="most_frequent")
-    model.fit(X, y)
-    joblib.dump(model, meta_model_path)
-    print(f"[INFO] Stub meta-learner saved to {meta_model_path}")
-
-def ensure_meta_model(path):
-    try:
-        return joblib.load(path)
-    except Exception as e:
-        print(f"[WARN] Could not load meta-learner model at {path}: {e}")
-        threading.Thread(target=lambda: train_stub_meta_model(path), daemon=True).start()
-        return None
-
-META_MODEL = ensure_meta_model(META_MODEL_PATH)
-
-# --- Logging Setup
-LOGS_DIR = "logs"
-log_file = os.path.join(LOGS_DIR, f"{METRICS_PREFIX}.json")
-handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
-formatter = jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-handler.setFormatter(formatter)
-root = logging.getLogger()
-root.handlers = []
-root.addHandler(handler)
-root.setLevel(logging.INFO)
-if os.getenv("DEBUG_LOG_STDOUT", "0") == "1":
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setFormatter(formatter)
-    root.addHandler(stdout_handler)
-
-logger = logging.getLogger(__name__)
-
-META_MODEL = None
 try:
-    META_MODEL = joblib.load("state/meta_model_A.pkl")
-    logger.info("✅ META_MODEL loaded successfully.")
-    st.sidebar.success("✅ META_MODEL loaded successfully.")
-except Exception as e:
-    logger.warning(f"⚠ META_MODEL not loaded: {e}")
-    st.sidebar.error(f"⚠ META_MODEL not loaded: {e}")
-
-# --- Prometheus Metrics Setup (safe singleton)
-def get_prometheus_metrics():
-    module = __import__(__name__)
-    if not hasattr(module, "_PROMETHEUS_METRICS"):
-        try:
-            start_http_server(8000)
-        except Exception:
-            pass
-        metrics = {}
-        name = f"{METRICS_PREFIX}_trades_executed_total"
-        if name not in REGISTRY._names_to_collectors:
-            metrics['trade_counter'] = Counter(name, "Total trades executed")
-        else:
-            metrics['trade_counter'] = REGISTRY._names_to_collectors[name]
-
-        name = f"{METRICS_PREFIX}_current_pnl"
-        if name not in REGISTRY._names_to_collectors:
-            metrics['pnl_gauge'] = Gauge(name, "Current unrealized PnL (USDT)")
-        else:
-            metrics['pnl_gauge'] = REGISTRY._names_to_collectors[name]
-
-        name = f"{METRICS_PREFIX}_heartbeat"
-        if name not in REGISTRY._names_to_collectors:
-            metrics['heartbeat_gauge'] = Gauge(name, "Heartbeat timestamp")
-        else:
-            metrics['heartbeat_gauge'] = REGISTRY._names_to_collectors[name]
-
-        module._PROMETHEUS_METRICS = metrics
-    m = module._PROMETHEUS_METRICS
-    return m['trade_counter'], m['pnl_gauge'], m['heartbeat_gauge']
-
-trade_counter, pnl_gauge, heartbeat_gauge = get_prometheus_metrics()
-
-# --- Load Main Config
-CONFIG_PATH = "config/config.yaml"
-
-def load_config_safe(config_path, fallback=None):
-    try:
-        with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-        if not isinstance(cfg, dict):
-            raise ValueError("Config is not a dict.")
-        return cfg
-    except Exception as e:
-        st.sidebar.error(f"Error loading config: {e}")
-        return fallback or {}
-
-config = load_config_safe(CONFIG_PATH, fallback={})
-risk_cfg = config.get("risk", {})
-trading_cfg = config.get("trading", {})
-ml_discrimination_cfg = config.get("ml", {})
-
-# --- Sidebar Setup (no manual ATR multipliers anymore)
-st.title(f"🧠 CryptoTrader AI Bot (SPOT Market Only) — Variant {SELECTOR_VARIANT}")
-st.sidebar.header("⚙️ Configuration")
-interval_used = st.sidebar.selectbox('Interval', options=['5m', '15m', '1h'], index=0)
-lookback_used = st.sidebar.slider('Lookback Candles', min_value=100, max_value=1000, value=500)
-current_capital = st.sidebar.number_input('Starting Capital ($)', value=1000)
-st.sidebar.markdown(f"**Meta-Learner Variant:** `{SELECTOR_VARIANT}`")
-
-# --- Trading Mode
-mode = st.sidebar.selectbox(
-    "Trading Mode",
-    ["Conservative", "Normal", "Aggressive", "Auto"],
-    index=["Conservative", "Normal", "Aggressive", "Auto"].index(trading_cfg.get("mode", "Normal").capitalize())
-)
-
-# === Trading Mode Definitions (updated) ===
-if st.session_state.sidebar["mode"] == "Conservative":
-    st.session_state.sidebar["target_daily_return"] = 5.0
-    st.session_state.sidebar["risk_pct"] = 0.005  # 0.5% per trade
-    st.session_state.sidebar["capital_alloc_pct"] = 0.05  # 5% of balance per trade
-elif st.session_state.sidebar["mode"] == "Aggressive":
-    st.session_state.sidebar["target_daily_return"] = 20.0
-    st.session_state.sidebar["risk_pct"] = 0.02   # 2% per trade
-    st.session_state.sidebar["capital_alloc_pct"] = 0.2   # 20% of balance per trade
-elif st.session_state.sidebar["mode"] == "Auto":
-    st.session_state.sidebar["target_daily_return"] = 10.0
-    st.session_state.sidebar["risk_pct"] = 0.01   # 1% per trade
-    st.session_state.sidebar["capital_alloc_pct"] = 0.1   # 10_0]
-else:
-    st.session_state.sidebar["target_daily_return"] = 10.0
-    st.session_state.sidebar["risk_pct"] = 0.01
-    st.session_state.sidebar["capital_alloc_pct"] = 0.1
-
-# --- Other sidebar toggles
-dry_run = st.sidebar.checkbox("Dry Run Mode", value=trading_cfg.get("dry_run", True))
-autotune = st.sidebar.checkbox("Enable Adaptive-Threshold Autotune", value=True)
-
-# --- Show current volatile pairs in the sidebar ---
-with st.sidebar.expander("📊 Auto-Selected Pairs (Top Market Cap)", expanded=False):
-    current_pairs = st.session_state.get("TRADING_PAIRS", [])
-    if current_pairs:
-        for i, pair in enumerate(current_pairs, 1):
-            st.markdown(f"**{i}.** `{pair}`")
-    else:
-        st.info("Volatile pair list is still loading...")
-
-# --- Only if Manual (not AI)
-if mode != "Auto":
-    interval = st.sidebar.selectbox(
-        "Candle Interval",
-        ["5m", "15m", "30m", "1h", "4h", "1d"],
-        index=["5m", "15m", "30m", "1h", "4h", "1d"].index(trading_cfg.get("default_interval", "5m"))
-    )
-    lookback = st.sidebar.slider("Lookback Candles", 300, 2000, trading_cfg.get("backtest_lookback", 1000))
-    threshold = st.sidebar.slider(
-        "Entry Threshold", min_value=0.0, max_value=1.0,
-        value=trading_cfg.get("threshold", 0.5), step=0.01
-    )
-else:
-    interval = None
-    lookback = None
-    threshold = None
-
-# --- Max open positions stays user-configurable
-max_positions = st.sidebar.number_input("Max Open Positions", 1, 50, trading_cfg.get("max_positions", 5))
-
-# --- (✅) NO manual ATR Multiplier inputs anymore
-st.sidebar.info("ATR-based Stop-Loss, TP, Trailing is AI-optimized.")
-
-# --- Save Preferences button
-save_prefs = st.sidebar.button("💾 Save Config (Optional)")
-if save_prefs:
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            data = yaml.safe_load(f)
-        data["trading"]["dry_run"] = dry_run
-        data["trading"]["max_positions"] = max_positions
-        data["strategy"]["mode"] = mode
-        if interval:
-            data["trading"]["default_interval"] = interval
-        if lookback:
-            data["trading"]["backtest_lookback"] = lookback
-        if threshold is not None:
-            data["trading"]["threshold"] = threshold
-        tmp = tempfile.NamedTemporaryFile("w", dir="config", delete=False)
-        yaml.safe_dump(data, tmp)
-        tmp.flush()
-        tmp.close()
-        shutil.move(tmp.name, CONFIG_PATH)
-        st.sidebar.success("Preferences saved successfully.")
-    except Exception as e:
-        st.sidebar.error(f"Failed to save preferences: {e}")
-
-# --- Show Heartbeat Info
-HEARTBEAT_FILE = f"state/heartbeat_{SELECTOR_VARIANT}.json"
-def write_heartbeat():
-    ts = time.time()
-    try:
-        with open(HEARTBEAT_FILE, "w") as f:
-            json.dump({"last_run": ts}, f)
-        heartbeat_gauge.set(ts)
-    except Exception as e:
-        logger.error(f"Failed to write heartbeat: {e}")
-
-# --- State Files and Safety Loaders
-POSITIONS_FILE = "state/open_positions.json"
-TRADE_LOG_FILE = "state/trade_log.json"
-CAPITAL_FILE = "state/current_capital.json"
-
-def safe_load_json(file_path, default):
-    import json
-    try:
-        if os.path.exists(file_path):
-            with open(file_path, "r") as f:
-                data = json.load(f)
-            if data is None:
-                return default
-            return data
-    except Exception as e:
-        logger.error(f"Failed to load {file_path}: {e}")
-    return default
-
-open_positions = safe_load_json(POSITIONS_FILE, {})
-trade_log = safe_load_json(TRADE_LOG_FILE, [])
-if not isinstance(current_capital, (float, int)):
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(APP_ROOT, ".env"))
+except ImportError:
     pass
 
-# --- Risk Manager
-risk_manager = RiskManager(config)
+from core import autotune, dashboard
+from core.backtester import run_backtest, run_out_of_sample
+from core.coinex_client import INTERVAL_MAP, CoinExError, top_usdt_markets
+from core.core_data import fetch_klines, get_client, normalize_ohlcv
+from core.core_signals import STRATEGY_NAMES, generate_signals
+from core.ml_filter import load_bundle, train_filter
+from core.paper_trader import LedgerBusy, PaperTrader
+from core.trade_execution import LIVE_TRADING_LOCKED, PaperExecutor
+from utils.config import PROFILES, Config, build_settings
+from utils.helpers import BLACKLISTED_TOKENS
 
-# --- ML Retraining & Meta Model Watchdog
-from core.ml_filter import load_model, ml_confidence, train_and_save_model
+STATE_DIR = os.environ.get("OF2_STATE_DIR") or os.path.join(APP_ROOT, "state")
+PAPER_DIR = os.path.join(STATE_DIR, "paper")
+LOG_DIR = os.path.join(APP_ROOT, "logs")
+BACKTEST_RESULTS_FILE = os.path.join(STATE_DIR, "backtest_results.json")
+ML_MODEL_PATH = os.path.join(STATE_DIR, "ml_filter.pkl")
+KILL_SWITCH_FILE = os.path.join(STATE_DIR, "KILL_SWITCH")
+INTERVALS = [i for i in ("5m", "15m", "30m", "1h", "4h", "1d") if i in INTERVAL_MAP]
 
-RETRAIN_TRADE_INTERVAL = 50
-RETRAIN_TIME_INTERVAL = 6*60*60
-LAST_RETRAIN_FILE = "state/last_ml_retrain.txt"
+st.set_page_config(page_title="OnlyFunds 2", page_icon="📈", layout="wide")
 
-def read_last_retrain_time():
+
+# ------------------------------------------------------------------ setup
+@st.cache_resource
+def _setup_logging() -> logging.Logger:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    root = logging.getLogger()
+    if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        h = RotatingFileHandler(os.path.join(LOG_DIR, "onlyfunds.log"), maxBytes=5_000_000, backupCount=3,
+                                encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root.addHandler(h)
+        root.setLevel(logging.INFO)
+    return logging.getLogger("onlyfunds.ui")
+
+
+log = _setup_logging()
+
+
+def load_cfg() -> Config:
+    return Config(os.path.join(APP_ROOT, "config", "config.yaml"))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_universe(limit: int) -> tuple:
+    """(pairs, error). Ranked by 24h quote volume, live from CoinEx."""
     try:
-        with open(LAST_RETRAIN_FILE, "r") as f:
-            return float(f.read().strip())
-    except Exception:
-        return 0.0
+        return top_usdt_markets(get_client(), limit=limit, exclude=BLACKLISTED_TOKENS), ""
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
 
-def write_last_retrain_time(ts):
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_klines(pair: str, interval: str, limit: int) -> tuple:
     try:
-        with open(LAST_RETRAIN_FILE, "w") as f:
-            f.write(str(ts))
-    except Exception as e:
-        logger.error(f"Failed to write retrain time: {e}")
+        df = fetch_klines(pair, interval, limit)
+        return df, df.attrs.get("source", "coinex"), ""
+    except Exception as exc:
+        return pd.DataFrame(), "none", f"{type(exc).__name__}: {exc}"
 
-def retrain_ml_if_needed(trade_log):
-    now = time.time()
-    last = read_last_retrain_time()
-    need_time = (now - last) > RETRAIN_TIME_INTERVAL
-    need_trades = (len(trade_log) > 0 and len(trade_log) % RETRAIN_TRADE.interval == 0)
-    if need_time or need_trades:
-        logger.info("Triggering ML model retrain.")
-        success, msg = train_and_save_model()
-        write_last_retrain_time(now)
-        if success:
-            logger.info(f"ML retrain success: {msg}")
-        else:
-            logger.error(f"ML retrain failed: {msg}")
 
-def retrain_ml_background(trade_log):
-    threading.Thread(target=retrain_ml_if_needed, args=(trade_log,), daemon=True).start()
-
-# --- Dynamic ATR Automation Functions
-def estimate_dynamic_atr_multipliers(df):
-    """Based on ATR/Price ratios, optimize SL/TP/Trailing multipliers."""
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_markets() -> tuple:
     try:
-        # Dynamic target bands
-        if df.empty or 'ATR' not in df.columns:
-            logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
-            return 1.0, 2.0, 1.0  # fallback safe values
-        atr_avg = df["ATR"].rolling(50).mean().iloc[-1]
-        close_price = df["Close"].iloc[-1]
-        atr_pct = atr_avg / close_price if close_price > 0 else 0.01
+        return get_client().get_markets(), ""
+    except Exception as exc:
+        return {}, f"{type(exc).__name__}: {exc}"
 
-        # Heuristics (can replace later with model prediction if wanted)
-        stop_mult = max(0.8, min(2.0, atr_pct * 50))    # adapt SL around volatility
-        tp_mult   = max(1.5, min(5.0, atr_pct * 100))   # TP further out
-        trail_mult = max(0.5, min(2.0, atr_pct * 30))   # trailing in-between
 
-        return stop_mult, tp_mult, trail_mult
-    except Exception as e:
-        logger.error(f"ATR tuning failed: {e}")
-        return 1.0, 2.0, 1.0  # fallback safe values
+def live_price(pair: str) -> float:
+    return float(get_client().get_ticker(pair)["last"])
 
-# --- Heartbeat Writing for Watchdog ---
-def write_heartbeat():
-    ts = time.time()
+
+def show_error(context: str, exc: Exception) -> None:
+    log.exception(context)
+    st.error(f"{context}: {type(exc).__name__}: {exc}")
+
+
+def fmt_metrics(m: dict) -> pd.DataFrame:
+    rows = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in m.items() if not isinstance(v, dict)}
+    return pd.DataFrame(rows.items(), columns=["metric", "value"]).astype({"value": str})
+
+
+# ---------------------------------------------------------------- sidebar
+cfg = load_cfg()
+tcfg = cfg.trading
+
+st.sidebar.title("OnlyFunds 2")
+if LIVE_TRADING_LOCKED:
+    st.sidebar.success("🧪 Paper trading only. Live trading is locked.")
+
+profile = st.sidebar.selectbox("Trading profile", PROFILES, index=PROFILES.index(cfg.profile),
+                               help="Sets threshold, risk per trade and exposure caps (config.yaml → profiles).")
+strategy = st.sidebar.selectbox("Strategy", STRATEGY_NAMES,
+                                index=STRATEGY_NAMES.index(tcfg.get("strategy", "auto"))
+                                if tcfg.get("strategy", "auto") in STRATEGY_NAMES else 0,
+                                help="auto = pick by market regime: trend-up → trend following, "
+                                     "range → mean reversion, high vol → stacked, down-trend → stand aside.")
+interval = st.sidebar.selectbox("Candle interval", INTERVALS,
+                                index=INTERVALS.index(cfg.default_interval) if cfg.default_interval in INTERVALS else 1)
+
+universe_size = int(tcfg.get("pair_universe_size", 200))
+universe, universe_err = cached_universe(universe_size)
+if universe_err:
+    st.sidebar.warning(f"CoinEx pair list unavailable — using config pairs. ({universe_err[:120]})")
+if st.sidebar.button("🔄 Refresh pair list"):
+    cached_universe.clear()
+    st.rerun()
+cfg_pairs = list(tcfg.get("pairs", ["BTCUSDT"]))
+options = list(dict.fromkeys(cfg_pairs + universe))
+pairs = st.sidebar.multiselect(f"Trading pairs ({len(universe)} live USDT pairs by volume)", options,
+                               default=[p for p in cfg_pairs if p in options] or options[:1])
+
+with st.sidebar.expander("Advanced overrides"):
+    _, prof_defaults = build_settings(cfg, profile)
+    threshold = st.slider("Entry threshold", 0.05, 0.9, float(prof_defaults.threshold), 0.01)
+    stop_mult = st.number_input("Stop-loss (× ATR)", 0.3, 10.0, float(prof_defaults.exit_rules.stop_atr_mult), 0.1)
+    tp_mult = st.number_input("Take-profit (× ATR)", 0.3, 20.0, float(prof_defaults.exit_rules.tp_atr_mult), 0.1)
+    use_trailing = st.checkbox("Trailing stop", value=prof_defaults.exit_rules.use_trailing)
+    trail_mult = st.number_input("Trailing stop (× ATR)", 0.3, 10.0, float(prof_defaults.exit_rules.trail_atr_mult), 0.1)
+    max_positions = st.number_input("Max open positions", 1, 20, int(prof_defaults.risk.max_open_positions))
+
+overrides = dict(interval=interval, strategy=strategy, threshold=threshold, stop_atr_mult=stop_mult,
+                 tp_atr_mult=tp_mult, use_trailing=use_trailing, trail_atr_mult=trail_mult,
+                 max_open_positions=int(max_positions), kill_switch_file=KILL_SWITCH_FILE)
+try:
+    bt_cfg, paper_settings = build_settings(cfg, profile, overrides)
+except ValueError as exc:
+    st.error(f"Invalid settings: {exc}")
+    st.stop()
+
+if st.sidebar.button("💾 Save as defaults"):
     try:
-        with open(f"state/heartbeat_{SELECTOR_VARIANT}.json", "w") as f:
-            import json
-            json.dump({"last_run": ts}, f)
-    except Exception as e:
-        logger.error(f"Failed to write heartbeat: {e}")
-    try:
-        heartbeat_gauge.set(ts)
-    except Exception:
-        pass
+        cfg.save({"trading": {"profile": profile, "strategy": strategy, "default_interval": interval,
+                              "pairs": pairs or cfg_pairs},
+                  "exits": {"stop_atr_mult": stop_mult, "tp_atr_mult": tp_mult, "trail_atr_mult": trail_mult,
+                            "use_trailing": use_trailing},
+                  "risk": {"max_open_positions": int(max_positions)}})
+        st.sidebar.success("Saved to config/config.yaml")
+    except Exception as exc:
+        st.sidebar.error(f"Save failed: {exc}")
 
-# --- Trade Execution Guardrails ---
-def validate_trade(amount, price, capital, min_size=0.001):
-    if amount < min_size or price <= 0 or capital <= 0:
-        return False
-    return True
+st.sidebar.caption(f"Risk/trade {paper_settings.risk.risk_per_trade:.2%} · max position "
+                   f"{paper_settings.risk.max_position_pct:.0%} · max exposure {paper_settings.risk.max_exposure_pct:.0%}")
 
-def dynamic_capital_allocation(performance: dict, base_alloc_pct=0.05, min_alloc=1.0, max_alloc_pct=0.2):
-    """
-    Adjust capital allocation based on recent performance.
-    If winning, increase allocation slightly. If losing, decrease.
-    """
-    win_rate = performance.get("win_rate", 50.0)
-    current_balance = performance.get("current_capital", 10)
+# ------------------------------------------------------------------- tabs
+st.title("📈 OnlyFunds 2")
+tab_market, tab_bt, tab_paper, tab_ml, tab_status = st.tabs(
+    ["Market", "Backtest", "Paper trading", "ML & optimisation", "Risk & status"])
 
-    if win_rate > 70:
-        alloc_pct = min(base_alloc_pct * 1.5, max_alloc_pct)
-    elif win_rate > 55:
-        alloc_pct = min(base_alloc_pct * 1.2, max_alloc_pct)
-    elif win_rate < 45:
-        alloc_pct = max(base_alloc_pct * 0.8, 0.01)
-    elif win_rate < 30:
-        alloc_pct = max(base_alloc_pct * 0.5, 0.005)
+
+# ================================================================= MARKET
+with tab_market:
+    if not pairs:
+        st.info("Select at least one trading pair in the sidebar.")
     else:
-        alloc_pct = base_alloc_pct
-
-    capital_to_use = max(current_balance * alloc_pct, min_alloc)
-
-    return capital_to_use
-
-# --- Main Trading Function ---
-def main_loop():
-    global current_capital, trade_log, open_positions
-
-    retrain_ml_background(trade_log)
-
-    for pair in [pair]:  # Using sidebar pair
-        perf = compute_trade_metrics(trade_log, trading_cfg.get("default_capital", 10))
-
-        df = load_data(pair, interval=interval_used, limit=lookback_used)
-        df = add_indicators(df)
-        if df.empty or 'ATR' not in df.columns:
-            logger.warning("Skipping pair — failed to add indicators or missing ATR.")
-            continue
-        st.write('DEBUG: Attempting to fetch klines for:', pair, interval_used, lookback_used)
-        if df.empty or not validate_df(df):
-            logger.warning(f"Invalid data for {pair}")
-            continue
-
-        df = add_indicators(df)
-        st.write('DEBUG: DataFrame after fetching and adding indicators:')
-        st.write(df.head(5))
-        st.write('DEBUG: df empty?', df.empty)
-        try:
-            base_signal = generate_signal(df)  # Base strategy signal series
-            st.write('🔎 Final signal values (last 10):', signal.tail(10))
-            if df.empty or 'ATR' not in df.columns:
-                logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
-                continue
-            st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
-            st.write('DEBUG: Is df empty?', df.empty)
-            st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
-            st.write('🔎 Final signal values (last 10):', signal.tail(10))
-            st.write('DEBUG: Is df empty?', df.empty)
-            st.write('DEBUG: Is signal empty?', signal.empty if hasattr(signal, 'empty') else 'No attribute')
-            if df.empty or 'ATR' not in df.columns:
-                logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
-                continue
-            st.write('🔎 ATR values (last 10):', df['ATR'].tail(10))
-        except Exception as e:
-            logger.error(f"Signal generation failed for {pair}: {e}")
-            continue
-
-        # ML confidence filtering
-        conf_series = None
-        if META_MODEL:
-            try:
-                conf_series = ml_confidence(df)  # Model predicts confidence over df
-            except Exception as e:
-                logger.error(f"ML confidence check failed for {pair}: {e}")
-                st.write(f"⚠️ {pair}: ML confidence computation failed, skipping.")
-                continue
-            if conf_series is None:
-                logger.warning(f"{pair}: Missing features for ML model – skipping trade.")
-                st.write(f"⚠️ {pair}: Skipping trade due to missing ML features.")
-                continue
-
-        # Determine entry threshold (autotune or manual)
-        autotune = st.session_state.sidebar.get("autotune", True)
-        if autotune:
-            try:
-                threshold_final = trading_cfg.get("threshold", 0.5)
-            except Exception as e:
-                logger.warning(f"Autotune failed for {pair}: {e}")
-                threshold_final = trading_cfg.get("threshold", 0.5)
+        c1, c2 = st.columns([1, 1])
+        mpair = c1.selectbox("Pair", pairs, key="market_pair")
+        mlimit = c2.slider("Candles", 200, 1000, 500, 50, key="market_limit")
+        if st.button("Refresh market data"):
+            cached_klines.clear()
+        df, source, err = cached_klines(mpair, interval, mlimit)
+        if err:
+            st.error(f"No market data for {mpair}: {err}")
         else:
-            threshold_final = st.session_state.sidebar.get("threshold", 0.5)
-
-        # Dynamic ATR-based multipliers for SL/TP/Trailing
-        if df.empty or 'ATR' not in df.columns:
-            logger.warning(f"Skipping {pair} — missing ATR or no data.")
-            continue
-        if df.empty or 'ATR' not in df.columns:
-            logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
-            continue
-        stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-
-        latest_base = base_signal.iloc[-1] if hasattr(base_signal, "iloc") else base_signal[-1]
-        latest_conf = None
-        if META_MODEL:
-            # Get latest confidence value
-            if isinstance(conf_series, pd.Series):
-                latest_conf = conf_series.iloc[-1]
-            elif hasattr(conf_series, '__len__') and not isinstance(conf_series, str):
-                # conf_series is array-like (e.g. numpy array/list)
-                latest_conf = conf_series[-1]
-            else:
-                # conf_series is a single scalar value
-                latest_conf = conf_series
-
-        price = df["Close"].iloc[-1]
-        if df.empty or 'ATR' not in df.columns:
-            logger.warning("Skipping pair — missing ATR or no data before ATR usage.")
-            continue
-        atr_val = df["ATR"].iloc[-1] if "ATR" in df.columns else 0.0
-
-        # BUY Condition (enter position)
-        if pair not in open_positions and latest_base > threshold_final:
-            # If ML model is present, require confidence above threshold as well
-            if META_MODEL and latest_conf is not None and latest_conf < threshold_final:
-                logger.info(f"{pair}: ML confidence {latest_conf:.2f} below threshold – trade skipped.")
-                st.write(f"⚠️ {pair}: Low ML confidence ({latest_conf:.2f}), skipping buy signal.")
-                continue
-            if len(open_positions) >= trading_cfg.get("max_positions", 5):
-                continue
-            amount = min(current_capital / price, 1.0)
-            if not validate_trade(amount, price, current_capital):
-                continue
-
+            if source != "coinex":
+                st.warning(f"CoinEx unreachable — showing cached candles ({len(df)} bars, last "
+                           f"{df['timestamp'].iloc[-1] if 'timestamp' in df else '?'}).")
             try:
-                _ = place_order(pair, "BUY", amount, price, dry_run=True)
-                open_positions[pair] = {
-                    "amount": amount,
-                    "entry_price": price,
-                    "atr_val": atr_val
-                }
-                trade_log.append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "pair": pair,
-                    "side": "BUY",
-                    "amount": amount,
-                    "price": price,
-                    "result": None
-                })
-                current_capital -= amount * price * (1 + trading_cfg.get("fee", 0.001))
-                trade_counter.inc()
-                logger.info(f"Opened BUY for {pair} at {price:.4f}")
-            except Exception as e:
-                logger.error(f"Buy execution failed for {pair}: {e}")
+                sig = generate_signals(df, strategy=strategy, threshold=threshold,
+                                       params=bt_cfg.signal_params, indicator_params=bt_cfg.indicator_params)
+                last = sig.iloc[-1]
+                k = st.columns(6)
+                k[0].metric("Last close", f"{last['Close']:.6g}")
+                k[1].metric("Signal", f"{last['signal']:+.2f}")
+                k[2].metric("Confidence", f"{last['confidence']:.2f}")
+                k[3].metric("Regime", str(last["regime"]))
+                k[4].metric("Strategy", str(last["strategy"]))
+                k[5].metric("Decision", "ENTRY" if last["entry"] else ("EXIT" if last["exit"] else "—"))
+                st.plotly_chart(dashboard.price_chart(sig.tail(mlimit), mpair), use_container_width=True)
+                st.plotly_chart(dashboard.signal_chart(sig.tail(mlimit), threshold), use_container_width=True)
+                st.caption(f"Data source: {source}. Indicators use completed candles only.")
+            except Exception as exc:
+                show_error("Signal computation failed", exc)
 
-            write_heartbeat()
-            continue
 
-        # SELL Condition (manage open position)
-        if pair in open_positions:
-            pos = open_positions[pair]
-            amount = pos["amount"]
-            entry_price = pos["entry_price"]
-            atr_entry = pos.get("atr_val", atr_val)
-
-            # Partial take-profit exit
-            if st.session_state.sidebar.get("partial_exit", True):
-                tp1 = entry_price + (atr_entry * tp_mult / 2.0)
-                if price >= tp1 and not pos.get("partial_exit_done"):
-                    logger.info(f"{pair}: Partial TP level reached – taking profit on half position.")
-                    sell_amount = amount * 0.5
-                    try:
-                        _ = place_order(pair, "SELL", sell_amount, price, dry_run=True)
-                        trade_log.append({
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "pair": pair,
-                            "side": "SELL_PARTIAL",
-                            "amount": sell_amount,
-                            "price": price,
-                            "result": "TP1"
-                        })
-                        pos["amount"] -= sell_amount
-                        pos["partial_exit_done"] = True
-                        current_capital += sell_amount * price * (1 - trading_cfg.get("fee", 0.001))
-                        logger.info(f"Partial exit executed for {pair} at TP1.")
-                    except Exception as e:
-                        logger.error(f"Partial take-profit failed for {pair}: {e}")
-                    continue
-
-            # Full exit conditions (TP, SL, or Trailing stop)
-            tp_price = entry_price + atr_entry * tp_mult
-            sl_price = entry_price - atr_entry * stop_mult
-            trail_price = max(entry_price, price - atr_entry * trail_mult)
-            exit_reason = None
-            if price >= tp_price:
-                exit_reason = "TP"
-            elif price <= sl_price:
-                exit_reason = "SL"
-            elif price <= trail_price:
-                exit_reason = "TRAIL"
+# =============================================================== BACKTEST
+with tab_bt:
+    st.subheader("Strategy-aware backtest")
+    st.caption("Signals at a bar's close execute at the next bar's open. Includes fees "
+               f"({bt_cfg.fee_rate:.2%}) and slippage ({bt_cfg.slippage_pct:.2%}).")
+    c1, c2, c3, c4 = st.columns(4)
+    bt_pairs = c1.multiselect("Pairs", pairs, default=pairs[:1], key="bt_pairs")
+    bt_limit = c2.slider("Candles (max 1000 per request; cache extends history)", 300, 1000, 1000, 50)
+    bt_capital = c3.number_input("Starting capital (USDT)", 10.0, 1e7, float(bt_cfg.initial_capital), 10.0)
+    oos = c4.checkbox("Out-of-sample split", value=True, help="Report the last 30% separately.")
+    upload = st.file_uploader("…or backtest an uploaded OHLCV CSV (columns: timestamp, open, high, low, close)",
+                              type=["csv"])
+    if st.button("▶ Run backtest", type="primary"):
+        bt_cfg.initial_capital = float(bt_capital)
+        jobs = []
+        if upload is not None:
+            try:
+                jobs.append((os.path.splitext(upload.name)[0], normalize_ohlcv(pd.read_csv(upload)), "upload"))
+            except Exception as exc:
+                show_error("Could not read CSV", exc)
+        for p in bt_pairs:
+            df, source, err = cached_klines(p, interval, bt_limit)
+            if err:
+                st.error(f"{p}: no data ({err})")
             else:
-                exit_reason = None
-
-            if exit_reason:
-                try:
-                    _ = place_order(pair, "SELL", amount, price, dry_run=True)
-                    trade_log.append({
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "pair": pair,
-                        "side": "SELL",
-                        "amount": amount,
-                        "price": price,
-                        "result": exit_reason
-                    })
-                    current_capital += amount * price * (1 - trading_cfg.get("fee", 0.001))
-                    del open_positions[pair]
-                    trade_counter.inc()
-                    logger.info(f"Closed position on {pair} due to {exit_reason}")
-                except Exception as e:
-                    logger.error(f"Error closing position on {pair}: {e}")
-                write_heartbeat()
-
-    # End of trading loop – save state
-    atomic_save_json(open_positions, POSITIONS_FILE)
-    atomic_save_json(trade_log, TRADE_LOG_FILE)
-    atomic_save_json(current_capital, CAPITAL_FILE)
-    pnl_gauge.set(current_capital)
-    retrain_ml_background(trade_log)
-
-run_backtest_btn = st.sidebar.button("Run Backtest")
-
-# --- Backtest Execution ---
-pair = st.sidebar.text_input('Trading Pair', value='BTCUSDT')
-if run_backtest_btn:
-    st.write("🔎 Fetching latest top CoinEx symbols...")
-    if "TRADING_PAIRS" not in st.session_state:
-        st.session_state["TRADING_PAIRS"] = get_top_coinex_symbols_by_market_cap()
-
-    TRADING_PAIRS = st.session_state["TRADING_PAIRS"]
-
-    st.write("Top symbols:", TRADING_PAIRS[:5], "...")
-
-    updated_pairs = []
-    for sym in TRADING_PAIRS:
-        try:
-            st.write(f"🔄 Updating data for {sym}...")
-            update_historical_data(sym, interval=interval_used, lookback=lookback_used)
-            updated_pairs.append(sym)
-        except Exception as e:
-            st.write(f"⚠ Skipping {sym} due to data error: {e}")
-    st.write(f"✅ Updated {len(updated_pairs)} symbols.")
-    try:
-        st.sidebar.success("Backtest started...")
-        all_results = []
-        starting_capital = trading_cfg.get("default_capital", 10.0)
-        day_returns = []
-        total_trades = 0
-
-        for pair in updated_pairs:
-            if st.session_state.sidebar.get("mode") == "Auto":
-                pass
-            else:
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-
-            df = load_data(pair, interval=interval_used, limit=lookback_used)
-            df = add_indicators(df)
-            if df.empty or 'ATR' not in df.columns:
-                logger.warning("Skipping pair — failed to add indicators or missing ATR.")
-                continue
-            if df.empty or not validate_df(df):
-                st.sidebar.error(f"Backtest failed: No valid data for {pair}")
-                continue
-            else:
-                df = add_indicators(df)
-
-                # --- Generate signal series (with ML confidence if available) ---
-                if META_MODEL:
-                    conf_series = None
-                    try:
-                        conf_series = ml_confidence(df)
-                    except Exception as e:
-                        logger.error(f"Backtest ML confidence error for {pair}: {e}")
-                        conf_series = None
-
-                    if conf_series is None:
-                        st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
-                        continue
+                jobs.append((p, df, source))
+        summaries, saved = [], []
+        for name, df, source in jobs:
+            try:
+                with st.spinner(f"Backtesting {name}…"):
+                    if oos:
+                        both = run_out_of_sample(df, bt_cfg, name)
+                        res = both["out_of_sample"]
+                        summaries.append({"pair": name, "segment": "in-sample", **both["in_sample"].metrics})
+                        summaries.append({"pair": name, "segment": "out-of-sample", **res.metrics})
                     else:
-                        base_signal = generate_signal(df)
-                        # Combine base signal and ML confidence by gating
-                        if not isinstance(conf_series, pd.Series):
-                            conf_series = pd.Series(conf_series, index=df.index)
-                        signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
-                else:
-                    signal = generate_signal(df)
-
-                # --- If ML failed completely, skip backtest ---
-                if META_MODEL and (conf_series is None):
-                    backtest_result = None
-                    st.warning(f"Skipping backtest for {pair} — missing ML confidence.")
-                    continue
-
-                # --- Run backtest (corrected call matching new backtester.py) ---
-                try:
-                    # --- Run backtest (fully updated arguments) ---
-                    backtest_result = run_backtest(
-                        signal=signal,
-                        pair=pair,
-                        interval=interval_used,
-                        limit=lookback_used,
-                        equity=current_capital,
-                        data=df
-
-                    )
-                except Exception as e:
-                    logger.error(f"Backtest failed for {pair}: {e}")
-                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
-                    st.stop()
-                except Exception as e:
-                    logger.error(f"Backtest failed for {pair}: {e}")
-                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
-                    continue
-
-                if backtest_result is None or backtest_result.empty:
-                    st.warning(f"No valid backtest results for {pair}.")
-                    continue
-
-                # --- Show results ---
-                st.write("📊 Backtest Results", backtest_result)
-
-                # --- Save results ---
-                try:
-                    atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-                    st.sidebar.success("✅ Backtest results saved!")
-                except Exception as e:
-                    logger.error(f"Saving backtest results failed: {e}")
-                    st.sidebar.error("Saving backtest results failed!")
-
-                # --- Final Signal Check ---
-                latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-                if abs(latest_signal) < threshold_used:
-                    logger.info(
-                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                    )
-                    st.write(
-                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                    )
-                    continue
-
-                logger.info(f"🚀 Preparing backtest for {pair}")
-                st.write(f"🚀 Preparing backtest for {pair}")
-
-                if df.empty or 'ATR' not in df.columns:
-                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
-                    continue
-                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-                logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
-
-                # **This block was duplicated, removed redundant call**
-                # Removed invalid backtest_resultcall
-
-                if backtest_result.empty:
-                    logger.info(f"🔎 No backtest results for {pair} — possible no valid trades.")
-                    st.write(f"⚠ No valid trades for {pair}.")
-                else:
-                    logger.info(f"✅ Backtest results found for {pair}, appending to all_results.")
-                    st.write(f"✅ Backtest completed for {pair}.")
-                    st.write(backtest_result.head(5))  # Show first 5 trades
-
-                    all_results.append(backtest_result)
-
-                    summaries = backtest_result[backtest_result["type"] == "summary"]
-                    for _, row in summaries.iterrows():
-                        day_return = row.get("daily_return_pct", 0.0)
-                        current_capital *= (1 + day_return / 100.0)
-                        day_returns.append(day_return)
-                        total_trades += row.get("trades", 0)
-
-        # --- Results ---
-        if all_results:
-            final_df = pd.concat(all_results, ignore_index=True)
-            avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
-
-            st.success(f"✅ Backtest complete across {len(all_results)} pairs!")
-            st.metric("Final Capital", f"${current_capital:.2f}")
-            st.metric("Average Daily Return", f"{avg_day_return:.2f}%")
-            st.metric("Total Trades Executed", f"{total_trades}")
-
-            st.dataframe(final_df)
-
-            try:
-                atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-            except Exception as e:
-                logger.error(f"Saving backtest results failed: {e}")
-        else:
-            st.warning("❗ No valid backtest results to display.")
-
-    except Exception as e:
-        logger.exception("Backtest execution error")
-        st.error(f"Backtest error: {e}")
-
-# --- Global Error Catching for Crash Recovery ---
-import sys
-def global_exception_handler(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
-    st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
-
-sys.excepthook = global_exception_handler
-
-if run_backtest_btn:
-    try:
-        st.sidebar.success("Backtest started...")
-        all_results = []
-        starting_capital = trading_cfg.get("default_capital", 10.0)
-        day_returns = []
-        total_trades = 0
-
-        for pair in TRADING_PAIRS:
-            if st.session_state.sidebar.get("mode") == "Auto":
-                pass
-            else:
-                threshold_used = st.session_state.sidebar.get("threshold", 0.5)
-
-            df = load_data(pair, interval=interval_used, limit=lookback_used)
-            df = add_indicators(df)
-            if df.empty or 'ATR' not in df.columns:
-                logger.warning("Skipping pair — failed to add indicators or missing ATR.")
-                continue
-            if df.empty or not validate_df(df):
-                 st.sidebar.error(f"Backtest failed: No valid data for {pair}")
-                 continue
-            else:
-                df = add_indicators(df)
-
-                # --- Generate signal series (with ML confidence if available) ---
-                if META_MODEL:
-                    conf_series = None
-                    try:
-                        conf_series = ml_confidence(df)
-                    except Exception as e:
-                        logger.error(f"Backtest ML confidence error for {pair}: {e}")
-                        conf_series = None
-
-                    if conf_series is None:
-                        st.sidebar.error(f"Backtest failed: Missing ML model features for {pair}")
-                        continue
-                    else:
-                        base_signal = generate_signal(df)
-                        # Combine base signal and ML confidence by gating
-                        if not isinstance(conf_series, pd.Series):
-                            conf_series = pd.Series(conf_series, index=df.index)
-                        signal = pd.DataFrame({"base": base_signal, "conf": conf_series}).min(axis=1)
-                else:
-                    signal = generate_signal(df)
-
-                # --- If ML failed completely, skip backtest ---
-                if META_MODEL and (conf_series is None):
-                    backtest_result = None
-                    st.warning(f"Skipping backtest for {pair} — missing ML confidence.")
-                    continue
-
-                # --- Run backtest (corrected call matching new backtester.py) ---
-                try:
-                    # --- Run backtest (fully updated arguments) ---
-                    backtest_result = run_backtest(
-                        signal=signal,
-                        pair=pair,
-                        interval=interval_used,
-                        limit=lookback_used,
-                        equity=current_capital,
-                        data=df,
-                    )
-                except Exception as e:
-                    logger.error(f"Backtest failed for {pair}: {e}")
-                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
-                    st.stop()
-                except Exception as e:
-                    logger.error(f"Backtest failed for {pair}: {e}")
-                    st.sidebar.error(f"Backtest failed for {pair}: {e}")
-                    continue
-
-                if backtest_result is None or backtest_result.empty:
-                    st.warning(f"No valid backtest results for {pair}.")
-                    continue
-
-                # --- Show results ---
-                st.write("📊 Backtest Results", backtest_result)
-
-                # --- Save results ---
-                try:
-                    atomic_save_json(backtest_result.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-                    st.sidebar.success("✅ Backtest results saved!")
-                except Exception as e:
-                    logger.error(f"Saving backtest results failed: {e}")
-                    st.sidebar.error("Saving backtest results failed!")
-
-                # --- Final Signal Check ---
-                latest_signal = signal.iloc[-1] if hasattr(signal, "iloc") else signal[-1]
-                if abs(latest_signal) < threshold_used:
-                    logger.info(
-                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                    )
-                    st.write(
-                        f"⚠ Signal below threshold ({latest_signal:.2f} < {threshold_used:.2f}), skipping {pair}."
-                    )
-                    continue
-
-                logger.info(f"🚀 Preparing backtest for {pair}")
-                st.write(f"🚀 Preparing backtest for {pair}")
-
-                if df.empty or 'ATR' not in df.columns:
-                    logger.warning("Skipping pair — missing ATR or no data before ATR multipliers.")
-                    continue
-                stop_mult, tp_mult, trail_mult = estimate_dynamic_atr_multipliers(df)
-                logger.info(f"Stop multiplier: {stop_mult}, TP multiplier: {tp_mult}, Trail multiplier: {trail_mult}")
-
-        # --- Results ---
-        if all_results:
-            final_df = pd.concat(all_results, ignore_index=True)
-            avg_day_return = sum(day_returns) / len(day_returns) if day_returns else 0.0
-
-            st.success(f"✅ Backtest complete across {len(all_results)} pairs!")
-            st.metric("Final Capital", f"${current_capital:.2f}")
-            st.metric("Average Daily Return", f"{avg_day_return:.2f}%")
-            st.metric("Total Trades Executed", f"{total_trades}")
-
-            st.dataframe(final_df)
-
-            try:
-                atomic_save_json(final_df.to_dict(orient="records"), BACKTEST_RESULTS_FILE)
-            except Exception as e:
-                logger.error(f"Saving backtest results failed: {e}")
-        else:
-            st.warning("❗ No valid backtest results to display.")
-
-    except Exception as e:
-        logger.exception("Backtest execution error")
-        st.error(f"Backtest error: {e}")
-
-# --- Global Error Catching for Crash Recovery ---
-import sys
-def global_exception_handler(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logger.critical(f"UNHANDLED EXCEPTION:\n{error_msg}")
-    st.error(f"Critical Error! {exc_type.__name__}: {exc_value}")
-
-sys.excepthook = global_exception_handler
-import os
-import json
-import streamlit as st
-
-def load_backtest_results():
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    RESULTS_PATH = os.path.normpath(os.path.join(BASE_DIR, "state", "backtest_results.json"))
-    with st.expander("🔎 Backtest Results Debug Info", expanded=False):
-        st.write("Current working directory:", os.getcwd())
-        st.write("__file__:", __file__)
-        st.write("Looking for results at:", RESULTS_PATH)
-        state_dir = os.path.dirname(RESULTS_PATH)
-        if os.path.exists(state_dir):
-            st.write("Files in ./state/:", os.listdir(state_dir))
-        else:
-            st.write("NO STATE DIR")
-    if not os.path.exists(RESULTS_PATH):
-        st.warning(f"❗ backtest_results.json does not exist at {RESULTS_PATH}")
-        return []
-    try:
-        with open(RESULTS_PATH, "r") as f:
-            raw = f.read()
-        # Try JSON array
+                        res = run_backtest(df, bt_cfg, name)
+                        summaries.append({"pair": name, "segment": "full", **res.metrics})
+                st.markdown(f"#### {name} <small>({source}, {len(df)} bars)</small>", unsafe_allow_html=True)
+                m = res.metrics
+                k = st.columns(6)
+                k[0].metric("Return", f"{m['total_return_pct']:.2f}%",
+                            f"buy&hold {m['buy_and_hold_return_pct']:.2f}%", delta_color="off")
+                k[1].metric("Trades", m["trades"])
+                k[2].metric("Win rate", f"{m['win_rate_pct']:.1f}%")
+                k[3].metric("Max drawdown", f"{m['max_drawdown_pct']:.2f}%")
+                k[4].metric("Profit factor", f"{m['profit_factor']:.2f}")
+                k[5].metric("Fees paid", f"{m['fees_paid']:.2f}")
+                st.plotly_chart(dashboard.equity_chart(res.equity, f"{name} equity"), use_container_width=True)
+                if len(res.trades):
+                    st.dataframe(res.trades.drop(columns=["id"]), use_container_width=True, height=260)
+                if res.open_position:
+                    st.info(f"Open at end: {res.open_position['qty']:.6g} @ {res.open_position['entry_price']:.6g}, "
+                            f"unrealised PnL {m['unrealised_pnl']:.4f}")
+                for s in autotune.suggest_tuning_parameters(m):
+                    st.caption("• " + s)
+                saved.append({"pair": name, "metrics": m, "trades": res.trades.to_dict("records")})
+            except Exception as exc:
+                show_error(f"Backtest failed for {name}", exc)
+        if summaries:
+            st.markdown("### Summary")
+            st.dataframe(pd.DataFrame(summaries).drop(columns=["exit_reasons"], errors="ignore"),
+                         use_container_width=True)
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(BACKTEST_RESULTS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"time": time.time(), "config": bt_cfg.as_dict(), "results": saved}, f, default=str)
+    elif os.path.exists(BACKTEST_RESULTS_FILE):
         try:
-            results = json.loads(raw)
-            if isinstance(results, dict):
-                results = [results]
-            elif isinstance(results, list):
-                # Already correct
-                pass
-            else:
-                # Unknown JSON, wrap in list
-                results = [results]
-        except json.JSONDecodeError:
-            # Try tab-separated or CSV
-            import csv
-            from io import StringIO
-            # Try headers
-            lines = raw.strip().splitlines()
-            # If first line has no letters, assume no header and use default
-            first_line = lines[0]
-            if all(not c.isalpha() for c in first_line.replace('\t','').replace(',','')):
-                keys = ["pair", "entry", "exit", "profit"]
-            else:
-                # Use header row
-                keys = [k.strip() for k in next(csv.reader([first_line], delimiter='\t'))]
-                lines = lines[1:]
-            results = []
-            for row in csv.reader(lines, delimiter='\t'):
-                if len(row) == len(keys):
-                    results.append(dict(zip(keys, row)))
-    except Exception as e:
-        st.error(f"❗ Error loading backtest results: {e}")
-        return []
-    return results
+            with open(BACKTEST_RESULTS_FILE, encoding="utf-8") as f:
+                prev = json.load(f)
+            st.caption(f"Last saved backtest ({time.strftime('%Y-%m-%d %H:%M', time.localtime(prev['time']))}):")
+            st.dataframe(pd.DataFrame([{"pair": r["pair"], **{k: v for k, v in r["metrics"].items()
+                                                              if not isinstance(v, dict)}}
+                                       for r in prev.get("results", [])]), use_container_width=True)
+        except Exception as exc:
+            st.caption(f"Previous results unreadable: {exc}")
 
-# --- Display Backtest Results ---
-st.header("Backtest Results (Latest)")
-results = load_backtest_results()
-if not results:
-    st.warning("❗ No valid backtest results to display.")
-else:
-    # Try DataFrame. If that fails, fallback to JSON.
-    import pandas as pd
+
+# ================================================================== PAPER
+def make_trader() -> PaperTrader:
+    markets, _ = cached_markets()
+    ex = PaperExecutor(paper_settings.fee_rate, paper_settings.slippage_pct, markets=markets or None,
+                       min_notional=paper_settings.risk.min_notional)
+    bundle = load_bundle(ML_MODEL_PATH) if paper_settings.use_ml or st.session_state.get("use_ml") else None
+    if st.session_state.get("use_ml"):
+        paper_settings.use_ml = True
+    return PaperTrader(paper_settings, PAPER_DIR, price_fn=live_price, executor=ex, ml_bundle=bundle)
+
+
+def render_paper(trader: PaperTrader) -> None:
+    m = trader.metrics()
+    k = st.columns(7)
+    k[0].metric("Equity", f"{m['equity']:.2f}", f"{m['total_return_pct']:+.2f}%")
+    k[1].metric("Cash", f"{m['cash']:.2f}")
+    k[2].metric("Open positions", m["open_positions"])
+    k[3].metric("Realised PnL", f"{m['realised_pnl']:.4f}")
+    k[4].metric("Unrealised PnL", f"{m['unrealised_pnl']:.4f}")
+    k[5].metric("Win rate", f"{m['win_rate_pct']:.1f}%", f"{m['trades']} trades", delta_color="off")
+    k[6].metric("Max drawdown", f"{m['max_drawdown_pct']:.2f}%")
+    if m["kill_switch"]:
+        st.error("Kill switch is ACTIVE — no new entries. Clear it in 'Risk & status' when ready.")
+    led = trader.ledger
+    if led["equity_history"]:
+        st.plotly_chart(dashboard.equity_chart(pd.DataFrame(led["equity_history"]), "Paper equity"),
+                        use_container_width=True)
+    st.markdown("**Open positions**")
+    if led["positions"]:
+        rows = []
+        for pair, p in trader.positions.items():
+            px = float(led["last_prices"].get(pair, p.entry_price))
+            rows.append({"pair": pair, "qty": p.qty, "entry": p.entry_price, "price": px, "stop": p.effective_stop,
+                         "take_profit": p.take_profit, "unrealised_pnl": p.unrealised_pnl(px, trader.executor.fee_rate),
+                         "strategy": p.strategy, "opened": p.entry_time})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    else:
+        st.caption("No open positions.")
+    st.markdown("**Trade ledger**")
+    if led["trades"]:
+        st.dataframe(pd.DataFrame(led["trades"]).iloc[::-1].drop(columns=["id"], errors="ignore"),
+                     use_container_width=True, height=260)
+    else:
+        st.caption("No closed trades yet.")
+    with st.expander(f"Decision log ({len(led['decisions'])})"):
+        st.dataframe(pd.DataFrame(led["decisions"][-300:]).iloc[::-1], use_container_width=True, height=300)
+    if led["failed_orders"]:
+        with st.expander(f"Failed simulated orders ({len(led['failed_orders'])})"):
+            st.dataframe(pd.DataFrame(led["failed_orders"]), use_container_width=True)
+
+
+with tab_paper:
+    st.subheader("Paper trading (simulated orders on live CoinEx data)")
+    st.caption("Decides once per completed candle. Orders are simulated with fees and slippage; nothing is sent "
+               "to the exchange. For unattended operation run `python run_paper.py` instead of keeping this tab open.")
+    c1, c2, c3 = st.columns([1, 1, 2])
+    run_once = c1.button("▶ Run one step now", type="primary", disabled=not pairs)
+    auto = c2.toggle("Auto-run", key="paper_auto", help="Runs a step every refresh interval while this tab is open.")
+    refresh_s = int(tcfg.get("paper_refresh_seconds", 60))
     try:
-        df = pd.DataFrame(results)
-        if len(df):
-            st.dataframe(df)
+        trader = make_trader()
+    except Exception as exc:
+        show_error("Could not open paper ledger", exc)
+        st.stop()
+
+    def do_step():
+        try:
+            decisions = trader.step(pairs)
+            acted = [d for d in decisions if d["action"] in ("BUY", "SELL", "BUY_FAILED", "SELL_FAILED", "ERROR",
+                                                             "DATA_ERROR", "HALT")]
+            for d in acted:
+                msg = f"{d['pair']}: {d['action']} — {d['reason']}"
+                if "FAIL" in d["action"] or "ERROR" in d["action"]:
+                    st.error(msg)
+                else:
+                    st.info(msg)
+        except LedgerBusy as exc:
+            st.warning(str(exc))
+        except Exception as exc:
+            show_error("Paper step failed", exc)
+
+    if run_once:
+        do_step()
+
+    if auto:
+        @st.fragment(run_every=refresh_s)
+        def auto_panel():
+            do_step()
+            st.caption(f"Auto-run: last step {time.strftime('%H:%M:%S')}, every {refresh_s}s.")
+            render_paper(trader)
+        auto_panel()
+    else:
+        render_paper(trader)
+
+
+# ===================================================== ML & OPTIMISATION
+with tab_ml:
+    st.subheader("ML entry filter")
+    st.caption("Predicts whether an entry hits take-profit before stop-loss. Trained on a chronological split with "
+               "a purge gap; it's only flagged useful if it beats the base win rate on held-out data.")
+    bundle = load_bundle(ML_MODEL_PATH)
+    if bundle:
+        rep = bundle["report"]
+        (st.success if rep["useful"] else st.warning)(
+            f"Saved model: {'shows an out-of-sample edge' if rep['useful'] else 'NO demonstrated edge'} — "
+            f"validation AUC {rep['validation_auc']:.3f}, precision {rep['validation_precision_at_threshold']:.3f} "
+            f"vs base win rate {rep['validation_base_win_rate']:.3f} (trained {rep['trained_at'][:16]}).")
+        with st.expander("Model report"):
+            st.json(rep)
+    else:
+        st.info("No ML filter trained yet.")
+    use_ml = st.checkbox("Gate paper-trading entries with the ML filter", key="use_ml",
+                         disabled=bundle is None,
+                         help="Not recommended unless the report shows an out-of-sample edge.")
+    c1, c2 = st.columns(2)
+    ml_pairs = c1.multiselect("Training pairs", pairs, default=pairs[:3], key="ml_pairs")
+    if c2.button("Train ML filter", disabled=not ml_pairs):
+        frames = {}
+        for p in ml_pairs:
+            df, source, err = cached_klines(p, interval, 1000)
+            if err:
+                st.error(f"{p}: {err}")
+            else:
+                frames[p] = df
+        if frames:
+            try:
+                with st.spinner("Training…"):
+                    b = train_filter(frames, bt_cfg.exit_rules, threshold=bt_cfg.ml_threshold, strategy=strategy,
+                                     signal_threshold=threshold, save_path=ML_MODEL_PATH)
+                st.json(b["report"])
+            except Exception as exc:
+                show_error("ML training failed", exc)
+    if st.button("Compare rule-only vs ML-gated (out-of-sample)", disabled=not pairs):
+        df, source, err = cached_klines(pairs[0], interval, 1000)
+        if err:
+            st.error(err)
         else:
-            st.json(results)
-    except Exception:
-        st.json(results)
+            try:
+                with st.spinner("Training on first 70%, testing on last 30%…"):
+                    r = autotune.ml_out_of_sample_backtest(df, bt_cfg, pairs[0])
+                st.dataframe(pd.DataFrame({"rule_only": r["rule_only"], "ml_gated": r["ml_gated"]})
+                             .drop(index=["exit_reasons"], errors="ignore").astype(str), use_container_width=True)
+                st.caption(f"Model trained only on the first 70% of {pairs[0]}; useful={r['report']['useful']}.")
+            except Exception as exc:
+                show_error("ML comparison failed", exc)
+
+    st.divider()
+    st.subheader("Parameter optimisation (train → out-of-sample)")
+    st.caption("Grid search on the first 70% only, then one evaluation on the unseen 30%. Results are never "
+               "applied automatically.")
+    c1, c2 = st.columns(2)
+    opt_pair = c1.selectbox("Pair", pairs or ["BTCUSDT"], key="opt_pair")
+    wf = c2.checkbox("Walk-forward (4 folds)")
+    if st.button("Run optimisation"):
+        df, source, err = cached_klines(opt_pair, interval, 1000)
+        if err:
+            st.error(err)
+        else:
+            try:
+                with st.spinner("Optimising…"):
+                    if wf:
+                        r = autotune.walk_forward(df, bt_cfg, pair=opt_pair)
+                        st.metric("Compounded out-of-sample return", f"{r['oos_compounded_return_pct']:.2f}%",
+                                  f"{r['profitable_folds']}/{r['n_folds']} folds profitable", delta_color="off")
+                        st.dataframe(r["folds"].astype(str), use_container_width=True)
+                    else:
+                        r = autotune.optimise(df, bt_cfg, pair=opt_pair)
+                        if r["best_params"] is None:
+                            st.warning(r["reason"])
+                        else:
+                            (st.success if r["confirmed"] else st.warning)(
+                                f"Best in-sample params {r['best_params']} — out-of-sample: {r['reason']}.")
+                            st.dataframe(pd.DataFrame({"in_sample": r["in_sample"],
+                                                       "out_of_sample": r["out_of_sample"]})
+                                         .drop(index=["exit_reasons"], errors="ignore").astype(str),
+                                         use_container_width=True)
+                        st.dataframe(r["table"], use_container_width=True, height=250)
+            except Exception as exc:
+                show_error("Optimisation failed", exc)
+
+
+# ========================================================== RISK & STATUS
+with tab_status:
+    st.subheader("Capital protection")
+    c1, c2 = st.columns(2)
+    c1.markdown("**Risk limits (active profile + overrides)**")
+    c1.json({k: v for k, v in paper_settings.risk.as_dict().items() if k != "kill_switch_file"})
+    c2.markdown("**Exit rules**")
+    c2.json(paper_settings.exit_rules.__dict__)
+    try:
+        trader_s = make_trader()
+        ks = trader_s.risk.kill_switch_active()
+        st.markdown(f"**Kill switch:** {'🛑 ACTIVE' if ks else '✅ off'}")
+        b1, b2, b3 = st.columns(3)
+        confirm_stop = b1.checkbox("Confirm emergency stop")
+        if b1.button("🛑 Emergency stop (close all paper positions)", disabled=not confirm_stop):
+            closed = trader_s.emergency_stop("manual emergency stop from UI")
+            st.warning(f"Kill switch engaged; {len(closed)} paper position(s) closed.")
+        if b2.button("Clear kill switch", disabled=not ks):
+            trader_s.risk.clear_kill_switch()
+            st.success("Kill switch cleared.")
+        if b3.button("Reconcile paper ledger"):
+            issues = trader_s.reconcile()
+            if issues:
+                st.error("; ".join(issues))
+            else:
+                st.success("Ledger consistent.")
+        with st.expander("Reset paper account"):
+            new_cap = st.number_input("New starting capital (USDT)", 10.0, 1e7, float(paper_settings.initial_capital))
+            if st.checkbox("I understand this erases the paper ledger") and st.button("Reset"):
+                trader_s.reset(new_cap)
+                st.success("Paper account reset.")
+    except LedgerBusy as exc:
+        st.warning(str(exc))
+    except Exception as exc:
+        show_error("Status panel error", exc)
+
+    st.divider()
+    st.subheader("Exchange")
+    client = get_client()
+    st.markdown(f"- Live trading: **{'LOCKED' if LIVE_TRADING_LOCKED else 'unlocked'}**\n"
+                f"- API credentials present: **{'yes' if client.has_credentials else 'no'}** "
+                "(read from environment / .env; never shown)")
+    if st.button("Test CoinEx connection"):
+        try:
+            t0 = time.time()
+            n = len(client.get_markets(refresh=True))
+            st.success(f"CoinEx public API OK: {n} markets ({(time.time() - t0) * 1000:.0f} ms)")
+        except Exception as exc:
+            st.error(f"CoinEx unreachable: {exc}")
+        if client.has_credentials:
+            try:
+                bal = client.get_spot_balance()
+                st.write({k: v for k, v in bal.items() if v["available"] or v["frozen"]})
+            except CoinExError as exc:
+                st.error(f"Balance check failed: {exc}")

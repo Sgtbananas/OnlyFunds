@@ -25,6 +25,11 @@ trading:
   - SOLUSDT
   pair_universe_size: 200
   paper_refresh_seconds: 60
+  trading_windows:        # optional entry window; exits always run
+    enabled: false
+    start_time: '09:00'
+    end_time: '18:00'
+    timezone: UTC
 
 risk:
   risk_per_trade: 0.01     # fraction of equity lost if the stop is hit

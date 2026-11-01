@@ -1,58 +1,37 @@
-import os
+"""Pair universe and historical data helpers (CoinEx API v2)."""
+from __future__ import annotations
+
 import logging
-import requests
-from core.core_data import fetch_klines, load_data, save_data, add_indicators
+from typing import Iterable, List
+
+import pandas as pd
+
+from core.coinex_client import top_usdt_markets
+from core.core_data import fetch_klines, get_client
+from core.indicators import add_indicators
 
 logger = logging.getLogger(__name__)
 
-def get_top_coinex_symbols_marketcap(limit=250):
-    """
-    Return top USDT symbols by volume * % change (proxy for market cap impact).
-    """
-    try:
-        url = "https://api.coinex.com/v1/market/ticker/all"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        tickers = response.json()["data"]["ticker"]
-    except Exception as e:
-        logger.error(f"Failed to fetch tickers: {e}")
-        return ["BTCUSDT", "ETHUSDT"]
 
-    candidates = []
-    for pair, stats in tickers.items():
-        if pair.endswith("USDT") and not any(x in pair for x in ["UP", "DOWN", "BEAR", "BULL"]):
-            try:
-                volume = float(stats.get("vol", 0))
-                change_pct = abs(float(stats.get("percent_change_24h", 0)))
-                score = volume * change_pct
-                candidates.append((pair, score))
-            except Exception:
-                continue
+def get_top_coinex_symbols_marketcap(limit: int = 200) -> List[str]:
+    """Top tradable USDT pairs by 24h quote volume (CoinEx has no market-cap field; volume is the proxy)."""
+    return top_usdt_markets(get_client(), limit=limit)
 
-    sorted_pairs = sorted(candidates, key=lambda x: x[1], reverse=True)
-    return [p[0] for p in sorted_pairs[:limit]]
 
-def update_historical_data(symbols, interval="5m", lookback=1000):
-    updated_symbols = []
+def update_historical_data(symbols: Iterable[str], interval: str = "5m", lookback: int = 1000) -> List[str]:
+    """Refresh the local candle cache for ``symbols``; returns the symbols that succeeded."""
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    ok = []
     for pair in symbols:
         try:
-            df = load_data(pair, interval=interval, limit=lookback)
-            if df.empty:
-                logger.warning(f"No data for {pair}, fetching fresh.")
-                df = fetch_klines(pair, interval=interval, limit=lookback)
-                if df.empty:
-                    continue
-                df = add_indicators(df)
-                save_data(df, pair, interval, lookback)
-            else:
-                logger.info(f"Data loaded for {pair}. {len(df)} rows.")
-            updated_symbols.append(pair)
-        except Exception as e:
-            logger.error(f"Failed to update {pair}: {e}")
-            continue
-    return updated_symbols
+            df = fetch_klines(pair, interval, lookback)
+            if not df.empty:
+                ok.append(pair)
+        except Exception as exc:
+            logger.error("Failed to update %s: %s", pair, exc)
+    return ok
 
-def load_data_for_backtest(pair, interval="5m", lookback=1000):
-    df = load_data(pair, interval=interval, limit=lookback)
-    df = add_indicators(df)
-    return df
+
+def load_data_for_backtest(pair: str, interval: str = "5m", lookback: int = 1000) -> pd.DataFrame:
+    return add_indicators(fetch_klines(pair, interval, lookback))

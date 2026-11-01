@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -188,7 +189,10 @@ class CoinExClient:
 
     def _parse(self, resp) -> Any:
         if resp.status_code != 200:
-            raise CoinExError(None, f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
+            # Gateway errors come back as HTML; keep only the <title> text.
+            m = re.search(r"<title>(.*?)</title>", resp.text or "", re.I | re.S)
+            detail = m.group(1).strip() if m else (resp.text or "")[:200]
+            raise CoinExError(None, f"HTTP {resp.status_code} from CoinEx gateway: {detail}", resp.status_code)
         try:
             payload = resp.json()
         except ValueError:

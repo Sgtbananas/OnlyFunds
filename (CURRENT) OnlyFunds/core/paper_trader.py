@@ -31,6 +31,7 @@ from core.indicators import validate_ohlcv
 from core.meta_learner import StrategyRotation
 from core.positions import ExitRules, Position, close_trade_record, check_exit
 from core.risk_manager import RiskLimits, RiskManager
+from core.strategy_utils import within_trading_hours
 from core.trade_execution import PaperExecutor, new_client_id
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class PaperSettings:
     risk: RiskLimits = field(default_factory=RiskLimits)
     signal_params: Dict[str, Any] = field(default_factory=dict)
     indicator_params: Dict[str, Any] = field(default_factory=dict)
+    trading_window: Dict[str, Any] = field(default_factory=dict)  # {enabled, start_time, end_time, timezone}
 
 
 def _now() -> datetime:
@@ -341,10 +343,16 @@ class PaperTrader:
         if not new_bar:
             return decisions
         self.ledger["last_bar"][pair] = last_ms
+        if self._is_stale(last_ms, s.interval):
+            return [self._decide(pair, "DATA_STALE", f"latest candle too old (source: "
+                                 f"{df.attrs.get('source', 'unknown')}); no new entries", price=ref)]
         meta = dict(signal=float(last["signal"]), confidence=float(last["confidence"]),
                     regime=str(last["regime"]), strategy=str(last["strategy"]), price=ref)
         if not bool(last["entry"]):
             return [self._decide(pair, "WAIT", "no entry signal", **meta)]
+        if s.trading_window.get("enabled") and not within_trading_hours({"trading_windows": s.trading_window},
+                                                                         self.now_fn()):
+            return [self._decide(pair, "SKIP", "outside configured trading window", **meta)]
         if self.rotation.is_benched(meta["strategy"], self.now_fn()):
             return [self._decide(pair, "SKIP", f"strategy {meta['strategy']} benched by rotation", **meta)]
         if s.use_ml and self.ml_bundle is not None:
@@ -358,6 +366,13 @@ class PaperTrader:
         if not ok:
             return [self._decide(pair, "BLOCKED", why, **meta)]
         return [self._buy(pair, last, ref)]
+
+    def _is_stale(self, last_open_ms: int, interval: str) -> bool:
+        """True if the newest completed candle is more than two intervals behind the clock."""
+        from core.coinex_client import INTERVAL_SECONDS
+        step_ms = INTERVAL_SECONDS.get(interval, 300) * 1000
+        now_ms = int(self.now_fn().timestamp() * 1000)
+        return now_ms - (last_open_ms + step_ms) > 2 * step_ms
 
     # ---------------------------------------------------- safety tooling
     def emergency_stop(self, reason: str = "manual emergency stop") -> List[Dict[str, Any]]:
