@@ -172,33 +172,61 @@ def load_frozen():
 
 
 # ------------------------------------------------------------------ data
+def _previous_snapshot(symbol, run_dir):
+    """Most recent earlier snapshot of ``symbol`` (keeps a coin's record after Binance stops returning it)."""
+    for d in sorted(glob.glob(os.path.join(STATE, "runs", "*")), reverse=True):
+        p = os.path.join(d, "data", f"{symbol}_1d.csv")
+        if d != run_dir and os.path.exists(p):
+            return p
+    return None
+
+
 def snapshot(run_dir, symbols):
+    """Download completed daily candles. Returns (data, status, fatal).
+
+    - A coin Binance no longer returns (empty response or HTTP 400 invalid symbol) keeps its record: its most
+      recent earlier snapshot is reused and marked; if it never had one, it is recorded as unavailable.
+    - A coin whose data stopped updating ("stale") stays in the evaluation up to its last candle, so trades and
+      open positions are never dropped; it no longer limits the evaluation date.
+    - Any other download failure makes the whole run fatal: nothing is computed from a partial universe.
+    """
     from core.history import fetch_binance
     end = (pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    data, status = {}, {}
+    data, status, fatal = {}, {}, []
     os.makedirs(os.path.join(run_dir, "data"), exist_ok=True)
     for s in symbols:
+        df, note = None, None
         try:
             df = fetch_binance(s, "1d", WARMUP_START, end)
         except Exception as exc:
-            status[s] = f"fetch failed: {str(exc)[:160]}"
-            continue
-        if df.empty:
-            status[s] = "no data returned (delisted or not trading)"
-            continue
-        last = pd.to_datetime(df["timestamp"], utc=True).max()
+            msg = str(exc)
+            if "HTTP 400" in msg:
+                df = pd.DataFrame()
+                note = "Binance HTTP 400 (symbol not trading)"
+            else:
+                fatal.append(f"{s}: {msg[:160]}")
+                continue
+        if df is None or df.empty:
+            prev = _previous_snapshot(s, run_dir)
+            if prev is None:
+                status[s] = f"no data returned (delisted or not trading){'; ' + note if note else ''}"
+                continue
+            df = pd.read_csv(prev)
+            note = f"no longer returned by Binance; using last snapshot {os.path.relpath(prev, STATE)}"
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         path = os.path.join(run_dir, "data", f"{s}_1d.csv")
         df.to_csv(path, index=False)
         with open(path, "rb") as f:
             h = hashlib.sha256(f.read()).hexdigest()
-        days = pd.to_datetime(df["timestamp"], utc=True)
+        days = df["timestamp"]
         missing = int(((days.diff().dt.days.fillna(1)) - 1).clip(lower=0).sum())
+        last = days.max()
         status[s] = {"rows": len(df), "first": f"{days.min():%Y-%m-%d}", "last_complete_day": f"{last:%Y-%m-%d}",
                      "missing_days": missing, "sha256": h,
-                     "stale": bool(last < pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2))}
-        if not status[s]["stale"]:
-            data[s] = df
-    return data, status
+                     "stale": bool(last < pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2)),
+                     **({"note": note} if note else {})}
+        data[s] = df
+    return data, status, fatal
 
 
 # ------------------------------------------------------------------ books
@@ -343,13 +371,24 @@ def cmd_update(skip_random=False):
         print(rec["status"], problems)
         return 3
     symbols = sorted(set(fz["strategies"]["T50"]["universe"]) | set(fz["strategies"]["RS3"]["universe"]))
-    data, status = snapshot(run_dir, symbols)
+    data, status, fatal = snapshot(run_dir, symbols)
     rec["data_status"] = status
+    if fatal:
+        rec["status"] = "FETCH_FAILED: nothing computed (no partial-universe evaluation)"
+        rec["fetch_errors"] = fatal
+        _write(run_dir, "run.json", rec)
+        print(rec["status"], fatal)
+        return 5
     if "BTCUSDT" not in data:
         rec["status"] = "NO BTC DATA: cannot evaluate filters; nothing computed"
         _write(run_dir, "run.json", rec)
         return 4
-    last_day = min(pd.to_datetime(df["timestamp"], utc=True).max() for df in data.values())
+    fresh = [s for s, v in status.items() if isinstance(v, dict) and not v["stale"]]
+    if not fresh:
+        rec["status"] = "NO FRESH DATA: nothing computed"
+        _write(run_dir, "run.json", rec)
+        return 4
+    last_day = min(pd.to_datetime(data[s]["timestamp"], utc=True).max() for s in fresh)
     end = (last_day + pd.Timedelta(days=1)).strftime("%Y-%m-%d")     # exclusive
     rec["evaluated_through_utc_day"] = f"{last_day:%Y-%m-%d}"
     if pd.Timestamp(end, tz="UTC") <= pd.Timestamp(START, tz="UTC"):

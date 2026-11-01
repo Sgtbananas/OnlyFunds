@@ -36,11 +36,20 @@ def shadow(tmp_path, monkeypatch):
     monkeypatch.setattr(FS, "CLUSTER_BOOT", 200)
     monkeypatch.setattr(FS, "historical_entry_rates", lambda: {s: 0.08 for s in FS.MAIN + FS.HOLDOUT})
     frames = {s: synthetic_daily(i) for i, s in enumerate(FS.MAIN + FS.HOLDOUT)}
-    state = {"end": "2027-03-01"}
+    state = {"end": "2027-03-01", "gone": set(), "fail": set(), "stale_after": {}}
 
     def fake_fetch(symbol, interval, start, end, **k):
         if symbol == "EOSUSDT":
             return pd.DataFrame(columns=["timestamp"])                       # delisted
+        if symbol in state["fail"]:
+            raise RuntimeError("Binance request failed: timeout")
+        if symbol in state["gone"]:
+            raise RuntimeError("Binance HTTP 400: Invalid symbol")
+        if symbol in state["stale_after"]:
+            df = frames[symbol]
+            ts = pd.to_datetime(df["timestamp"], utc=True)
+            return df[(ts >= pd.Timestamp(start, tz="UTC")) &
+                      (ts < pd.Timestamp(state["stale_after"][symbol], tz="UTC"))].reset_index(drop=True)
         df = frames[symbol]
         ts = pd.to_datetime(df["timestamp"], utc=True)
         return df[(ts >= pd.Timestamp(start, tz="UTC")) & (ts < pd.Timestamp(state["end"], tz="UTC"))].reset_index(drop=True)
@@ -115,3 +124,41 @@ def test_shadow_code_has_no_order_or_credential_paths():
     for bad in ("place_order", "cancel_order", "allow_trading", "CoinExClient", "API_SECRET", "X-MBX-APIKEY",
                 "requests.post", ".post(", "signature", "LIVE_TRADING_LOCKED ="):
         assert bad not in src
+
+
+def _trades(state_dir, name="T50"):
+    rid = runs(state_dir)[-1]["run_id"]
+    return pd.read_csv(os.path.join(state_dir, "runs", rid, name, "signal_book_trades.csv"))
+
+
+def test_network_failure_computes_nothing(shadow):
+    FS.cmd_freeze()
+    shadow["fail"] = {"ETHUSDT"}
+    assert FS.cmd_update(skip_random=True) == 5
+    rec = runs(FS.STATE)[-1]
+    assert rec["status"].startswith("FETCH_FAILED") and "results" not in rec
+
+
+def test_delisted_mid_tracking_keeps_its_record(shadow):
+    FS.cmd_freeze()
+    FS.cmd_update(skip_random=True)
+    before = _trades(FS.STATE)
+    coin = before["pair"].value_counts().index[0]
+    shadow["gone"] = {coin}                                                     # Binance stops returning it
+    shadow["end"] = "2027-03-10"
+    FS.cmd_update(skip_random=True)
+    rec = runs(FS.STATE)[-1]
+    assert rec["status"] == "ok" and "last snapshot" in rec["data_status"][coin]["note"]
+    after = _trades(FS.STATE)
+    assert (after["pair"] == coin).sum() >= (before["pair"] == coin).sum()
+    assert rec["anomalies"] == []
+
+
+def test_stale_coin_stays_in_evaluation(shadow):
+    FS.cmd_freeze()
+    shadow["stale_after"] = {"BTCUSDT": "2026-12-15"}
+    FS.cmd_update(skip_random=True)
+    rec = runs(FS.STATE)[-1]
+    assert rec["status"] == "ok" and rec["data_status"]["BTCUSDT"]["stale"]
+    assert rec["evaluated_through_utc_day"] == "2027-02-28"                    # not limited by the stale coin
+    assert "BTCUSDT" in rec["results"]["T50"]["universe_available"]
