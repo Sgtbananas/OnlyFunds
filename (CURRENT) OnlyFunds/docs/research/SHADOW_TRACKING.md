@@ -49,7 +49,7 @@ RS3 has **not** demonstrated an edge. Its evidence (DEV/VAL 2019–2024 and hold
 ## How it works
 - **Daily:** `python research/forward_shadow.py update`.
   - **Schedule:** registered 2026-11-02 with the user's approval. `powershell -NoProfile -ExecutionPolicy Bypass -File
-    researchegister_shadow_task.ps1` creates `\OnlyFunds\OF2 Shadow Daily Update` (00:30 UTC daily, runs late if
+    research\register_shadow_task.ps1` creates `\OnlyFunds\OF2 Shadow Daily Update` (00:30 UTC daily, runs late if
     the PC was off); `-Remove` deletes it without touching records.
     - Test run through the scheduler (run `20261101T135519Z`): result 0, fingerprints verified, status "waiting",
       because no completed day on or after the start exists yet.
