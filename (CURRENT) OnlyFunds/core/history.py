@@ -194,10 +194,40 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+# Cost assumptions recorded with every dataset: published exchange facts are labelled as such and
+# separated from modelling assumptions. None of this is verified for a specific account.
+COST_ASSUMPTIONS = {
+    "binance": {
+        "fee_rate_per_side": {"value": 0.001, "status": "published Binance base spot fee (no VIP/BNB discount); "
+                                                       "not verified for any account"},
+        "slippage_pct": {"value": 0.0005, "status": "assumption, not measured"},
+        "stop_slippage_pct": {"value": 0.002, "status": "assumption, not measured"},
+    },
+    "okx": {
+        "fee_rate_per_side": {"value": 0.001, "status": "published OKX base spot taker fee; not verified"},
+        "slippage_pct": {"value": 0.0005, "status": "assumption, not measured"},
+        "stop_slippage_pct": {"value": 0.002, "status": "assumption, not measured"},
+    },
+    "evaluation_default": {
+        "fee_rate_per_side": {"value": 0.002, "status": "CoinEx default taker fee as shown in the CoinEx API v2 "
+                                                       "documentation example; used for all OF2 evaluations; "
+                                                       "not verified for any account"},
+    },
+}
+
+
+class DatasetExists(RuntimeError):
+    pass
+
+
 def save_dataset(df: pd.DataFrame, symbol: str, interval: str, request: Dict[str, Any],
                  exchange: str = "binance", root: Optional[str] = None,
-                 extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 extra: Optional[Dict[str, Any]] = None, overwrite: bool = False) -> Dict[str, Any]:
+    """Write a dataset and its manifest. Refuses to replace an existing dataset unless ``overwrite``:
+    validation runs reference datasets by checksum, so silent replacement would break provenance."""
     csv_path, man_path = dataset_paths(symbol, interval, exchange, root)
+    if not overwrite and (os.path.exists(man_path) or os.path.exists(csv_path)):
+        raise DatasetExists(f"{csv_path} already exists; refusing to replace it (use an explicit refresh)")
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     out = df.copy()
     out["timestamp"] = out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -208,6 +238,8 @@ def save_dataset(df: pd.DataFrame, symbol: str, interval: str, request: Dict[str
         "request": request, "downloaded_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rows": int(len(df)), "sha256": sha256_file(csv_path), "quality": quality_report(df, interval),
         "note": "Exchange-sourced candles; missing candles are not filled. Not CoinEx data.",
+        "cost_assumptions": {"exchange": COST_ASSUMPTIONS.get(exchange),
+                             "evaluation_default": COST_ASSUMPTIONS["evaluation_default"]},
     }
     if extra:
         manifest.update(extra)

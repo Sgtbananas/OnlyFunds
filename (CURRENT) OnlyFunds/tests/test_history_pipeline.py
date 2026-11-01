@@ -123,3 +123,24 @@ def test_backtest_blocks_entries_after_missing_candles():
     buys = d[d["action"] == "BUY"]["bar"]
     assert not ((buys > 1500) & (buys <= 1500 + 100)).any()
     assert (d["action"] == "DATA_GAP").any()
+
+
+def test_existing_dataset_is_never_silently_replaced(tmp_path):
+    start = history._ms("2024-01-01")
+    df = history.binance_rows_to_frame([kline(start + k * H) for k in range(20)], "1h")
+    history.save_dataset(df, "BTCUSDT", "1h", {}, root=str(tmp_path))
+    with pytest.raises(history.DatasetExists):
+        history.save_dataset(df.iloc[:5], "BTCUSDT", "1h", {}, root=str(tmp_path))
+    assert len(history.load_dataset("BTCUSDT", "1h", root=str(tmp_path))) == 20
+    m = history.save_dataset(df.iloc[:5], "BTCUSDT", "1h", {}, root=str(tmp_path), overwrite=True)
+    assert m["rows"] == 5
+
+
+def test_manifest_separates_exchange_facts_from_assumptions(tmp_path):
+    start = history._ms("2024-01-01")
+    df = history.binance_rows_to_frame([kline(start + k * H) for k in range(20)], "1h")
+    m = history.save_dataset(df, "ETHUSDT", "1h", {}, root=str(tmp_path))
+    ca = m["cost_assumptions"]
+    assert "not verified" in ca["exchange"]["fee_rate_per_side"]["status"]
+    assert ca["exchange"]["slippage_pct"]["status"].startswith("assumption")
+    assert ca["evaluation_default"]["fee_rate_per_side"]["value"] == 0.002

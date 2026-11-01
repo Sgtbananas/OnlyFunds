@@ -4,8 +4,12 @@
     python scripts/fetch_history.py --symbols BTCUSDT ETHUSDT --start 2019-01-01 --end 2026-11-01
     python scripts/fetch_history.py --cross-check 2023-01-01 2024-01-01   # compare closes with OKX
 
-Writes data/historical/binance/<SYMBOL>_<interval>.csv (+ .manifest.json with the SHA-256 and
-quality report) and docs/DATA_QUALITY_REPORT.md. Missing candles are reported, never filled.
+    python scripts/fetch_history.py --intervals 4h 1d            # several timeframes
+
+Writes data/historical/binance/<SYMBOL>_<interval>.csv (+ .manifest.json with the SHA-256, quality
+report and cost assumptions) and docs/data_quality/binance_<interval>.md. Missing candles are
+reported, never filled. Existing datasets and reports are never replaced without --refresh
+(the original 1h report is docs/DATA_QUALITY_REPORT.md).
 """
 import argparse
 import json
@@ -22,13 +26,28 @@ from core.history import (APP_ROOT, BINANCE_URL, DEFAULT_UNIVERSE, OKX_URL, cros
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", nargs="+", default=DEFAULT_UNIVERSE)
-    ap.add_argument("--interval", default="1h")
+    ap.add_argument("--interval", default="1h", help="single interval (kept for compatibility)")
+    ap.add_argument("--intervals", nargs="+", help="several intervals, e.g. 1h 4h 1d")
+    ap.add_argument("--refresh", action="store_true",
+                    help="explicitly replace existing datasets (breaks provenance of runs that used them)")
     ap.add_argument("--start", default="2019-01-01")
     ap.add_argument("--end", default="2026-11-01", help="exclusive")
     ap.add_argument("--cross-check", nargs=2, metavar=("START", "END"))
     ap.add_argument("--cross-symbols", nargs="+", default=["BTCUSDT", "ETHUSDT"])
-    ap.add_argument("--report", default=os.path.join(APP_ROOT, "docs", "DATA_QUALITY_REPORT.md"))
+    ap.add_argument("--report", help="report path (default docs/data_quality/binance_<interval>.md; never overwritten)")
     a = ap.parse_args(argv)
+    status = 0
+    for interval in (a.intervals or [a.interval]):
+        a.interval = interval
+        report = a.report or os.path.join(APP_ROOT, "docs", "data_quality", f"binance_{interval}.md")
+        if os.path.exists(report) and not a.refresh:
+            print(f"{report} exists; skipping {interval} (datasets and reports are not replaced without --refresh)")
+            continue
+        status |= fetch_interval(a, report)
+    return status
+
+
+def fetch_interval(a, report_path):
     manifests = {}
     for sym in a.symbols:
         print(f"Downloading {sym} {a.interval} {a.start} .. {a.end} from Binance ...", flush=True)
@@ -38,16 +57,17 @@ def main(argv=None):
             okx = fetch_okx_closes(sym, a.interval, *a.cross_check)
             extra["cross_check_okx"] = {"period": a.cross_check, "source_url": OKX_URL, **cross_check(df, okx)}
         m = save_dataset(df, sym, a.interval, {"url": BINANCE_URL, "symbol": sym, "interval": a.interval,
-                                               "start": a.start, "end_exclusive": a.end}, extra=extra)
+                                               "start": a.start, "end_exclusive": a.end}, extra=extra,
+                         overwrite=a.refresh)
         q = m["quality"]
         print(f"  {m['rows']} rows, {q.get('first_candle')} .. {q.get('last_candle')}, "
               f"missing {q.get('missing_candles')}, problems {q.get('problems')}", flush=True)
         manifests[sym] = m
-    write_report(manifests, a)
+    write_report(manifests, a, report_path)
     return 0 if all(m["quality"]["ok"] for m in manifests.values()) else 1
 
 
-def write_report(manifests, a):
+def write_report(manifests, a, report_path):
     lines = [
         "# Historical data quality report", "",
         f"Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')} by `scripts/fetch_history.py`.", "",
@@ -87,10 +107,10 @@ def write_report(manifests, a):
                              f"{c['max_abs_deviation']:.4%} | {c['share_over_tolerance']:.4%} |")
             else:
                 lines.append(f"| {s} | {c.get('period')} | 0 | - | - | - | - |")
-    os.makedirs(os.path.dirname(a.report), exist_ok=True)
-    with open(a.report, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-    print(f"Wrote {a.report}")
+    print(f"Wrote {report_path}")
 
 
 if __name__ == "__main__":
