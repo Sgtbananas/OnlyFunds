@@ -69,6 +69,12 @@ def base_config(fee=None):
 
 
 def stage_devval(a):
+    # Audit fix P2: never overwrite frozen v1 results. New validations use scripts/validation_run.py,
+    # which writes each run to its own immutable directory.
+    if os.path.exists(FROZEN):
+        print(f"REFUSED: {FROZEN} already exists (frozen v1 results are immutable). "
+              "Use scripts/validation_run.py for new validation runs.")
+        return 2
     t0 = time.time()
     data = load_data(a.symbols)
     base = base_config()
