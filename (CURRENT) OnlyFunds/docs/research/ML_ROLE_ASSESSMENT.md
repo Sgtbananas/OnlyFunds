@@ -48,3 +48,11 @@ Each would be pre-registered and kept small:
 
 Until one of these clears the bar above, **the honest role of ML in OnlyFunds is research tooling only**: the leak-safe
 pipeline, model cards and the hypothesis register. It has no role in decision-making.
+
+## Addendum after Round 4 (market-regime engine, `09_round4.md`)
+- **The market-level logistic regime engine did not beat simple baselines.**
+  - Direction and stress are worse than the base rate. The stress model's calibration is inverted.
+  - Volatility-high and expansion are slightly better overall, but negative in 2023–24 and not significant.
+- **Model-driven risk-off (P(stress)) was worse than the BTC 100-day rule.** The rule itself did not improve results
+  once return is counted.
+- **The conclusion is unchanged:** ML has no decision-making role in OnlyFunds yet.
