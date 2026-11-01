@@ -1,81 +1,84 @@
-api:
-  default_exchange: coinex
-  exchanges:
-    coinex:
-      api_base_url: https://api.coinex.com/v1
-      api_key: your_api_key_here
-      api_proxy: null
-      api_secret: your_api_secret_here
-      rate_limit: 50
-      retry_attempts: 5
-      timeout: 30
-  max_concurrent_requests: 10
-debug: false
+# OnlyFunds 2 configuration.
+# API credentials are NEVER stored here. Set them as environment variables
+# (COINEX_API_KEY / COINEX_API_SECRET) or in a local .env file (git-ignored).
+# They are only needed for balance checks; paper trading needs no keys.
+version: 3
 log_level: INFO
-ml:
-  enabled: true
-  min_signal_conf: 0.5
-  retrain_on_start: false
-notifications:
-  telegram_bot_token: ''
-  telegram_chat_id: ''
-  webhook_url: ''
-risk:
-  max_daily_loss_pct: 0.05
-  max_drawdown: 0.02
-  max_drawdown_pct: 0.15
-  min_size: 0.0001
-  per_trade: 0.01
-  risk_per_trade: 0.01
-  stop_loss_pct: 0.005
-  take_profit_pct: 0.015000000000000005
-  trailing_stop_pct: 0.008
-strategy:
-  adaptive_threshold: 0.5
-  ai_tuning_enabled: true
-  autotune: true
-  bollinger_std_dev: 2
-  bollinger_window: 20
-  dynamic_tuning:
-    enabled: true
-    optimization_goal: max_return
-    parameter_range:
-      macd_long_period:
-      - 20
-      - 50
-      macd_short_period:
-      - 5
-      - 20
-      rsi_period:
-      - 5
-      - 30
-    tuning_period: 30
-  ema_long_period: 21
-  ema_short_period: 9
-  macd_long_period: 26
-  macd_short_period: 12
-  macd_signal_period: 9
-  mode: Normal
-  rsi_period: 14
-  target_profit: 0.01
+
+api:
+  base_url: https://api.coinex.com
+  timeout: 10
+  max_retries: 3
+
 trading:
-  backtest_lookback: 1132
-  default_capital: 10
-  default_interval: 5m
-  dry_run: true
-  fee: 0.001
-  max_positions: 4
-  min_size: 0.0001
+  mode: paper            # only "paper" is supported. Live trading is locked in code.
+  profile: Normal        # Conservative | Normal | Aggressive (see profiles below)
+  strategy: auto         # auto | trend_following | mean_reversion | stacked
+  default_interval: 15m
+  backtest_lookback: 1000
+  initial_capital: 1000
+  fee_rate: 0.002        # CoinEx default spot taker fee; the live market fee is used if higher
+  slippage_pct: 0.0005
   pairs:
   - BTCUSDT
   - ETHUSDT
-  - LTCUSDT
   - SOLUSDT
-  - BNBUSDT
-  threshold: 0.7
-  trading_windows:
-    enabled: true
-    end_time: '18:00'
-    start_time: 09:00
-    timezone: UTC
-version: 2
+  pair_universe_size: 200
+  paper_refresh_seconds: 60
+
+risk:
+  risk_per_trade: 0.01     # fraction of equity lost if the stop is hit
+  max_position_pct: 0.20   # max notional per position, fraction of equity
+  max_exposure_pct: 0.60   # max total open notional, fraction of equity
+  max_open_positions: 4
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.15   # engages the kill switch in paper trading
+  min_notional: 1.0        # USDT; smaller orders are rejected, never rounded up
+
+exits:
+  stop_atr_mult: 1.5
+  tp_atr_mult: 3.0
+  trail_atr_mult: 2.0
+  use_trailing: true
+  max_hold_bars: 0
+
+signals:
+  rsi_low: 30
+  rsi_high: 70
+  trend_threshold: 0.35
+  min_confirmations: 2
+  exit_threshold: 0.15
+
+indicators:
+  ema_fast: 9
+  ema_slow: 21
+  ema_trend: 50
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_window: 20
+  bb_std: 2.0
+  atr_period: 14
+
+ml:
+  enabled: false          # gate entries with the ML filter (only if validation shows an edge)
+  threshold: 0.55
+  horizon: 48
+
+profiles:
+  Conservative:
+    threshold: 0.45
+    risk_per_trade: 0.005
+    max_position_pct: 0.10
+    max_exposure_pct: 0.30
+  Normal:
+    threshold: 0.35
+    risk_per_trade: 0.01
+    max_position_pct: 0.20
+    max_exposure_pct: 0.60
+  Aggressive:
+    threshold: 0.25
+    risk_per_trade: 0.02
+    max_position_pct: 0.30
+    max_exposure_pct: 0.90

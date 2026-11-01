@@ -1,109 +1,179 @@
-import pandas as pd
+"""Parameter optimisation with out-of-sample validation.
+
+Parameters are chosen on the training segment only, then evaluated once on
+an unseen test segment. ``walk_forward`` repeats this over rolling windows.
+A result is only flagged ``confirmed`` when the out-of-sample run is
+profitable after fees, has enough trades, and beats buy-and-hold over the
+same segment. Nothing is applied automatically.
+"""
+from __future__ import annotations
+
+import copy
+import itertools
+import logging
+from typing import Any, Dict, Iterable, List, Optional
+
 import numpy as np
-from typing import List, Dict, Any
+import pandas as pd
 
-def calculate_performance(
-    trade_log: List[Dict[str, Any]],
-    initial_capital: float
-) -> Dict[str, float]:
-    """
-    Returns:
-      - total_pnl      : final equity curve minus initial
-      - win_rate       : fraction of trades with positive return
-      - average_return : mean of individual returns
-      - max_drawdown   : worst peak-to-trough drawdown
-      - sharpe_ratio   : (mean/std)*sqrt(N)
-    Expects trade_log items with 'entry_price','exit_price','amount','action','timestamp'.
-    """
-    if not trade_log:
-        return dict.fromkeys(
-            ["total_pnl", "win_rate", "average_return", "max_drawdown", "sharpe_ratio"],
-            0.0
-        )
+from core.backtester import BacktestConfig, BacktestResult, run_backtest
+from core.indicators import warmup_bars
 
-    df = pd.DataFrame(trade_log)
-    # compute per-trade return
-    df["return_pct"] = np.where(
-        df["action"].str.upper() == "BUY",
-        (df["exit_price"] - df["entry_price"]) / df["entry_price"],
-        (df["entry_price"] - df["exit_price"]) / df["entry_price"],
-    )
+logger = logging.getLogger(__name__)
 
-    # equity curve
-    equity = initial_capital * (1 + df["return_pct"].cumsum())
-    peak = equity.cummax()
-    drawdown = (equity - peak) / peak
+DEFAULT_GRID: Dict[str, List[Any]] = {
+    "threshold": [0.25, 0.35, 0.45],
+    "exit_rules.stop_atr_mult": [1.0, 1.5, 2.0],
+    "exit_rules.tp_atr_mult": [2.0, 3.0],
+    "strategy": ["auto", "trend_following", "mean_reversion"],
+}
 
-    total_pnl      = equity.iloc[-1] - initial_capital
-    win_rate       = (df["return_pct"] > 0).mean()
-    average_return = df["return_pct"].mean()
-    max_drawdown   = drawdown.min()
 
-    std = df["return_pct"].std(ddof=0)
-    sharpe = (average_return / std) * np.sqrt(len(df)) if std and len(df) > 1 else 0.0
+def _apply(cfg: BacktestConfig, params: Dict[str, Any]) -> BacktestConfig:
+    c = copy.deepcopy(cfg)
+    for key, val in params.items():
+        obj = c
+        parts = key.split(".")
+        for p in parts[:-1]:
+            obj = getattr(obj, p)
+        if parts[0] in ("indicator_params", "signal_params"):
+            getattr(c, parts[0])[parts[1]] = val
+        else:
+            setattr(obj, parts[-1], val)
+    return c
 
-    return {
-        "total_pnl": total_pnl,
-        "win_rate": win_rate,
-        "average_return": average_return,
-        "max_drawdown": max_drawdown,
-        "sharpe_ratio": sharpe
-    }
 
-def suggest_tuning_parameters(metrics: Dict[str, float], thresholds: list = None) -> List[str]:
-    """
-    Based on metrics, suggests parameter tweaks:
-     - win_rate < 0.5   -> raise threshold
-     - max_drawdown < -0.05 -> tighten stops or lower size
-     - sharpe_ratio >1.5 -> lower threshold for more trades
-     - total_pnl < 0   -> switch to Conservative
-     - thresholds volatile -> recommend smoothing/bounding
-    """
-    suggestions = []
-    if metrics["win_rate"] < 0.5:
-        suggestions.append("Win rate below 50% → consider raising entry threshold.")
-    if metrics["max_drawdown"] < -0.05:
-        suggestions.append("Drawdown >5% → tighten stop-loss or reduce size.")
-    if metrics["sharpe_ratio"] > 1.5:
-        suggestions.append("High Sharpe → consider lowering threshold to capture more trades.")
-    if metrics["total_pnl"] < 0:
-        suggestions.append("Overall loss → switch to Conservative mode or review signals.")
+def _score(res: BacktestResult, objective: str, min_trades: int) -> float:
+    m = res.metrics
+    if m["trades"] < min_trades:
+        return -np.inf
+    if objective == "sharpe":
+        return m["sharpe"]
+    if objective == "return":
+        return m["total_return_pct"]
+    if objective == "return_over_dd":
+        return m["total_return_pct"] / max(m["max_drawdown_pct"], 1.0)
+    raise ValueError(f"unknown objective {objective}")
 
-    # Threshold volatility check (for autotune)
-    if thresholds is not None and len(thresholds) > 3:
-        std = np.std(thresholds)
-        if std > 0.1:
-            suggestions.append("Autotune threshold is volatile. Consider smoothing or bounding the threshold.")
-        elif std < 0.01:
-            suggestions.append("Autotune threshold is very stable. Manual or hybrid may be sufficient.")
 
-    if not suggestions:
-        suggestions.append("Performance stable → maintain current settings.")
-    return suggestions
+def grid_combinations(grid: Dict[str, Iterable[Any]]) -> List[Dict[str, Any]]:
+    keys = list(grid)
+    return [dict(zip(keys, vals)) for vals in itertools.product(*(list(grid[k]) for k in keys))]
 
-def adaptive_threshold(signals: pd.Series, prices: pd.Series) -> float:
-    """
-    Dynamically determines the optimal threshold for trading signals.
-    Uses backtesting results to iterate and find the threshold that maximizes performance.
-    """
-    from core.backtester import run_backtest
 
-    best_threshold = 0.5
-    best_sharpe = -float("inf")
-    tested_thresholds = []
-    sharpes = []
+def _segment_with_warmup(df: pd.DataFrame, start: int, end: int, warm: int) -> pd.DataFrame:
+    return df.iloc[max(0, start - warm):end].reset_index(drop=True)
 
-    # Test multiple thresholds
-    for threshold in np.arange(0.1, 1.1, 0.1):
-        summary, _ = run_backtest(signals, prices, threshold)  # Extract summary only
-        sharpe = summary.iloc[0]["sharpe"]
-        tested_thresholds.append(threshold)
-        sharpes.append(sharpe)
-        if sharpe > best_sharpe:
-            best_sharpe = sharpe
-            best_threshold = threshold
 
-    print(f"Optimal threshold: {best_threshold} with Sharpe Ratio: {best_sharpe}")
-    print(f"Thresholds tested: {tested_thresholds}")
-    print(f"Sharpes: {sharpes}")
-    return best_threshold
+def optimise(df: pd.DataFrame, base: Optional[BacktestConfig] = None, grid: Optional[Dict] = None,
+             train_frac: float = 0.7, objective: str = "return_over_dd", min_trades: int = 8,
+             pair: str = "PAIR") -> Dict[str, Any]:
+    base = base or BacktestConfig()
+    grid = grid or DEFAULT_GRID
+    cut = int(len(df) * train_frac)
+    warm = warmup_bars(base.indicator_params)
+    train = df.iloc[:cut].reset_index(drop=True)
+    test = _segment_with_warmup(df, cut, len(df), warm)
+    rows = []
+    best, best_score = None, -np.inf
+    for params in grid_combinations(grid):
+        res = run_backtest(train, _apply(base, params), pair)
+        sc = _score(res, objective, min_trades)
+        rows.append({**params, "score": sc, "trades": res.metrics["trades"],
+                     "return_pct": res.metrics["total_return_pct"], "max_dd_pct": res.metrics["max_drawdown_pct"]})
+        if sc > best_score:
+            best, best_score = params, sc
+    table = pd.DataFrame(rows).sort_values("score", ascending=False)
+    if best is None:
+        return {"best_params": None, "confirmed": False, "table": table,
+                "reason": f"no parameter set reached {min_trades} trades in-sample"}
+    best_cfg = _apply(base, best)
+    ins = run_backtest(train, best_cfg, pair)
+    oos = run_backtest(test, best_cfg, pair)
+    confirmed, reason = _confirm(oos, min_trades=max(3, min_trades // 3))
+    return {"best_params": best, "in_sample": ins.metrics, "out_of_sample": oos.metrics,
+            "confirmed": confirmed, "reason": reason, "table": table, "best_config": best_cfg}
+
+
+def _confirm(oos: BacktestResult, min_trades: int) -> (bool, str):
+    m = oos.metrics
+    if m["trades"] < min_trades:
+        return False, f"only {m['trades']} out-of-sample trades"
+    if m["total_return_pct"] <= 0:
+        return False, f"out-of-sample return {m['total_return_pct']:.2f}% is not positive after fees"
+    if m["total_return_pct"] <= m["buy_and_hold_return_pct"]:
+        return False, "out-of-sample return does not beat buy-and-hold"
+    return True, "profitable out-of-sample and beats buy-and-hold"
+
+
+def walk_forward(df: pd.DataFrame, base: Optional[BacktestConfig] = None, grid: Optional[Dict] = None,
+                 n_folds: int = 4, train_bars: Optional[int] = None, objective: str = "return_over_dd",
+                 min_trades: int = 5, pair: str = "PAIR") -> Dict[str, Any]:
+    """Rolling train -> test folds. Test windows never overlap and never feed training."""
+    base = base or BacktestConfig()
+    grid = grid or DEFAULT_GRID
+    warm = warmup_bars(base.indicator_params)
+    n = len(df)
+    train_bars = train_bars or n // (n_folds + 1)
+    test_bars = (n - train_bars) // n_folds
+    if test_bars < warm:
+        raise ValueError("not enough data for walk-forward with these settings")
+    folds = []
+    for k in range(n_folds):
+        tr_start = k * test_bars
+        tr_end = tr_start + train_bars
+        te_end = min(n, tr_end + test_bars)
+        train = df.iloc[tr_start:tr_end].reset_index(drop=True)
+        best, best_score = None, -np.inf
+        for params in grid_combinations(grid):
+            sc = _score(run_backtest(train, _apply(base, params), pair), objective, min_trades)
+            if sc > best_score:
+                best, best_score = params, sc
+        if best is None:
+            folds.append({"fold": k, "params": None, "oos_return_pct": 0.0, "oos_trades": 0,
+                          "note": "no params met min_trades; stood aside"})
+            continue
+        oos = run_backtest(_segment_with_warmup(df, tr_end, te_end, warm), _apply(base, best), pair)
+        folds.append({"fold": k, "params": best, "oos_return_pct": oos.metrics["total_return_pct"],
+                      "oos_trades": oos.metrics["trades"], "oos_max_dd_pct": oos.metrics["max_drawdown_pct"],
+                      "oos_buy_hold_pct": oos.metrics["buy_and_hold_return_pct"]})
+    f = pd.DataFrame(folds)
+    compounded = float((np.prod(1 + f["oos_return_pct"].fillna(0) / 100) - 1) * 100)
+    return {"folds": f, "oos_compounded_return_pct": compounded,
+            "profitable_folds": int((f["oos_return_pct"] > 0).sum()), "n_folds": n_folds}
+
+
+def ml_out_of_sample_backtest(df: pd.DataFrame, cfg: BacktestConfig, pair: str = "PAIR",
+                              train_frac: float = 0.7, horizon: int = 48) -> Dict[str, Any]:
+    """Train the ML filter on the first part only, then compare rule-only vs ML-gated on the rest."""
+    from core.core_signals import generate_signals
+    from core.ml_filter import predict_proba, train_filter
+
+    cut = int(len(df) * train_frac)
+    warm = warmup_bars(cfg.indicator_params)
+    bundle = train_filter({pair: df.iloc[:cut].reset_index(drop=True)}, cfg.exit_rules, horizon=horizon,
+                          threshold=cfg.ml_threshold, strategy=cfg.strategy, signal_threshold=cfg.threshold,
+                          save_path=None)
+    test = _segment_with_warmup(df, cut, len(df), warm)
+    sig = generate_signals(test, strategy=cfg.strategy, threshold=cfg.threshold, params=cfg.signal_params,
+                           indicator_params=cfg.indicator_params)
+    proba = predict_proba(bundle, sig)
+    rule_only = run_backtest(test, cfg, pair, signals=sig)
+    gated = run_backtest(test, cfg, pair, ml_proba=proba, signals=sig)
+    return {"report": bundle["report"], "rule_only": rule_only.metrics, "ml_gated": gated.metrics}
+
+
+def suggest_tuning_parameters(metrics: Dict[str, float]) -> List[str]:
+    """Plain-language hints from backtest metrics (``run_backtest(...).metrics``)."""
+    s = []
+    if metrics.get("trades", 0) < 10:
+        s.append("Few trades: results are not statistically meaningful yet.")
+    if metrics.get("win_rate_pct", 0) < 40:
+        s.append("Win rate below 40%: consider a higher entry threshold or wider stops.")
+    if metrics.get("max_drawdown_pct", 0) > 10:
+        s.append("Drawdown above 10%: reduce risk per trade or tighten exposure limits.")
+    if metrics.get("fees_paid", 0) > abs(metrics.get("realised_pnl", 0)) and metrics.get("trades", 0):
+        s.append("Fees exceed net PnL: trade less often or use a longer interval.")
+    if metrics.get("total_return_pct", 0) < metrics.get("buy_and_hold_return_pct", 0):
+        s.append("Strategy underperforms buy-and-hold on this data.")
+    return s or ["No obvious problems in these metrics."]

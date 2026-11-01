@@ -1,52 +1,65 @@
-import numpy as np
-import pandas as pd
-import joblib
-import os
+"""Strategy selection and rotation.
 
-# Path to the meta-model
-META_MODEL_PATH = "state/meta_model_A.pkl"
+Selection is driven by the *current market regime* (see
+``core.core_signals.REGIME_STRATEGY``), not by which strategy happened to be
+most profitable in the past. Recent performance is only used defensively:
+``StrategyRotation`` benches a strategy whose recent live/paper trades are
+losing, for a cooldown period, and the engine stands aside instead.
+"""
+from __future__ import annotations
 
-def load_meta_model(path=META_MODEL_PATH):
-    """Load the meta-model if it exists."""
-    if os.path.exists(path):
-        return joblib.load(path)
-    return None
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Iterable, List, Optional
 
-def select_strategy(performance_dict, meta_model=None):
-    """Select the best strategy based on the meta-model or fallback."""
-    # If no performance data, return default strategy
-    if not performance_dict or not isinstance(performance_dict, dict) or len(performance_dict) == 0:
-        return "default_strategy", None
+from core.core_signals import REGIME_STRATEGY, STRATEGIES
 
-    # List of strategies to choose from
-    strategies = list(performance_dict.keys())
 
-    if not strategies:
-        return "default_strategy", None
+def select_strategy(regime: Optional[str], requested: str = "auto") -> Optional[str]:
+    """Strategy to use for ``regime``. ``None`` means stand aside."""
+    if requested != "auto":
+        if requested not in STRATEGIES:
+            raise ValueError(f"unknown strategy {requested}")
+        return requested
+    return REGIME_STRATEGY.get(regime) if regime else None
 
-    # Prepare feature data for each strategy
-    features = []
-    for strat in strategies:
-        perf = performance_dict.get(strat, {})
-        features.append([
-            perf.get('win_rate', 0),
-            perf.get('sharpe_ratio', 0),
-            perf.get('max_drawdown', 0),
-            perf.get('total_pnl', 0),
-            perf.get('volatility', 0),
-            perf.get('trade_count', 0),
-        ])
 
-    features = np.array(features)
+@dataclass
+class StrategyRotation:
+    lookback_trades: int = 10
+    min_trades: int = 5
+    min_profit_factor: float = 0.8
+    cooldown_hours: float = 24.0
+    benched_until: Dict[str, str] = field(default_factory=dict)
 
-    if meta_model is not None and features.shape[0] > 0:
-        try:
-            preds = meta_model.predict(features)
-            confidences = meta_model.predict_proba(features)
-            selected_idx = int(np.argmax(confidences))
-            return strategies[selected_idx], confidences[selected_idx]
-        except Exception as e:
-            print(f"[meta_learner] Model prediction failed: {e}. Defaulting to first strategy.")
-            return strategies[0], None
+    def update(self, closed_trades: Iterable[Dict], now: Optional[datetime] = None) -> List[str]:
+        """Re-evaluate every strategy; returns the strategies newly benched."""
+        now = now or datetime.now(timezone.utc)
+        by_strat: Dict[str, List[float]] = {}
+        for t in closed_trades:
+            by_strat.setdefault(t.get("strategy", ""), []).append(float(t.get("pnl", 0.0)))
+        newly = []
+        for strat, pnls in by_strat.items():
+            recent = pnls[-self.lookback_trades:]
+            if len(recent) < self.min_trades or self.is_benched(strat, now):
+                continue
+            gains = sum(p for p in recent if p > 0)
+            losses = -sum(p for p in recent if p <= 0)
+            pf = gains / losses if losses > 0 else float("inf")
+            if pf < self.min_profit_factor:
+                self.benched_until[strat] = (now + timedelta(hours=self.cooldown_hours)).isoformat()
+                newly.append(strat)
+        return newly
 
-    return strategies[0], None
+    def is_benched(self, strategy: str, now: Optional[datetime] = None) -> bool:
+        until = self.benched_until.get(strategy)
+        if not until:
+            return False
+        now = now or datetime.now(timezone.utc)
+        return now < datetime.fromisoformat(until)
+
+    def to_dict(self) -> Dict:
+        return {"benched_until": dict(self.benched_until)}
+
+    def load(self, d: Optional[Dict]) -> None:
+        self.benched_until = dict((d or {}).get("benched_until", {}))

@@ -6,7 +6,6 @@ import time
 import string
 import random
 from datetime import datetime
-from sklearn.linear_model import LinearRegression
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,37 +17,32 @@ BLACKLISTED_TOKENS = {
 }
 
 def get_volatile_pairs(limit=10, interval="1h", market="USDT", min_volume=50000, min_change=1.0):
-    """
-    Return the top volatile pairs meeting volume and change requirements,
-    excluding blacklisted tokens.
-    """
-    import requests
+    """Top USDT pairs by 24h |change| x quote volume, excluding blacklisted tokens (CoinEx API v2)."""
     try:
-        url = "https://api.coinex.com/v1/market/ticker/all"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()["data"]["ticker"]
-
-        candidates = []
-        for pair, stats in data.items():
-            if not pair.endswith(market):
-                continue
-            if pair in BLACKLISTED_TOKENS:
+        from core.core_data import get_client
+        client = get_client()
+        infos = client.get_markets()
+        scored = []
+        for t in client.get_tickers():
+            pair = t.get("market", "")
+            info = infos.get(pair)
+            if not info or info.quote_ccy != market or not info.tradable or pair in BLACKLISTED_TOKENS:
                 continue
             try:
-                volume = float(stats.get("vol", 0))
-                change_pct = abs(float(stats.get("percent_change_24h", 0)))
-                if volume >= min_volume and change_pct >= min_change:
-                    score = change_pct * volume
-                    candidates.append((pair, score))
-            except Exception:
+                value = float(t.get("value", 0) or 0)
+                open_, last = float(t.get("open", 0) or 0), float(t.get("last", 0) or 0)
+            except (TypeError, ValueError):
                 continue
-
-        sorted_pairs = sorted(candidates, key=lambda x: x[1], reverse=True)
-        return [p[0] for p in sorted_pairs[:limit]]
+            change_pct = abs(last / open_ - 1) * 100 if open_ > 0 else 0.0
+            if value >= min_volume and change_pct >= min_change:
+                scored.append((pair, change_pct * value))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [p for p, _ in scored[:limit]]
     except Exception as e:
         logger.error(f"get_volatile_pairs failed: {e}")
-        return ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+        return []
+
+
 def validate_trade(amount, price, capital):
     estimated_cost = amount * price
     return capital >= estimated_cost * 1.01  # Allow buffer for fees
