@@ -12,7 +12,17 @@
 | Universe (fixed before any forward data) | 25 coins: the 9 OF2 coins + the rule-selected 16-coin holdout. Coins without live Binance data (e.g. EOS, delisted 2025) are recorded as unavailable. | the 9 OF2 coins (as pre-registered) |
 | Status before tracking | Failed Round 1 on trade count only (62 < 100 VAL trades); see `T50_SCRUTINY_SUMMARY.md` | Failed Round 1 (82 VAL trades; positive on 50% of coins < 60%) |
 
-**Frozen fingerprints and full spec:** `research/shadow/FROZEN.json`. Each fingerprint is the SHA-256 of the
+**Frozen fingerprints and full spec:** `research/shadow/FROZEN.json`.
+- **Current fingerprints** (frozen 2026-11-01T12:21:54Z at commit `0acc195`):
+  - T50 `29139c64b6c0ad9d7c0c9085b56ecba95199de0fa0d5d9b8cb49753ed04910c7`
+  - RS3 `1ffc1d23ab8d26e22851733fe8ea731d8f854bf0549f1f1e1d5187a989ab0fec`
+- **First freeze superseded:** the first freeze (12:20:09Z) was replaced before any forward evaluation. The reason
+  is in `research/shadow/superseded/README.md`.
+
+**Universe availability at the start (snapshot 2026-11-01):**
+- **T50:** 20 of 25 coins have data. 19 are current. ICXUSDT stopped at 2026-09-03 and is kept as stale. EOS, NULS,
+  OMG, WAVES and XMR return no data.
+- **RS3:** 8 of 9 coins (EOS is delisted). Each fingerprint is the SHA-256 of the
 strategy's rules, parameters, universe, costs, risk limits and benchmark definition, together with the SHA-256 of
 every implementing file. `update` refuses to run if any of them changed: the strategy is stopped, and earlier
 results are preserved.
@@ -37,8 +47,13 @@ RS3 has **not** demonstrated an edge. Its evidence (DEV/VAL 2019–2024 and hold
 - **Prior: lower than T50.**
 
 ## How it works
-- **Daily:** `python research/forward_shadow.py update`, scheduled by Task Scheduler (`\OnlyFunds\OF2 Shadow Daily
-  Update`, daily after 00:00 UTC, runs late if the PC was off). Each run does the following.
+- **Daily:** `python research/forward_shadow.py update`.
+  - **Schedule (needs the user's approval; not registered yet):** `powershell -NoProfile -ExecutionPolicy Bypass -File
+    researchegister_shadow_task.ps1` creates `\OnlyFunds\OF2 Shadow Daily Update` (00:30 UTC daily, runs late if
+    the PC was off); `-Remove` deletes it.
+  - **Missing a day loses nothing.** Every run recomputes from Binance's history, so a missed day only means a missing
+    point-in-time snapshot in the audit trail.
+  - Each run does the following.
   1. Verifies the frozen fingerprints.
   2. Downloads completed daily candles (Binance public REST) for every coin from 2026-05-01. Candles before the start
      date are used **only** for indicator warm-up and are never evaluated. They lie inside the consumed 2025–26
