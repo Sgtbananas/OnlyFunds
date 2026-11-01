@@ -1,29 +1,26 @@
 # OnlyFunds 2 (OF2) — handover report
 
-Written 2026-11-01 (UTC) at the end of a long Claude Code conversation. Everything below was checked against the
-repository and machine at writing time.
+Written 2026-11-01 (UTC) at the end of a long Claude Code conversation, and updated the same day once the deployment
+code was tested and committed. Everything below was checked against the repository and machine at writing time.
 
 ## 0. Most important facts
-1. **No forward paper session is running. The 24-hour supervised trial has NOT been started.** Work stopped
-   just before launch, while waiting for regression tests on the new deployment code.
-   `state/forward_deployments/` does not exist yet.
+1. **No forward paper session is running. The 24-hour supervised trial has NOT been started.** It waits for explicit
+   approval from the user. `state/forward_deployments/` does not exist yet.
 2. **Live trading is locked and must stay locked.** No strategy has a demonstrated edge.
-3. **The deployment code (session manager, supervisor, hardening fixes) exists in the working tree.** Whether it's
-   committed is stated in §1. It is tested locally but has **not** yet been through a full-suite run.
+3. **The deployment code is committed and pushed** (§1). The full suite passed (261 tests), and the launch, stop and crash
+   recovery were verified on a disposable deployment in a scratch folder (§6).
 
 ## 1. Git state
-- Repo: `Sgtbananas/OnlyFunds`. App folder: `(CURRENT) OnlyFunds/`. Branch: `of2-completion`.
-- Last pushed commit before this handover: `80a325a`. Origin matched it. `main` is untouched at `5a19aaa`.
-- At writing time the deployment work was **uncommitted**:
-  - modified: `core/forward.py`, `core/live_data.py`, `core/monitoring.py`, `core/paper_trader.py`, `core/selection.py`, `tests/test_live_data.py`
-  - new: `core/session.py`, `core/forward_reports.py`, `core/trial.py`, `run_forward_session.py`, `scripts/forward_supervisor.py`,
-    `START_FORWARD_PAPER.bat`, `STOP_FORWARD_PAPER.bat`, `tests/test_session.py`, `docs/FORWARD_DEPLOYMENT.md`
-  - **This work was deliberately left uncommitted:** its paper regression run and a full-suite run had not
-    finished. Only this handover file was committed. A new conversation must run the tests (§7), then commit.
+- Repo: `Sgtbananas/OnlyFunds`. App folder: `(CURRENT) OnlyFunds/`. Branch: `of2-completion`. `main` is untouched at `5a19aaa`.
+- Commits after the first handover (`e1aa54e`):
+  - `4523055`: forward paper hardening (crash safety, endpoint allowlist, exchange clock)
+  - `08e27c5`: long-running deployment (session manager, supervisor, reports, trial report, bat files)
+  - the commit containing this update to the handover document
+- Working tree clean after these commits. All of them pushed to `origin/of2-completion`.
 - Recovery tag before the audit-remediation work: `checkpoint/pre-remediation-56897c8` (pushed).
 
 ## 2. PR status
-- **PR #1** (`of2-completion` → `main`) is open, not a draft, and mergeable; its head was `80a325a` at writing time.
+- **PR #1** (`of2-completion` → `main`) is open, and its head follows `of2-completion`.
 - **Do not merge without explicit approval from the user.**
 - The PR description was last updated during the real-market validation phase; it doesn't describe the
   remediation, live-data or deployment work.
@@ -31,14 +28,14 @@ repository and machine at writing time.
 ## 3. Running processes and sessions
 | PID | What | Notes |
 |---|---|---|
-| 17708 | `python -m pytest -q tests/test_paper_trader.py tests/test_audit_paper.py tests/test_audit_risk.py` | regression run for the deployment changes, started 2026-11-01 ~07:50 UTC; its result is in the conversation scratchpad (not part of the repo) |
 | 5732, 6400 | `python.exe`, started 31/10/2026, command line not readable | **not OF2 sessions** (they predate the session code); leave them alone |
 
-**OF2 sessions:** none running. Two short smoke sessions ran into temporary scratch folders and ended normally:
+**OF2 sessions:** none running. All test sessions ran with `OF2_STATE_DIR` pointing at temporary scratch folders, and
+none is part of a real deployment:
 - `20261101T075056Z-e470ff70`: live session runner, 3/3 steps OK, 8 coins observed
 - an earlier 13-step forward smoke run
-
-They are not part of any deployment.
+- disposable deployment `disposable-test` (§6): sessions `20261101T080929Z-f7ff3e8b` (killed on purpose) and
+  `20261101T081032Z-b636be0f` (stopped with the STOP script)
 
 ## 4. Forward paper trading: start time, runtime, health
 Not started, so there's no start time, runtime or health yet. The startup health report is created automatically when
@@ -84,24 +81,30 @@ For deployment `binance-1h` (the default in the `.bat` files), under `state/forw
 10. **Deployment readiness:** 10 defects found by tracing the production path and fixed, plus the session manager, supervisor, reports and trial report (`docs/FORWARD_DEPLOYMENT.md`).
 
 **Test status:**
-- **Last complete suite:** 242 passed, pytest exit 0, at `80a325a`.
-- **Since then, targeted runs** on the deployment changes: `test_session.py` 14 passed; `test_forward.py` + `test_session.py` + `test_live_data.py` 42 passed.
-- **Pending:** the paper regression run (§3), then a full-suite run.
+- **Full suite:** 261 passed, pytest exit 0, in 18 min 11 s, on the code committed in `4523055` + `08e27c5`. The only
+  warnings are 2 pandas FutureWarnings from `core/forward_reports.py:90`.
+- **Paper regression run:** 29 passed. The two lock-concurrency tests passed 3 of 3 repeats after the Windows
+  lock-release retry fix.
+- **Disposable deployment check** (state in a scratch folder, real Binance public data):
+  - `START_FORWARD_PAPER.bat disposable-test` started the supervisor and a session.
+  - Force-killing the session made the supervisor restart it 10 s later. The new session wrote `session_end_recovered.json`
+    for the old one and an `unexpected_termination` incident.
+  - `STOP_FORWARD_PAPER.bat disposable-test` stopped the session gracefully (`session_end.json`, reason "STOP file present"), and the
+    supervisor exited.
+  - Trial report checks: records_persisted, no_duplicates, recovery_tested, no_live_orders_possible and
+    no_positions_without_approval all true. Uptime was false only because the sessions were killed and stopped on purpose.
+  - 8 observations across two sessions and 5 steps: one per coin for the single completed candle, all unique. 0 positions.
 
 ## 7. Outstanding tasks, errors, warnings, blockers
 **Tasks, in order:**
-1. Confirm the paper regression run passed. If it hasn't, rerun:
-   `python -m pytest -q tests/test_paper_trader.py tests/test_audit_paper.py tests/test_audit_risk.py`
-2. Run the full suite: `python -m pytest`. It takes about 17 minutes and should give 242 + 14 + 3 = 259 tests.
-3. Commit the deployment work, if not already committed, in coherent commits, and push.
-4. Start the 24h trial **from a clean, committed tree**, so the session's provenance records a clean git state.
-5. Deliberately kill the session process once, to prove crash recovery. The supervisor should restart it, and the new
-   session should write `session_end_recovered.json` for the old one plus an `unexpected_termination` incident.
-6. After 24 hours, run `python run_forward_session.py --deployment binance-1h --trial-report --since <start UTC>`
+1. **Wait for the user's explicit approval**, then start the 24h trial from the clean, committed tree with `START_FORWARD_PAPER.bat`.
+2. Optional: kill the session process once during the trial, to repeat the crash-recovery proof on the real deployment.
+3. After 24 hours, run `python run_forward_session.py --deployment binance-1h --trial-report --since <start UTC>`
    and review the verdict and checks.
 
 **Known warnings and limitations:**
-- **Test hygiene only:** `tests/test_forward.py` still opens some files without closing them (ResourceWarnings).
+- **Test hygiene only:** `tests/test_forward.py` still opens some files without closing them (ResourceWarnings), and
+  `core/forward_reports.py:90` raises a pandas FutureWarning (fillna downcasting). Neither affects results.
 - **Sleep pauses the session:** the PC must stay awake. Sleep or hibernation pauses it; on wake, gaps are backfilled with real candles
   and entries are blocked until the data is clean.
 - **Daily/weekly reports need a running session:** they're only written while a session is running across a UTC day or week boundary. Missed ones can
@@ -110,7 +113,7 @@ For deployment `binance-1h` (the default in the `.bat` files), under `state/forw
 - **CoinEx is unreachable from this machine** (HTTP 503). Exchange integration is deferred to the final stage and is unverified.
 - **Strategies:** no strategy has passed validation, so the forward system will open **no** positions (by design).
 
-**Blockers to the trial:** none technical. Only steps 1–4 above.
+**Blockers to the trial:** none technical. It waits only for the user's approval.
 
 ## 8. Safety protections currently active
 - **Live trading locked:** `core/trade_execution.py: LIVE_TRADING_LOCKED = True`. No live executor exists, and
@@ -133,7 +136,7 @@ For deployment `binance-1h` (the default in the `.bat` files), under `state/forw
 ## 9. Commands (run from `(CURRENT) OnlyFunds/`)
 | Purpose | Command |
 |---|---|
-| Start (supervised, auto-restart) | `START_FORWARD_PAPER.bat` (= `python scripts\forward_supervisor.py --deployment binance-1h -- --interval 1h --every 60 --websocket`) |
+| Start (supervised, auto-restart) | `START_FORWARD_PAPER.bat` (= `python scripts\forward_supervisor.py --deployment binance-1h --clear-stop -- --interval 1h --every 60 --websocket`, in a minimised window) |
 | Start in the foreground (one session) | `python run_forward_session.py --deployment binance-1h --interval 1h --every 60 --websocket` |
 | Stop gracefully | `STOP_FORWARD_PAPER.bat`, or create `state\forward_deployments\binance-1h\STOP` |
 | Resume after a stop | delete the `STOP` file (`START_FORWARD_PAPER.bat` does this), then start again; evidence continues in the same deployment folder |
@@ -147,7 +150,7 @@ For deployment `binance-1h` (the default in the `.bat` files), under `state/forw
 **Don't** run two sessions on the same deployment. A second session refuses to start while the first one's PID is alive.
 
 ## 10. Recommended next steps
-1. Finish §7 steps 1–6. Then keep the session running for weeks without changing strategy parameters.
+1. Finish §7 steps 1–3. Then keep the session running for weeks without changing strategy parameters.
 2. Read the weekly reports: shadow outcomes by rejection reason, and feed reliability. Treat fewer than 100 outcomes as
    INSUFFICIENT evidence, not as negative evidence.
 3. **New strategy research** (only if wanted):
