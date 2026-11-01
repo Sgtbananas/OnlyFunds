@@ -31,7 +31,7 @@ from core.core_signals import generate_signals
 from core.data_quality import missing_candles
 from core.indicators import validate_ohlcv
 from core.meta_learner import StrategyRotation
-from core.positions import ExitRules, Position, close_trade_record, check_exit
+from core.positions import ExitRules, Position, close_trade_record, check_exit, planned_risk
 from core.risk_manager import RiskLimits, RiskManager
 from core.strategy_utils import within_trading_hours
 from core.trade_execution import PaperExecutor, new_client_id
@@ -328,6 +328,7 @@ class PaperTrader:
                        trail_mult=rules.trail_atr_mult if rules.use_trailing else 0.0, highest=res.price,
                        trailing_stop=max(0.0, res.price - rules.trail_atr_mult * atr) if rules.use_trailing else 0.0,
                        strategy=meta["strategy"], regime=meta["regime"], confidence=meta["confidence"])
+        pos.risk_amount = planned_risk(res.qty, res.price, stop_fill, fee, self.settings.stop_slippage_pct)
         self.ledger["cash"] -= res.qty * res.price + res.fee
         self._store_position(pos)
         meta["price"] = res.price

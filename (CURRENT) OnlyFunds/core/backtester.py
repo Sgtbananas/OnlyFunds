@@ -23,7 +23,9 @@ import pandas as pd
 from core.core_signals import generate_signals
 from core.data_quality import missing_candles
 from core.indicators import validate_ohlcv, warmup_bars
-from core.positions import ExitRules, Position, apply_slippage, check_exit, close_trade_record, open_position
+from core.positions import (ExitRules, Position, apply_slippage, check_exit, close_trade_record, open_position,
+                            planned_risk)
+from core.coinex_client import INTERVAL_SECONDS
 from core.risk_manager import RiskLimits, RiskManager
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,8 @@ class BacktestConfig:
     signal_params: Dict[str, Any] = field(default_factory=dict)
     indicator_params: Dict[str, Any] = field(default_factory=dict)
     close_at_end: bool = False
+    trade_from: Optional[str] = None  # earlier rows are indicator history only (no trading, no metrics window)
+    gap_check_bars: int = 100         # no entries if a candle is missing in this many recent bars (as paper)
 
     def as_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -120,6 +124,13 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
     halted_reason = ""
     fees_paid = 0.0
     start = max(1, warmup_bars(cfg.indicator_params))
+    if cfg.trade_from is not None and "timestamp" in df.columns:
+        tf = pd.Timestamp(cfg.trade_from)
+        tf = tf.tz_localize("UTC") if tf.tzinfo is None else tf.tz_convert("UTC")
+        ts_utc = pd.to_datetime(df["timestamp"], utc=True)
+        first = int((ts_utc < tf).sum())  # timestamps are sorted: index of the first bar at/after trade_from
+        start = max(start, first - 1)  # decision at bar first-1's close -> first fill at bar `first`
+    recent_gap = _recent_gap_flags(df, cfg.interval, cfg.gap_check_bars)
 
     for i in range(len(df)):
         if days[i] != current_day:
@@ -140,6 +151,7 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
             if size.ok:
                 pos = open_position(pair, size.qty, fill, fee, atr_v, rules, _ts(df, i),
                                     pending_meta["strategy"], pending_meta["regime"], pending_meta["confidence"])
+                pos.risk_amount = planned_risk(size.qty, fill, pos.stop_loss, fee, stop_slip)
                 cash -= size.qty * fill + pos.entry_fee
                 fees_paid += pos.entry_fee
             decisions.append({"bar": i, "time": _ts(df, i), "action": "BUY" if size.ok else "SKIP",
@@ -188,6 +200,11 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
             if bool(row["exit"]):
                 pending = "exit:signal_exit"
         elif bool(row["entry"]) and not halted_reason and np.isfinite(atr[i]) and atr[i] > 0:
+            if recent_gap[i]:
+                decisions.append({"bar": i, "time": _ts(df, i), "action": "DATA_GAP",
+                                  "reason": f"missing candle within the last {cfg.gap_check_bars} bars",
+                                  "price": closes[i]})
+                continue
             if ml is not None and not (ml.iloc[i] >= cfg.ml_threshold):
                 decisions.append({"bar": i, "time": _ts(df, i), "action": "FILTERED",
                                   "reason": f"ml proba {ml.iloc[i]:.2f} < {cfg.ml_threshold}", "price": closes[i]})
@@ -230,12 +247,25 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
                           decisions=pd.DataFrame(decisions), open_position=open_pos_dict)
 
 
+def _recent_gap_flags(df: pd.DataFrame, interval: str, window: int) -> np.ndarray:
+    """flags[i] = a candle is missing between bar i-window and bar i (same rule as the paper trader)."""
+    n = len(df)
+    if "created_at" not in df.columns or interval not in INTERVAL_SECONDS or not window or n < 2:
+        return np.zeros(n, dtype=bool)
+    step = INTERVAL_SECONDS[interval] * 1000
+    gap_after = np.r_[False, np.diff(df["created_at"].to_numpy("int64")) > step]  # bar i follows a gap
+    c = np.cumsum(gap_after)
+    lagged = np.r_[np.zeros(window, dtype=c.dtype), c[:-window]] if n > window else np.zeros(n, dtype=c.dtype)
+    return (c - lagged) > 0
+
+
 def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame, cfg: BacktestConfig, df: pd.DataFrame,
                     unrealised: float = 0.0, fees_paid: float = 0.0, start: int = 0) -> Dict[str, Any]:
     init = cfg.initial_capital
     final_equity = float(equity["equity"].iloc[-1]) if not equity.empty else init
-    curve = equity["equity"].to_numpy(float) if not equity.empty else np.array([init])
-    lows = equity["equity_low"].to_numpy(float) if "equity_low" in equity else curve
+    window = equity.iloc[start:] if len(equity) > start + 1 else equity  # trading window only
+    curve = window["equity"].to_numpy(float) if not window.empty else np.array([init])
+    lows = window["equity_low"].to_numpy(float) if "equity_low" in window else curve
     # Drawdown: running peak of closing equity vs the worst intrabar mark of each bar.
     prev_peak = np.maximum.accumulate(np.r_[init, curve[:-1]])
     max_dd = float(np.max(np.maximum(prev_peak - lows, 0) / prev_peak) * 100) if len(curve) else 0.0
@@ -260,12 +290,18 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame, cfg: BacktestCon
         avg_loss = float(trades.loc[pnl <= 0, "return_pct"].mean()) if len(losses) else 0.0
         exit_reasons = trades["exit_reason"].value_counts().to_dict()
         expectancy = float(pnl.mean())
+        r = trades["r_multiple"].astype(float) if "r_multiple" in trades else pd.Series(dtype=float)
+        expectancy_r = float(r.mean()) if r.notna().any() else 0.0
+        avg_win_r = float(r[pnl > 0].mean()) if (pnl > 0).any() else 0.0
+        avg_loss_r = float(r[pnl <= 0].mean()) if (pnl <= 0).any() else 0.0
         for reg, g in trades.groupby(trades["regime"].fillna("unknown")):
             by_regime[str(reg)] = {"trades": int(len(g)), "pnl": float(g["pnl"].sum()),
+                                   "expectancy_r": float(g["r_multiple"].mean()) if "r_multiple" in g else 0.0,
                                    "win_rate_pct": float((g["pnl"] > 0).mean() * 100),
                                    "expectancy": float(g["pnl"].mean())}
     else:
         profit_factor = realised = win_rate = avg_ret = avg_win = avg_loss = expectancy = 0.0
+        expectancy_r = avg_win_r = avg_loss_r = 0.0
         exit_reasons = {}
     # Buy-and-hold over the same tradable window, paying the same entry/exit costs.
     first = min(start + 1, len(df) - 1)
@@ -281,7 +317,8 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame, cfg: BacktestCon
         "realised_pnl": realised, "unrealised_pnl": float(unrealised), "fees_paid": float(fees_paid),
         "trades": n, "trades_per_day": n / days if days > 0 else 0.0,
         "win_rate_pct": win_rate, "avg_return_pct": avg_ret, "avg_win_pct": avg_win, "avg_loss_pct": avg_loss,
-        "expectancy": expectancy, "profit_factor": profit_factor,
+        "expectancy": expectancy, "expectancy_r": expectancy_r, "avg_win_r": avg_win_r, "avg_loss_r": avg_loss_r,
+        "profit_factor": profit_factor,
         "max_drawdown_pct": max_dd, "return_over_max_dd": total_ret / max_dd if max_dd > 0 else 0.0,
         "sharpe": sharpe, "sortino": sortino, "exposure_pct": exposure,
         "buy_and_hold_return_pct": bh, "bars": len(df), "tradable_bars": max(0, len(df) - first),

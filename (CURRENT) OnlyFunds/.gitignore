@@ -19,3 +19,6 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# downloaded historical candles (reproduce with scripts/fetch_history.py; manifests are committed)
+data/historical/**/*.csv

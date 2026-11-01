@@ -46,6 +46,7 @@ class Position:
     regime: str = ""
     confidence: float = 0.0
     bars_held: int = 0
+    risk_amount: float = 0.0  # planned loss if stopped out (incl. fees + stop slippage) = 1R
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     @property
@@ -111,6 +112,11 @@ def check_exit(pos: Position, bar_open: float, bar_high: float, bar_low: float,
     return None, None
 
 
+def planned_risk(qty: float, entry: float, stop: float, fee_rate: float, stop_slippage_pct: float) -> float:
+    """Loss if the stop fills as planned: same formula the risk manager sizes with (1R)."""
+    return qty * (entry * (1 + fee_rate) - stop * (1 - stop_slippage_pct) * (1 - fee_rate))
+
+
 def apply_slippage(price: float, side: str, slippage_pct: float) -> float:
     """Adverse slippage: buys fill higher, sells fill lower."""
     return price * (1 + slippage_pct) if side == "buy" else price * (1 - slippage_pct)
@@ -128,4 +134,6 @@ def close_trade_record(pos: Position, exit_price: float, fee_rate: float, exit_t
         "take_profit": pos.take_profit, "entry_fee": pos.entry_fee, "exit_fee": exit_fee,
         "fees": pos.entry_fee + exit_fee, "pnl": pnl, "return_pct": pnl / pos.cost_basis * 100.0,
         "bars_held": pos.bars_held, "exit_reason": reason, "confidence": pos.confidence,
+        "risk_amount": pos.risk_amount,
+        "r_multiple": pnl / pos.risk_amount if pos.risk_amount > 0 else float("nan"),
     }
