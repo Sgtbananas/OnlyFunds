@@ -7,11 +7,37 @@ shadow-tracks every opportunity, and opens no positions.
 ## Start / stop (Windows)
 | Action | How |
 |---|---|
-| Start (with automatic crash restart) | double-click `START_FORWARD_PAPER.bat` → `scripts/forward_supervisor.py` → `run_forward_session.py --interval 1h --every 60 --websocket` (8 coins) |
-| Stop gracefully | `STOP_FORWARD_PAPER.bat` (creates `STOP`; the session writes its end record and exits; the supervisor exits too) |
-| Status | latest `state/forward_deployments/binance-1h/sessions/<id>/heartbeat.json`, `supervisor.log`, `reports/` |
+| Start (with automatic crash restart) | double-click `START_FORWARD_PAPER.bat` → `scripts/forward_task.ps1 -Action start` → Task Scheduler task `\OnlyFunds\OF2 Forward Paper binance-1h` → `pythonw scripts/forward_supervisor.py` → `run_forward_session.py --interval 1h --every 60 --websocket` (8 coins) |
+| Stop gracefully | `STOP_FORWARD_PAPER.bat` (creates `STOP`; the session writes its end record and exits; the supervisor exits too). **Do not** use "End task" in Task Scheduler: it kills without an end record. |
+| Status | `STATUS_FORWARD_PAPER.bat` (task state, supervisor/session PIDs, heartbeat age, last log lines); details in `sessions/<id>/heartbeat.json`, `supervisor.log`, `session_console.log`, `incidents/`, `reports/` |
 | Reports on demand | `python run_forward_session.py --report daily --date YYYY-MM-DD`; `--trial-report --since <UTC>` |
-| Start at logon (optional, done by you) | Task Scheduler → Create Task → Trigger "At log on" → Action `START_FORWARD_PAPER.bat`, "Start in" = the app folder. Not registered automatically. |
+| Remove the task | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\forward_task.ps1 -Action unregister` (refused while running; records untouched) |
+| Start at logon (optional, done by you) | Task Scheduler → the task above → Triggers → New → "At log on". The task has no triggers by default. |
+
+### Why the Task Scheduler (process lifecycle)
+The first 24h trial (session `20261101T091214Z-7a6be833`) was launched with `start` from a Claude Code tool shell and both
+processes disappeared about 3 minutes later with no exit logged. They were part of the process tree and job objects of
+Claude's tool processes. The exact trigger could not be reproduced, but the fix removes that dependency entirely. The
+supervisor is now started by the Task Scheduler service: its parent is `svchost.exe` (Schedule), it has no console window to
+close, and terminals, editors and Claude Code are not its ancestors.
+
+**Task settings:**
+- current user, runs only while logged on (no stored password)
+- no execution time limit
+- one instance only (plus `supervisor.pid` guard)
+- runs on battery
+- the Task Scheduler re-launches the supervisor (3×, 1 min apart) only if the supervisor itself fails
+
+**Verified 2026-11-01 on a disposable deployment:**
+- the supervisor's parent was `svchost.exe`
+- a force-killed session was restarted after 10 s, with an `unexpected_termination` incident
+- supervisor and session survived a Claude Code turn ending
+- a second start was refused
+
+Still to verify: that the supervisor and session survive the Claude Code app being closed entirely.
+
+Logging off, restarting Windows, sleep and hibernation still stop or pause the deployment. After a reboot, run
+`START_FORWARD_PAPER.bat` again, or add the "At log on" trigger.
 
 The PC must stay on and awake. Sleep or hibernation pauses the process. On wake, the session detects the gap, backfills
 real candles, and the missing-candle guard blocks entries until the data is clean again.

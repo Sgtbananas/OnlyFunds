@@ -4,8 +4,11 @@ Written 2026-11-01 (UTC) at the end of a long Claude Code conversation, and upda
 code was tested and committed. Everything below was checked against the repository and machine at writing time.
 
 ## 0. Most important facts
-1. **No forward paper session is running. The 24-hour supervised trial has NOT been started.** It waits for explicit
-   approval from the user. `state/forward_deployments/` does not exist yet.
+1. **No forward paper session is running.**
+   - The first 24h trial (session `20261101T091214Z-7a6be833`, 09:12:14 UTC) died after about 3 minutes. It had been
+     launched from a Claude Code tool shell. Its records are preserved unchanged.
+   - The launcher now uses the Windows Task Scheduler (`docs/FORWARD_DEPLOYMENT.md`, "Why the Task Scheduler").
+   - A new 24h trial waits for explicit approval from the user.
 2. **Live trading is locked and must stay locked.** No strategy has a demonstrated edge.
 3. **The deployment code is committed and pushed** (§1). The full suite passed (261 tests), and the launch, stop and crash
    recovery were verified on a disposable deployment in a scratch folder (§6).
@@ -136,7 +139,8 @@ For deployment `binance-1h` (the default in the `.bat` files), under `state/forw
 ## 9. Commands (run from `(CURRENT) OnlyFunds/`)
 | Purpose | Command |
 |---|---|
-| Start (supervised, auto-restart) | `START_FORWARD_PAPER.bat` (= `python scripts\forward_supervisor.py --deployment binance-1h --clear-stop -- --interval 1h --every 60 --websocket`, in a minimised window) |
+| Start (supervised, auto-restart) | `START_FORWARD_PAPER.bat`. It registers/starts Task Scheduler task `\OnlyFunds\OF2 Forward Paper binance-1h`, which runs `pythonw scripts\forward_supervisor.py --deployment binance-1h -- --interval 1h --every 60 --websocket` with no window. |
+| Status | `STATUS_FORWARD_PAPER.bat` |
 | Start in the foreground (one session) | `python run_forward_session.py --deployment binance-1h --interval 1h --every 60 --websocket` |
 | Stop gracefully | `STOP_FORWARD_PAPER.bat`, or create `state\forward_deployments\binance-1h\STOP` |
 | Resume after a stop | delete the `STOP` file (`START_FORWARD_PAPER.bat` does this), then start again; evidence continues in the same deployment folder |
