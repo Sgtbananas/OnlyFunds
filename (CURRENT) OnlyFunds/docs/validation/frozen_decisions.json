@@ -1,0 +1,65 @@
+{
+  "protocol_sha256": "726b2c63bc27fcf13f3c9068d07a97771ebe95ab335d41f29723b54cdd5c0812",
+  "frozen_at_utc": "2026-11-01T03:58:31+00:00",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "ADAUSDT",
+    "EOSUSDT",
+    "XLMUSDT",
+    "TRXUSDT"
+  ],
+  "candidates": {
+    "auto": {
+      "fixed": null,
+      "tuned_dev_val": {
+        "threshold": 0.45,
+        "exit_rules.stop_atr_mult": 1.0,
+        "exit_rules.tp_atr_mult": 3.0
+      },
+      "walk_forward_pass": false,
+      "walk_forward": "0/4 walk-forward years positive",
+      "ml_carry": false,
+      "ml_note": "internal DEV validation: AUC 0.529, useful=False; VAL expectancy with ML +nanR (0 trades) vs without -0.065R (255 trades) -> carried to TEST: False"
+    },
+    "trend_following": {
+      "fixed": null,
+      "tuned_dev_val": {
+        "threshold": 0.45,
+        "exit_rules.stop_atr_mult": 1.5,
+        "exit_rules.tp_atr_mult": 3.0
+      },
+      "walk_forward_pass": false,
+      "walk_forward": "0/4 walk-forward years positive",
+      "ml_carry": false,
+      "ml_note": "internal DEV validation: AUC 0.530, useful=False; VAL expectancy with ML -0.134R (23 trades) vs without -0.082R (380 trades) -> carried to TEST: False"
+    },
+    "mean_reversion": {
+      "fixed": null,
+      "tuned_dev_val": {
+        "threshold": 0.25,
+        "exit_rules.stop_atr_mult": 1.0,
+        "exit_rules.tp_atr_mult": 2.0
+      },
+      "walk_forward_pass": false,
+      "walk_forward": "1/4 walk-forward years positive",
+      "ml_carry": true,
+      "ml_note": "internal DEV validation: AUC 0.525, useful=False; VAL expectancy with ML +1.232R (1 trades) vs without -0.084R (283 trades) -> carried to TEST: True"
+    },
+    "stacked": {
+      "fixed": null,
+      "tuned_dev_val": {
+        "threshold": 0.25,
+        "exit_rules.stop_atr_mult": 2.0,
+        "exit_rules.tp_atr_mult": 3.0
+      },
+      "walk_forward_pass": false,
+      "walk_forward": "0/4 walk-forward years positive",
+      "ml_carry": false,
+      "ml_note": "internal DEV validation: AUC 0.513, useful=False; VAL expectancy with ML -0.492R (11 trades) vs without -0.194R (58 trades) -> carried to TEST: False"
+    }
+  }
+}

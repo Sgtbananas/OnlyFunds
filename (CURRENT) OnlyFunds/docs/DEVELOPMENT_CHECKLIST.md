@@ -29,7 +29,9 @@ it. Live trading stays disabled throughout. ✅ = done and covered by tests; ⏳
 - ✅ Usefulness judged on **expectancy after costs**, not win rate
 - ✅ Train-only optimisation with OOS confirmation; walk-forward; overfitting check
 - ✅ Strategy evaluation harness (`scripts/evaluate_strategies.py`, UI "Compare strategies")
-- ⏳ Run the evaluation on **real historical data** (CSV import or cache). Only synthetic regimes so far.
+- ✅ Real-market validation on Binance 1h data, 9 coins, 2019–2026, under a pre-registered protocol
+  (`docs/REAL_MARKET_EVALUATION.md`). **Result: no credible edge for any strategy, with or without ML.**
+- ⏳ New strategy research, judged by the same pipeline on a fresh untouched test window
 
 ## 5. Paper trading and ledger
 - ✅ Atomic, fsync'd ledger with a last-good backup; a corrupt ledger is never silently replaced

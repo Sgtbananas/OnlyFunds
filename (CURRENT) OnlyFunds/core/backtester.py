@@ -131,6 +131,14 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
         first = int((ts_utc < tf).sum())  # timestamps are sorted: index of the first bar at/after trade_from
         start = max(start, first - 1)  # decision at bar first-1's close -> first fill at bar `first`
     recent_gap = _recent_gap_flags(df, cfg.interval, cfg.gap_check_bars)
+    # Plain arrays: per-bar pandas lookups made long backtests ~10x slower.
+    ts = (df["timestamp"].astype(str).tolist() if "timestamp" in df.columns else [str(x) for x in df.index])
+    sig_entry = sig["entry"].to_numpy(bool)
+    sig_exit = sig["exit"].to_numpy(bool)
+    sig_strategy = sig["strategy"].astype(str).tolist()
+    sig_regime = sig["regime"].astype(str).tolist()
+    sig_conf = sig["confidence"].to_numpy(float)
+    ml_arr = ml.to_numpy(float) if ml is not None else None
 
     for i in range(len(df)):
         if days[i] != current_day:
@@ -149,20 +157,20 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
             size = risk.position_size(cash, cash, fill, stop, 0.0, fee, stop_slippage_pct=stop_slip,
                                       max_qty=max_qty)
             if size.ok:
-                pos = open_position(pair, size.qty, fill, fee, atr_v, rules, _ts(df, i),
+                pos = open_position(pair, size.qty, fill, fee, atr_v, rules, ts[i],
                                     pending_meta["strategy"], pending_meta["regime"], pending_meta["confidence"])
                 pos.risk_amount = planned_risk(size.qty, fill, pos.stop_loss, fee, stop_slip)
                 cash -= size.qty * fill + pos.entry_fee
                 fees_paid += pos.entry_fee
-            decisions.append({"bar": i, "time": _ts(df, i), "action": "BUY" if size.ok else "SKIP",
+            decisions.append({"bar": i, "time": ts[i], "action": "BUY" if size.ok else "SKIP",
                               "reason": size.reason, "price": fill})
         elif pending and pending.startswith("exit:") and pos is not None:
             fill = apply_slippage(opens[i], "sell", slip)
-            rec = close_trade_record(pos, fill, fee, _ts(df, i), pending.split(":", 1)[1])
+            rec = close_trade_record(pos, fill, fee, ts[i], pending.split(":", 1)[1])
             cash += pos.qty * fill - rec["exit_fee"]
             fees_paid += rec["exit_fee"]
             trades.append(rec)
-            decisions.append({"bar": i, "time": _ts(df, i), "action": "SELL", "reason": rec["exit_reason"],
+            decisions.append({"bar": i, "time": ts[i], "action": "SELL", "reason": rec["exit_reason"],
                               "price": fill})
             pos = None
         pending, pending_meta = None, {}
@@ -174,11 +182,11 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
                 # Market-order exit, same as the paper executor: always adverse slippage,
                 # wider for stops (they trigger when price is moving against us).
                 fill = apply_slippage(raw, "sell", stop_slip if reason in STOP_REASONS else slip)
-                rec = close_trade_record(pos, fill, fee, _ts(df, i), reason)
+                rec = close_trade_record(pos, fill, fee, ts[i], reason)
                 cash += pos.qty * fill - rec["exit_fee"]
                 fees_paid += rec["exit_fee"]
                 trades.append(rec)
-                decisions.append({"bar": i, "time": _ts(df, i), "action": "SELL", "reason": reason, "price": fill})
+                decisions.append({"bar": i, "time": ts[i], "action": "SELL", "reason": reason, "price": fill})
                 pos = None
             elif reason == "time_stop":
                 pending = "exit:time_stop"
@@ -187,39 +195,38 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
         equity = cash + (pos.market_value(closes[i]) if pos else 0.0)
         equity_low = cash + (pos.market_value(lows[i]) if pos else 0.0)  # worst mark inside the bar
         peak = max(peak, equity)
-        equity_rows.append({"bar": i, "time": _ts(df, i), "equity": equity, "equity_low": min(equity, equity_low),
+        equity_rows.append({"bar": i, "time": ts[i], "equity": equity, "equity_low": min(equity, equity_low),
                             "cash": cash, "in_position": pos is not None})
         if i < start or i == len(df) - 1 or pending:
             continue
         if risk.drawdown_hit(equity, peak) and not halted_reason:
             halted_reason = f"max drawdown {cfg.risk.max_drawdown_pct:.0%} hit at bar {i}"
-            decisions.append({"bar": i, "time": _ts(df, i), "action": "HALT", "reason": halted_reason,
+            decisions.append({"bar": i, "time": ts[i], "action": "HALT", "reason": halted_reason,
                               "price": closes[i]})
-        row = sig.iloc[i]
         if pos is not None:
-            if bool(row["exit"]):
+            if sig_exit[i]:
                 pending = "exit:signal_exit"
-        elif bool(row["entry"]) and not halted_reason and np.isfinite(atr[i]) and atr[i] > 0:
+        elif sig_entry[i] and not halted_reason and np.isfinite(atr[i]) and atr[i] > 0:
             if recent_gap[i]:
-                decisions.append({"bar": i, "time": _ts(df, i), "action": "DATA_GAP",
+                decisions.append({"bar": i, "time": ts[i], "action": "DATA_GAP",
                                   "reason": f"missing candle within the last {cfg.gap_check_bars} bars",
                                   "price": closes[i]})
                 continue
-            if ml is not None and not (ml.iloc[i] >= cfg.ml_threshold):
-                decisions.append({"bar": i, "time": _ts(df, i), "action": "FILTERED",
-                                  "reason": f"ml proba {ml.iloc[i]:.2f} < {cfg.ml_threshold}", "price": closes[i]})
+            if ml_arr is not None and not (ml_arr[i] >= cfg.ml_threshold):
+                decisions.append({"bar": i, "time": ts[i], "action": "FILTERED",
+                                  "reason": f"ml proba {ml_arr[i]:.2f} < {cfg.ml_threshold}", "price": closes[i]})
                 continue
             ok, why = risk.can_open(pair, [], equity, day_start_equity, peak, check_kill_switch=False)
             if ok:
                 ok, why = risk.costs_acceptable(closes[i], closes[i] - cfg.exit_rules.stop_atr_mult * atr[i],
                                                 fee, slip, stop_slip)
             if not ok:
-                decisions.append({"bar": i, "time": _ts(df, i), "action": "BLOCKED", "reason": why,
+                decisions.append({"bar": i, "time": ts[i], "action": "BLOCKED", "reason": why,
                                   "price": closes[i]})
                 continue
             pending = "enter"
-            pending_meta = {"atr": float(atr[i]), "strategy": str(row["strategy"]), "regime": str(row["regime"]),
-                            "confidence": float(row["confidence"])}
+            pending_meta = {"atr": float(atr[i]), "strategy": sig_strategy[i], "regime": sig_regime[i],
+                            "confidence": float(sig_conf[i])}
 
     last_close = closes[-1]
     open_pos_dict = None
@@ -227,7 +234,7 @@ def run_backtest(data: pd.DataFrame, config: Optional[BacktestConfig] = None, pa
     if pos is not None:
         if cfg.close_at_end:
             fill = apply_slippage(last_close, "sell", slip)
-            rec = close_trade_record(pos, fill, fee, _ts(df, len(df) - 1), "end_of_data")
+            rec = close_trade_record(pos, fill, fee, ts[len(df) - 1], "end_of_data")
             cash += pos.qty * fill - rec["exit_fee"]
             fees_paid += rec["exit_fee"]
             trades.append(rec)
