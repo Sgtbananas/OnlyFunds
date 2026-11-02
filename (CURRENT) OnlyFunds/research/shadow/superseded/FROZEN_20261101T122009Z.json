@@ -1,0 +1,143 @@
+{
+ "confidence_intervals": "cluster bootstrap resampling calendar weeks of entry (10,000 resamples); results also reported by BTC market state (core/regime.detect on BTC daily)",
+ "costs": {
+  "fee_per_side": 0.002,
+  "max_cost_to_risk": 0.25,
+  "slippage": 0.0005,
+  "stop_slippage": 0.002,
+  "volume_cap_of_prev_bar": 0.1
+ },
+ "data_source": "Binance spot public REST /api/v3/klines, interval 1d, completed candles only, UTC days",
+ "execution": "decision at the daily close; fill at the next daily open with slippage; stops checked intrabar (gap through the stop fills at the open); stop fills get stop slippage; fees both sides",
+ "fingerprints": {
+  "RS3": "59ab2baca7886d0315052f513c23edad3cc45937bb5584a72b3ae5b4a496e469",
+  "T50": "a4c799accdb9946822e48cc895df2e8eb17a2a0a71263dfbc8e2d79b705b8af2"
+ },
+ "frozen_at_utc": "2026-11-01T12:20:09+00:00",
+ "git_commit": "abe4e01280bec6d40d810a9417af3833da4b3997",
+ "implementation_sha256": {
+  "config/config.yaml": "0a0980b82d159b748ef2224e52a8dc04b48fc692e4ce4c2dcf9f73e234aa748f",
+  "core/backtester.py": "7cc0c26eb115bbb85f360bc7a4525a20a7a5f051429960eefce5eb184d58d18a",
+  "core/core_signals.py": "31562ce2ba8b0f7773f49d6917333bf72a6a10434581214aad0f24f4a47f8d31",
+  "core/history.py": "19b269b8babfb7e270bb7ce0392de136014baa3b0f29c506c15611a7db9cfd47",
+  "core/indicators.py": "56406de232273869e5c8ae16fa7aee607b380f18ada57c2bd44bf6c330062df4",
+  "core/positions.py": "41b394a4afb250ff624f545b9be97ca910ad43791531ff9dc5c4658f3bf8a5ef",
+  "core/regime.py": "ae2fde214f266cc9d374cc06b322710b03a4a1313b0dc10e39236f027a57e6f1",
+  "core/risk_manager.py": "0f4d987a7aac9f75089c313140baf20c103df2567ec9928984e6405ecd139a9c",
+  "core/validation.py": "feef9ff4f2f5302377f08e00aae233489cac41772fa6cc88a6d209eb12646c36",
+  "research/forward_shadow.py": "e2484180224850771a739b5f6a0f83eb8f711ce0b55d0727fb4bfc088f53e877",
+  "research/portfolio.py": "4cebdb38dd7ab9f70278921b445f8db4898f2b144ac7203a679aedd809b175f0",
+  "research/round1.py": "4e5be920ff28b16bfbeb016321cea3d716e784d9f9cb649c5f8061176db24f79",
+  "utils/config.py": "5df60445cb8c82cf2c510a552228dc9496f43034ba200833b1e159ab9130c0a4"
+ },
+ "pass_criteria_prospective_sample_only": [
+  ">= 100 signal-book trades in the prospective sample (no historical trades counted)",
+  "expectancy > 0R and the week-clustered 95% bootstrap lower bound > 0",
+  "profit factor >= 1.10",
+  "positive on >= 60% of coins with >= 10 trades; still positive without the best coin",
+  "expectancy above the 95th percentile of the frozen random-entry benchmark over the same period"
+ ],
+ "purpose": "prospective validation only; not approved for trading; no orders; live trading stays locked",
+ "random_benchmark": {
+  "RS3": "on each Monday on which the BTC filter is on, 3 coins drawn at random from those with data; same exits (leave at the next Monday), stop, sizing, costs",
+  "T50": "per coin, entry on each day with probability p_coin = share of 2019-2024 days on which T50's entry condition was true for that coin (frozen values below); same exits, stop, sizing, costs",
+  "runs": 1000,
+  "seed": 2611
+ },
+ "random_entry_probabilities": {
+  "ADAUSDT": 0.08211678832116788,
+  "BATUSDT": 0.061971830985915494,
+  "BNBUSDT": 0.08485401459854014,
+  "BTCUSDT": 0.10903284671532847,
+  "DASHUSDT": 0.05270655270655271,
+  "EOSUSDT": 0.06113138686131387,
+  "ETCUSDT": 0.058394160583941604,
+  "ETHUSDT": 0.10401459854014598,
+  "ICXUSDT": 0.072992700729927,
+  "IOTAUSDT": 0.05885036496350365,
+  "LINKUSDT": 0.08314193844740468,
+  "LTCUSDT": 0.07025547445255474,
+  "NEOUSDT": 0.06614963503649635,
+  "NULSUSDT": 0.0666058394160584,
+  "OMGUSDT": 0.06936416184971098,
+  "ONTUSDT": 0.07116788321167883,
+  "QTUMUSDT": 0.07025547445255474,
+  "TRXUSDT": 0.0885036496350365,
+  "VETUSDT": 0.08074817518248176,
+  "WAVESUSDT": 0.07027300303336703,
+  "XLMUSDT": 0.05474452554744526,
+  "XMRUSDT": 0.07649667405764966,
+  "XRPUSDT": 0.05063868613138686,
+  "ZECUSDT": 0.0676762896355892,
+  "ZILUSDT": 0.0699953336444237
+ },
+ "reporting": "every update writes a run record; interim results never change the rules",
+ "risk_conservative": {
+  "drawdown_halt": "permanent (kill switch)",
+  "max_daily_loss_pct": 0.03,
+  "max_drawdown_pct": 0.1,
+  "max_exposure_pct": 0.3,
+  "max_open_positions": 3,
+  "max_position_pct": 0.1,
+  "portfolio_capital_usdt": 10000,
+  "risk_per_trade": 0.005,
+  "signal_book_capital_per_coin_usdt": 1000
+ },
+ "start_first_fill_utc": "2026-11-02",
+ "strategies": {
+  "RS3": {
+   "entry": "at Monday's daily close: coin in the top 3 of the universe by 28-day return, its 28-day return > 0, and BTC close > BTC 100-day simple average",
+   "exit": "at Monday's close if any entry condition fails -> sell next open",
+   "portfolio_order": "universe order when slots are short",
+   "signal_code": "research/round1.py: rs_basket(), signals('RS3')",
+   "stop": "3 x ATR(14) below the fill price, fixed; no take-profit; no trailing",
+   "universe": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "ADAUSDT",
+    "EOSUSDT",
+    "XLMUSDT",
+    "TRXUSDT"
+   ]
+  },
+  "T50": {
+   "entry": "daily close > highest close of the previous 50 days",
+   "exit": "daily close < lowest close of the previous 25 days -> sell next open",
+   "portfolio_order": "universe order when slots are short",
+   "signal_code": "research/round1.py: signals('T50')",
+   "stop": "3 x ATR(14) below the fill price, fixed; no take-profit (tp_atr_mult=1000); no trailing",
+   "universe": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "ADAUSDT",
+    "EOSUSDT",
+    "XLMUSDT",
+    "TRXUSDT",
+    "ETCUSDT",
+    "LINKUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "IOTAUSDT",
+    "ONTUSDT",
+    "ICXUSDT",
+    "WAVESUSDT",
+    "BATUSDT",
+    "VETUSDT",
+    "ZILUSDT",
+    "NULSUSDT",
+    "ZECUSDT",
+    "DASHUSDT",
+    "XMRUSDT",
+    "OMGUSDT"
+   ],
+   "universe_rule": "main 9 OF2 coins + the 16-coin holdout fixed by rule in RESEARCH_PROGRAMME.md; a coin with no live Binance data (e.g. delisted EOS) is recorded as unavailable"
+  }
+ },
+ "warmup_history_from": "2026-05-01"
+}

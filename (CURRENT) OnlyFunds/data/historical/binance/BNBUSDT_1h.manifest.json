@@ -1,0 +1,85 @@
+{
+  "exchange": "binance",
+  "symbol": "BNBUSDT",
+  "interval": "1h",
+  "source_url": "https://api.binance.com/api/v3/klines",
+  "request": {
+    "url": "https://api.binance.com/api/v3/klines",
+    "symbol": "BNBUSDT",
+    "interval": "1h",
+    "start": "2019-01-01",
+    "end_exclusive": "2026-11-01"
+  },
+  "downloaded_at_utc": "2026-11-01T03:48:56+00:00",
+  "rows": 68604,
+  "sha256": "031671d47ad210a6b03d8cbe362897446aa342990fcc01e5f001170dd9039dd7",
+  "quality": {
+    "rows": 68604,
+    "first_candle": "2019-01-01 00:00:00+00:00",
+    "last_candle": "2026-10-31 23:00:00+00:00",
+    "expected_rows": 68664,
+    "duplicates": 0,
+    "unsorted": false,
+    "misaligned": 0,
+    "missing_candles": 60,
+    "gap_count": 20,
+    "largest_gaps": [
+      {
+        "after": "2019-05-15 02:00:00+00:00",
+        "missing": 10
+      },
+      {
+        "after": "2019-08-15 01:00:00+00:00",
+        "missing": 8
+      },
+      {
+        "after": "2019-03-12 01:00:00+00:00",
+        "missing": 6
+      },
+      {
+        "after": "2020-02-19 11:00:00+00:00",
+        "missing": 5
+      },
+      {
+        "after": "2021-08-13 01:00:00+00:00",
+        "missing": 4
+      },
+      {
+        "after": "2020-12-21 13:00:00+00:00",
+        "missing": 4
+      },
+      {
+        "after": "2021-04-25 04:00:00+00:00",
+        "missing": 3
+      },
+      {
+        "after": "2020-06-28 01:00:00+00:00",
+        "missing": 3
+      },
+      {
+        "after": "2021-09-29 06:00:00+00:00",
+        "missing": 2
+      },
+      {
+        "after": "2021-04-20 01:00:00+00:00",
+        "missing": 2
+      }
+    ],
+    "nan_values": 0,
+    "non_positive_prices": 0,
+    "high_below_open_close_or_low": 0,
+    "low_above_open_close_or_high": 0,
+    "negative_volume": 0,
+    "zero_volume_candles": 3,
+    "max_abs_hourly_log_return": 0.2264643471526644,
+    "extreme_moves_over_25pct": 1,
+    "problems": [],
+    "warnings": [
+      "missing_candles",
+      "zero_volume_candles",
+      "extreme_moves_over_25pct"
+    ],
+    "ok": true
+  },
+  "note": "Exchange-sourced candles; missing candles are not filled. Not CoinEx data."
+}

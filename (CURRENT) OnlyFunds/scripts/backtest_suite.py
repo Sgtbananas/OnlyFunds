@@ -1,78 +1,60 @@
-import os
+"""Backtest every configured pair and write state/backtest_results.json.
+
+    python scripts/backtest_suite.py [--pairs BTCUSDT ETHUSDT] [--interval 15m] [--profile Normal] [--oos]
+"""
+import argparse
 import json
-from core.core_data import fetch_klines, add_indicators, TRADING_PAIRS
+import os
+import sys
+import time
 
-def ensure_state_dir():
-    """
-    Ensure that the state directory exists.
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    state_dir = os.path.normpath(os.path.join(here, "..", "state"))
-    os.makedirs(state_dir, exist_ok=True)
-    return state_dir
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-def run_backtests():
-    """
-    Run a simple backtest for each trading pair and write results to state/backtest_results.json.
-    If no results are found, write a dummy result so the UI always displays something.
-    """
-    results = []
-    here = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.normpath(os.path.join(here, "..", "data"))
-    print("DEBUG: Current working directory:", os.getcwd())
-    print("DEBUG: This script's directory:", here)
-    print("DEBUG: Files in ./data/:", os.listdir(data_dir) if os.path.exists(data_dir) else "NO DATA DIR")
+import pandas as pd  # noqa: E402
 
-    for pair in TRADING_PAIRS:
-        interval = "15m"
-        limit = 1000
-        print(f"DEBUG: Running backtest for {pair}")
-        df = fetch_klines(pair, interval, limit)
-        print(f"DEBUG: {pair} df.shape={df.shape}")
-        if df.empty:
-            print(f"WARNING: No data for {pair}")
+from core.backtester import run_backtest, run_out_of_sample  # noqa: E402
+from core.core_data import fetch_klines  # noqa: E402
+from utils.config import APP_ROOT, build_settings, load_config  # noqa: E402
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pairs", nargs="+")
+    ap.add_argument("--interval")
+    ap.add_argument("--profile")
+    ap.add_argument("--limit", type=int, default=1000)
+    ap.add_argument("--oos", action="store_true", help="report in-sample vs out-of-sample (70/30)")
+    a = ap.parse_args(argv)
+    cfg = load_config()
+    bt, _ = build_settings(cfg, a.profile, {"interval": a.interval} if a.interval else None)
+    rows, results = [], []
+    for pair in a.pairs or cfg.trading_pairs:
+        try:
+            df = fetch_klines(pair, bt.interval, a.limit)
+        except Exception as exc:
+            print(f"{pair}: no data ({exc})")
             continue
-
-        df = add_indicators(df)
-        if "Close" in df.columns and "ATR" in df.columns:
-            # Dummy strategy: enter at first bar, exit at last bar
-            if len(df) >= 2:
-                entry_price = df.iloc[0]["Close"]
-                exit_price = df.iloc[-1]["Close"]
-                profit = exit_price - entry_price
-                results.append({
-                    "pair": pair,
-                    "entry": float(entry_price),
-                    "exit": float(exit_price),
-                    "profit": float(profit)
-                })
-            else:
-                print(f"WARNING: Not enough data to perform backtest for {pair}")
+        if a.oos:
+            for seg, res in run_out_of_sample(df, bt, pair).items():
+                rows.append({"pair": pair, "segment": seg, **res.metrics})
         else:
-            print(f"WARNING: Data missing required columns for {pair}")
+            res = run_backtest(df, bt, pair)
+            rows.append({"pair": pair, "segment": "full", **res.metrics})
+            results.append({"pair": pair, "metrics": res.metrics, "trades": res.trades.to_dict("records")})
+    if not rows:
+        print("No results (no data could be loaded).")
+        return 1
+    table = pd.DataFrame(rows).drop(columns=["exit_reasons"])
+    cols = ["pair", "segment", "trades", "total_return_pct", "buy_and_hold_return_pct", "win_rate_pct",
+            "max_drawdown_pct", "profit_factor", "fees_paid"]
+    print(table[cols].round(3).to_string(index=False))
+    out = os.path.join(APP_ROOT, "state", "backtest_results.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump({"time": time.time(), "config": bt.as_dict(), "results": results or rows}, f, default=str)
+    print(f"Saved {out}")
+    return 0
 
-    # If no results, insert a dummy result so UI always displays something
-    if not results:
-        results = [{
-            "pair": "DUMMY",
-            "entry": 100.0,
-            "exit": 110.0,
-            "profit": 10.0
-        }]
-        print("INFO: No real results, writing dummy result to ensure UI displays output.")
-
-    state_dir = ensure_state_dir()
-    out_path = os.path.join(state_dir, "backtest_results.json")
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"DEBUG: Wrote backtest results to {out_path}")
-    print(f"DEBUG: Results: {results}")
-
-    # Double-check for UI: print absolute path and file content
-    print("DEBUG: Absolute path for UI to read:", os.path.abspath(out_path))
-    with open(out_path, "r") as f:
-        print("DEBUG: File contents for UI:")
-        print(f.read())
 
 if __name__ == "__main__":
-    run_backtests()
+    sys.exit(main())

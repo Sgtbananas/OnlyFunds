@@ -1,0 +1,82 @@
+{
+  "exchange": "binance",
+  "symbol": "TRXUSDT",
+  "interval": "4h",
+  "source_url": "https://api.binance.com/api/v3/klines",
+  "request": {
+    "url": "https://api.binance.com/api/v3/klines",
+    "symbol": "TRXUSDT",
+    "interval": "4h",
+    "start": "2019-01-01",
+    "end_exclusive": "2026-11-01"
+  },
+  "downloaded_at_utc": "2026-11-01T06:28:34+00:00",
+  "rows": 17161,
+  "sha256": "a61363826528620beb297124dfb0a27b786821911d4d808ba87dd79fda70d559",
+  "quality": {
+    "rows": 17161,
+    "first_candle": "2019-01-01 00:00:00+00:00",
+    "last_candle": "2026-10-31 20:00:00+00:00",
+    "expected_rows": 17166,
+    "duplicates": 0,
+    "unsorted": false,
+    "misaligned": 0,
+    "missing_candles": 5,
+    "gap_count": 4,
+    "largest_gaps": [
+      {
+        "after": "2019-05-15 00:00:00+00:00",
+        "missing": 2
+      },
+      {
+        "after": "2020-02-19 08:00:00+00:00",
+        "missing": 1
+      },
+      {
+        "after": "2019-08-15 00:00:00+00:00",
+        "missing": 1
+      },
+      {
+        "after": "2019-03-12 00:00:00+00:00",
+        "missing": 1
+      }
+    ],
+    "nan_values": 0,
+    "non_positive_prices": 0,
+    "high_below_open_close_or_low": 0,
+    "low_above_open_close_or_high": 0,
+    "negative_volume": 0,
+    "zero_volume_candles": 0,
+    "max_abs_hourly_log_return": 0.3487297956072968,
+    "extreme_moves_over_25pct": 2,
+    "problems": [],
+    "warnings": [
+      "missing_candles",
+      "extreme_moves_over_25pct"
+    ],
+    "ok": true
+  },
+  "note": "Exchange-sourced candles; missing candles are not filled. Not CoinEx data.",
+  "cost_assumptions": {
+    "exchange": {
+      "fee_rate_per_side": {
+        "value": 0.001,
+        "status": "published Binance base spot fee (no VIP/BNB discount); not verified for any account"
+      },
+      "slippage_pct": {
+        "value": 0.0005,
+        "status": "assumption, not measured"
+      },
+      "stop_slippage_pct": {
+        "value": 0.002,
+        "status": "assumption, not measured"
+      }
+    },
+    "evaluation_default": {
+      "fee_rate_per_side": {
+        "value": 0.002,
+        "status": "CoinEx default taker fee as shown in the CoinEx API v2 documentation example; used for all OF2 evaluations; not verified for any account"
+      }
+    }
+  }
+}

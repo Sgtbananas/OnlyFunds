@@ -1,60 +1,147 @@
+"""Market data access: CoinEx candles with a local CSV cache.
+
+``fetch_klines`` pulls completed candles from CoinEx. When the network is
+unavailable it falls back to the most recent cached copy, and says so via
+``df.attrs["source"]`` so the UI can show where data came from.
+"""
+from __future__ import annotations
+
+import logging
 import os
+from typing import List, Optional
+
 import pandas as pd
 
-def get_trading_pairs():
+from core.coinex_client import CoinExClient, CoinExError, INTERVAL_MAP
+from core.indicators import add_indicators, validate_ohlcv  # re-exported
+
+logger = logging.getLogger(__name__)
+
+APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+CACHE_DIR = os.path.join(APP_ROOT, "data", "cache")
+DEFAULT_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LTCUSDT", "BNBUSDT"]
+
+_client: Optional[CoinExClient] = None
+
+
+def get_client() -> CoinExClient:
+    global _client
+    if _client is None:
+        _client = CoinExClient()
+    return _client
+
+
+def get_trading_pairs() -> List[str]:
     try:
-        from utils.config import Config
-        config_pairs = Config().trading_pairs
-        if config_pairs and isinstance(config_pairs, list):
-            return config_pairs
+        from utils.config import load_config
+        pairs = load_config().trading_pairs
+        if pairs and isinstance(pairs, list):
+            return pairs
     except Exception:
         pass
-    return ["BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "BNBUSDT"]
+    return list(DEFAULT_PAIRS)
+
 
 TRADING_PAIRS = get_trading_pairs()
 
-def fetch_klines(pair, interval="15m", limit=1000):
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-    fname = f"{pair}_{interval}_{limit}.csv"
-    fpath = os.path.join(data_dir, fname)
-    if os.path.exists(fpath):
-        df = pd.read_csv(fpath)
-    else:
-        df = pd.DataFrame()
+
+def cache_dir() -> str:
+    return os.environ.get("OF2_CACHE_DIR") or CACHE_DIR
+
+
+def _cache_path(pair: str, interval: str) -> str:
+    return os.path.join(cache_dir(), f"{pair}_{interval}.csv")
+
+
+def save_data(df: pd.DataFrame, pair: str, interval: str = "5m") -> None:
+    os.makedirs(cache_dir(), exist_ok=True)
+    path = _cache_path(pair, interval)
+    tmp = path + ".tmp"
+    df.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def load_cached(pair: str, interval: str = "5m", limit: Optional[int] = None) -> pd.DataFrame:
+    path = _cache_path(pair, interval)
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    if limit:
+        df = df.tail(int(limit)).reset_index(drop=True)
+    df.attrs["source"] = "cache"
     return df
 
-def load_data(pair, interval="15m", limit=1000):
+
+def fetch_klines(pair: str, interval: str = "5m", limit: int = 1000, use_cache_fallback: bool = True,
+                 client: Optional[CoinExClient] = None) -> pd.DataFrame:
+    """Completed OHLCV candles for ``pair`` (oldest first)."""
+    if interval not in INTERVAL_MAP:
+        raise ValueError(f"Unsupported interval {interval}")
+    client = client or get_client()
+    try:
+        df = client.get_klines(pair, interval=interval, limit=limit)
+        if df.empty:
+            raise CoinExError(None, f"no candles returned for {pair}")
+        merged = _merge_with_cache(df, pair, interval)
+        save_data(merged, pair, interval)
+        out = merged.tail(int(limit)).reset_index(drop=True)
+        out.attrs["source"] = "coinex"
+        return out
+    except Exception as exc:
+        if not use_cache_fallback:
+            raise
+        logger.warning("Live kline fetch failed for %s %s (%s); using cache", pair, interval, exc)
+        cached = load_cached(pair, interval, limit)
+        if cached.empty:
+            raise
+        return cached
+
+
+def _merge_with_cache(df: pd.DataFrame, pair: str, interval: str) -> pd.DataFrame:
+    """Append new candles to the cached history so longer backtests are possible."""
+    cached = load_cached(pair, interval)
+    if cached.empty or "created_at" not in cached.columns:
+        return df
+    merged = pd.concat([cached, df], ignore_index=True)
+    merged = merged.drop_duplicates("created_at", keep="last").sort_values("created_at")
+    return merged.reset_index(drop=True)
+
+
+def load_data(pair: str, interval: str = "5m", limit: int = 1000) -> pd.DataFrame:
     return fetch_klines(pair, interval, limit)
 
-def save_data(df, pair, interval="15m", limit=1000):
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-    os.makedirs(data_dir, exist_ok=True)
-    fname = f"{pair}_{interval}_{limit}.csv"
-    fpath = os.path.join(data_dir, fname)
-    df.to_csv(fpath, index=False)
 
-def validate_df(df):
-    if df is None or df.empty:
-        return False
-    for col in ["Close", "ATR"]:
-        if col not in df.columns:
-            return False
-    return True
+def validate_df(df: Optional[pd.DataFrame]) -> bool:
+    return validate_ohlcv(df)
 
-def add_indicators(df):
-    if df is None or df.empty:
-        return df
-    if "Close" not in df.columns:
-        df["Close"] = 100 + pd.Series(range(len(df)))
-    if "ATR" not in df.columns:
-        df["ATR"] = df["Close"].rolling(window=14, min_periods=1).std().fillna(0.0)
-    return df
 
-__all__ = [
-    "fetch_klines",
-    "load_data",
-    "save_data",
-    "validate_df",
-    "add_indicators",
-    "TRADING_PAIRS",
-]
+def normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalise a user-supplied OHLCV table (any column case, common time column names)."""
+    cols = {c.lower().strip(): c for c in raw.columns}
+    out = pd.DataFrame()
+    for name in ("open", "high", "low", "close"):
+        if name not in cols:
+            raise ValueError(f"CSV is missing a '{name}' column")
+        out[name.capitalize()] = pd.to_numeric(raw[cols[name]], errors="coerce")
+    out["Volume"] = pd.to_numeric(raw[cols["volume"]], errors="coerce") if "volume" in cols else 0.0
+    tcol = next((cols[c] for c in ("timestamp", "time", "date", "datetime", "created_at", "open_time")
+                 if c in cols), None)
+    if tcol is not None:
+        t = raw[tcol]
+        if pd.api.types.is_numeric_dtype(t):
+            unit = "ms" if t.max() > 1e11 else "s"
+            out["timestamp"] = pd.to_datetime(t, unit=unit, utc=True)
+        else:
+            out["timestamp"] = pd.to_datetime(t, utc=True)
+        out = out.sort_values("timestamp")
+        out["created_at"] = out["timestamp"].astype("int64") // 10**6
+    out = out.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
+    if not validate_ohlcv(out):
+        raise ValueError("CSV has no valid OHLC rows (prices must be positive)")
+    return out
+
+
+__all__ = ["fetch_klines", "load_data", "load_cached", "save_data", "validate_df", "normalize_ohlcv", "add_indicators",
+           "TRADING_PAIRS", "get_client", "DEFAULT_PAIRS"]

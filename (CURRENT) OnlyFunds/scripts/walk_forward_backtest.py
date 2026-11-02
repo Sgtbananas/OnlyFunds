@@ -1,54 +1,48 @@
-#!/usr/bin/env python3
-import pandas as pd, numpy as np, json
-from datetime import datetime, timedelta
-from core.core_data    import fetch_klines, add_indicators, TRADING_PAIRS
-from core.core_signals import generate_signal
-from core.backtester   import run_backtest
-from joblib import Parallel, delayed
+"""Walk-forward validation: optimise on each training window, test on the next unseen window.
 
-RESULTS = []
+    python scripts/walk_forward_backtest.py [--pairs BTCUSDT] [--interval 15m] [--folds 4]
+"""
+import argparse
+import json
+import os
+import sys
 
-window_len = 1000
-test_len = 200
-max_data = 1500
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-def walk_window(start):
-    window_result = {"window_start": start, "pairs": []}
-    for pair in TRADING_PAIRS:
-        # Fetch and slice data for this pair
-        df = fetch_klines(pair=pair, interval="15m", limit=max_data)
-        if df.empty or len(df) < (start+window_len+test_len):
+from core.autotune import walk_forward  # noqa: E402
+from core.core_data import fetch_klines  # noqa: E402
+from utils.config import APP_ROOT, build_settings, load_config  # noqa: E402
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pairs", nargs="+")
+    ap.add_argument("--interval")
+    ap.add_argument("--profile")
+    ap.add_argument("--folds", type=int, default=4)
+    a = ap.parse_args(argv)
+    cfg = load_config()
+    bt, _ = build_settings(cfg, a.profile, {"interval": a.interval} if a.interval else None)
+    out = {}
+    for pair in a.pairs or cfg.trading_pairs:
+        try:
+            df = fetch_klines(pair, bt.interval, 1000)
+            r = walk_forward(df, bt, n_folds=a.folds, pair=pair)
+        except Exception as exc:
+            print(f"{pair}: skipped ({exc})")
             continue
-        df = add_indicators(df)
-        train = df.iloc[start : start+window_len]
-        test = df.iloc[start+window_len : start+window_len+test_len]
-        # You could train your meta-learner here on "train"
-        sig = generate_signal(test)
-        test_summary = run_backtest(
-            signal=sig,
-            prices=test["Close"],
-            threshold=0.05,
-            initial_capital=10.0,
-            risk_pct=0.01,
-            stop_loss_pct=0.005,
-            take_profit_pct=0.01,
-        )
-        summary_row = test_summary.loc[test_summary.type=="summary"]
-        if not summary_row.empty:
-            summary_dict = summary_row.iloc[0].to_dict()
-            summary_dict["pair"] = pair
-            window_result["pairs"].append(summary_dict)
-    return window_result
+        print(f"\n{pair}: compounded OOS return {r['oos_compounded_return_pct']:.2f}% "
+              f"({r['profitable_folds']}/{r['n_folds']} folds profitable)")
+        print(r["folds"].to_string(index=False))
+        out[pair] = {"oos_compounded_return_pct": r["oos_compounded_return_pct"],
+                     "folds": r["folds"].to_dict("records")}
+    path = os.path.join(APP_ROOT, "state", "walk_forward.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2, default=str)
+    print(f"\nSaved {path}")
+    return 0 if out else 1
 
-# Parallelize window sweeping!
-starts = list(range(0, max_data-window_len-test_len+1, test_len))
-window_results = Parallel(n_jobs=-1, verbose=10)(
-    delayed(walk_window)(start) for start in starts
-)
 
-# Collate global results
-RESULTS = window_results
-
-with open("state/walk_forward.json","w") as f:
-    json.dump(RESULTS, f, indent=2)
-print("✅ Walk-forward validation complete → state/walk_forward.json")
+if __name__ == "__main__":
+    sys.exit(main())

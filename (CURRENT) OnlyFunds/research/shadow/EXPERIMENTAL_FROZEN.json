@@ -1,0 +1,101 @@
+{
+ "btc_gate_rule": "skip new entries when BTC close <= 100-day SMA (round1.btc_filter)",
+ "comparator": "frozen T50 portfolio book (same data, limits, costs, start)",
+ "costs": {
+  "fee_per_side": 0.002,
+  "max_cost_to_risk": 0.25,
+  "slippage": 0.0005,
+  "stop_slippage": 0.002,
+  "volume_cap_of_prev_bar": 0.1
+ },
+ "decision": "after >= 24 months and >= 40 closed positions per book: max DD >= 2 pts lower, return/DD not lower, return >= 80% of T50's, top-5 T50 positions keep >= 70% of their profit",
+ "fingerprints": {
+  "X1_T50_PM": "3de65f019bda1bf991cb6b6dbc3edcd70998c8c29a62a6aec5496bd7b529149f",
+  "X2_T50_PM_B": "c2edc9f74773d711f5d8143dde7fb94e93af0e6bee29b879cfb674827932c91a"
+ },
+ "frozen_T50_fingerprint": "29139c64b6c0ad9d7c0c9085b56ecba95199de0fa0d5d9b8cb49753ed04910c7",
+ "frozen_at_utc": "2026-11-01T14:23:53+00:00",
+ "implementation_sha256": {
+  "config/config.yaml": "0a0980b82d159b748ef2224e52a8dc04b48fc692e4ce4c2dcf9f73e234aa748f",
+  "core/backtester.py": "7cc0c26eb115bbb85f360bc7a4525a20a7a5f051429960eefce5eb184d58d18a",
+  "core/core_signals.py": "31562ce2ba8b0f7773f49d6917333bf72a6a10434581214aad0f24f4a47f8d31",
+  "core/history.py": "19b269b8babfb7e270bb7ce0392de136014baa3b0f29c506c15611a7db9cfd47",
+  "core/indicators.py": "56406de232273869e5c8ae16fa7aee607b380f18ada57c2bd44bf6c330062df4",
+  "core/positions.py": "41b394a4afb250ff624f545b9be97ca910ad43791531ff9dc5c4658f3bf8a5ef",
+  "core/regime.py": "ae2fde214f266cc9d374cc06b322710b03a4a1313b0dc10e39236f027a57e6f1",
+  "core/risk_manager.py": "0f4d987a7aac9f75089c313140baf20c103df2567ec9928984e6405ecd139a9c",
+  "core/validation.py": "feef9ff4f2f5302377f08e00aae233489cac41772fa6cc88a6d209eb12646c36",
+  "research/forward_experimental.py": "097a7d71c8645c27e578beba173831b3010fa1b91f2480f887f9681377a5dca4",
+  "research/forward_shadow.py": "006b481b78f139e5cc42ed37957f99edf2566c598b171cf8dda214eea0f101b7",
+  "research/portfolio.py": "4cebdb38dd7ab9f70278921b445f8db4898f2b144ac7203a679aedd809b175f0",
+  "research/portfolio_variants.py": "100acb75a916bdaaaa58b9dbdb61baa17e33d5e87adb6ce841a761c2163cd19c",
+  "research/round1.py": "4e5be920ff28b16bfbeb016321cea3d716e784d9f9cb649c5f8061176db24f79",
+  "utils/config.py": "5df60445cb8c82cf2c510a552228dc9496f43034ba200833b1e159ab9130c0a4"
+ },
+ "preregistration": "docs/research/ROUND2_PROGRAMME.md section A",
+ "purpose": "EXPERIMENTAL prospective tracking only; not approved for trading; no orders; live trading locked",
+ "risk_conservative": {
+  "drawdown_halt": "permanent (kill switch)",
+  "max_daily_loss_pct": 0.03,
+  "max_drawdown_pct": 0.1,
+  "max_exposure_pct": 0.3,
+  "max_open_positions": 3,
+  "max_position_pct": 0.1,
+  "portfolio_capital_usdt": 10000,
+  "risk_per_trade": 0.005,
+  "signal_book_capital_per_coin_usdt": 1000
+ },
+ "signals": "frozen T50 entries and exits, unchanged",
+ "start_first_fill_utc": "2026-11-02",
+ "universe": [
+  "BTCUSDT",
+  "ETHUSDT",
+  "BNBUSDT",
+  "XRPUSDT",
+  "LTCUSDT",
+  "ADAUSDT",
+  "EOSUSDT",
+  "XLMUSDT",
+  "TRXUSDT",
+  "ETCUSDT",
+  "LINKUSDT",
+  "NEOUSDT",
+  "QTUMUSDT",
+  "IOTAUSDT",
+  "ONTUSDT",
+  "ICXUSDT",
+  "WAVESUSDT",
+  "BATUSDT",
+  "VETUSDT",
+  "ZILUSDT",
+  "NULSUSDT",
+  "ZECUSDT",
+  "DASHUSDT",
+  "XMRUSDT",
+  "OMGUSDT"
+ ],
+ "variants": {
+  "X1_T50_PM": {
+   "btc_gate": false,
+   "profit_lock": [
+    2.0,
+    6.0
+   ],
+   "trim_band": [
+    0.15,
+    0.1
+   ]
+  },
+  "X2_T50_PM_B": {
+   "btc_gate": true,
+   "profit_lock": [
+    2.0,
+    6.0
+   ],
+   "trim_band": [
+    0.15,
+    0.1
+   ]
+  }
+ }
+}

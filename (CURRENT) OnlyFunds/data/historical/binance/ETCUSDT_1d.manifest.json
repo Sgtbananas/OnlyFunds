@@ -1,0 +1,64 @@
+{
+  "exchange": "binance",
+  "symbol": "ETCUSDT",
+  "interval": "1d",
+  "source_url": "https://api.binance.com/api/v3/klines",
+  "request": {
+    "url": "https://api.binance.com/api/v3/klines",
+    "symbol": "ETCUSDT",
+    "interval": "1d",
+    "start": "2019-01-01",
+    "end_exclusive": "2025-01-01"
+  },
+  "downloaded_at_utc": "2026-11-01T11:20:12+00:00",
+  "rows": 2192,
+  "sha256": "71c96f6bb5b30097b53af046ac02d4408c7a231e9a651610b04f20ebe8121363",
+  "quality": {
+    "rows": 2192,
+    "first_candle": "2019-01-01 00:00:00+00:00",
+    "last_candle": "2024-12-31 00:00:00+00:00",
+    "expected_rows": 2192,
+    "duplicates": 0,
+    "unsorted": false,
+    "misaligned": 0,
+    "missing_candles": 0,
+    "gap_count": 0,
+    "largest_gaps": [],
+    "nan_values": 0,
+    "non_positive_prices": 0,
+    "high_below_open_close_or_low": 0,
+    "low_above_open_close_or_high": 0,
+    "negative_volume": 0,
+    "zero_volume_candles": 0,
+    "max_abs_hourly_log_return": 0.5730240489187457,
+    "extreme_moves_over_25pct": 17,
+    "problems": [],
+    "warnings": [
+      "extreme_moves_over_25pct"
+    ],
+    "ok": true
+  },
+  "note": "Exchange-sourced candles; missing candles are not filled. Not CoinEx data.",
+  "cost_assumptions": {
+    "exchange": {
+      "fee_rate_per_side": {
+        "value": 0.001,
+        "status": "published Binance base spot fee (no VIP/BNB discount); not verified for any account"
+      },
+      "slippage_pct": {
+        "value": 0.0005,
+        "status": "assumption, not measured"
+      },
+      "stop_slippage_pct": {
+        "value": 0.002,
+        "status": "assumption, not measured"
+      }
+    },
+    "evaluation_default": {
+      "fee_rate_per_side": {
+        "value": 0.002,
+        "status": "CoinEx default taker fee as shown in the CoinEx API v2 documentation example; used for all OF2 evaluations; not verified for any account"
+      }
+    }
+  }
+}

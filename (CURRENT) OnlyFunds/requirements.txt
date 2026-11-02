@@ -1,34 +1,15 @@
-# Core
-pandas>=1.3
-numpy>=1.21
-requests>=2.25
+# OnlyFunds 2 runtime dependencies (Python 3.9+)
+pandas>=1.5
+numpy>=1.23
+requests>=2.28
 python-dotenv>=1.0
-ta>=0.10  # Technical Analysis indicators
-scikit-learn>=1.0
-websockets>=10.0
-prometheus_client
-python-json-logger
-psutil
-
-# Web App & UI
-streamlit>=1.25
+PyYAML>=6.0
+pytz>=2022.1
+scikit-learn>=1.2
+joblib>=1.2
+streamlit>=1.37        # st.fragment(run_every=...) for paper auto-run
 plotly>=5.0
-matplotlib>=3.4
 
-# Backtesting
-backtesting>=0.3
-vectorbt>=0.25  # Optional, very powerful
-
-# Hyperparameter tuning (AI AutoTune)
-optuna>=3.1
-scipy>=1.7
-
-# Extras
-tqdm>=4.62
-rich>=13.0
-
-# Notifications
-python-telegram-bot>=13.15
-
-# If running on Python < 3.10
-typing-extensions>=4.0
+# Optional
+prometheus_client>=0.16   # run_paper.py --metrics-port
+optuna>=3.1               # scripts/Optuna_tune.py
