@@ -53,6 +53,13 @@ def client(responses, **kw):
     return c
 
 
+@pytest.fixture
+def unlocked(monkeypatch):
+    """Test-only: lift the global lock so the mocked order body can be checked. The session is fake; nothing is sent."""
+    from core import trade_execution
+    monkeypatch.setattr(trade_execution, "LIVE_TRADING_LOCKED", False)
+
+
 def test_signature_matches_documented_construction(monkeypatch):
     monkeypatch.setattr(cx.time, "time", lambda: 1700490703.564)
     c = client([ok([{"ccy": "USDT", "available": "10.5", "frozen": "1"}])])
@@ -145,7 +152,34 @@ def test_trading_locked_by_default():
     assert c.session.calls == []
 
 
-def test_order_request_shape_when_unlocked_in_test_only():
+def test_global_lock_overrides_allow_trading():
+    """allow_trading=True alone cannot place or cancel an order while LIVE_TRADING_LOCKED is True."""
+    from core import trade_execution
+    assert trade_execution.LIVE_TRADING_LOCKED is True and cx.live_trading_locked()
+    c = client([ok([MARKET]), ok({"order_id": 1})], allow_trading=True)
+    with pytest.raises(cx.TradingLockedError, match="LIVE_TRADING_LOCKED"):
+        c.place_order("BTCUSDT", "buy", "market", 10)
+    with pytest.raises(cx.TradingLockedError):
+        c.cancel_order("BTCUSDT", 1)
+    assert c.session.calls == []
+
+
+def test_non_get_requests_refused_while_locked():
+    """The private request path cannot be used to reach the order endpoints either."""
+    c = client([ok({"order_id": 1})] * 2, allow_trading=True)
+    for path in ("/spot/order", "/spot/cancel-order"):
+        with pytest.raises(cx.TradingLockedError):
+            c._request("POST", path, body={"market": "BTCUSDT"}, signed=True)
+    assert c.session.calls == []
+
+
+def test_lock_fails_closed_if_unreadable(monkeypatch):
+    from core import trade_execution
+    monkeypatch.delattr(trade_execution, "LIVE_TRADING_LOCKED")
+    assert cx.live_trading_locked() is True
+
+
+def test_order_request_shape_when_unlocked_in_test_only(unlocked):
     """Mocked: verifies the documented body; no request leaves the process."""
     c = client([ok([MARKET]), ok({"order_id": 13400, "market": "BTCUSDT"})], allow_trading=True)
     res = c.place_order("BTCUSDT", "buy", "limit", 0.001, price=10000.123, client_id="of2-abc")
@@ -157,14 +191,14 @@ def test_order_request_shape_when_unlocked_in_test_only():
                     "amount": "0.001", "price": "10000.12", "client_id": "of2-abc"}
 
 
-def test_order_network_failure_is_not_retried():
+def test_order_network_failure_is_not_retried(unlocked):
     c = client([ok([MARKET]), requests.Timeout("t"), ok({})], allow_trading=True)
     with pytest.raises(cx.OrderStateUnknown):
         c.place_order("BTCUSDT", "sell", "market", 0.001, client_id="of2-x")
     assert len(c.session.calls) == 2  # markets + exactly one order attempt
 
 
-def test_order_validation():
+def test_order_validation(unlocked):
     c = client([ok([MARKET])], allow_trading=True)
     with pytest.raises(ValueError):
         c.place_order("BTCUSDT", "hold", "market", 1)
@@ -197,7 +231,7 @@ def test_format_decimal():
     assert cx.format_decimal(0.1 + 0.2) == "0.30000000000000004"  # exact float value, never rounded up
 
 
-def test_order_amount_floored_and_minimum_enforced():
+def test_order_amount_floored_and_minimum_enforced(unlocked):
     c = client([ok([MARKET]), ok({"order_id": 1})], allow_trading=True)
     c.place_order("BTCUSDT", "sell", "market", 0.0012345678912)
     assert json.loads(c.session.calls[1]["data"])["amount"] == "0.00123456"

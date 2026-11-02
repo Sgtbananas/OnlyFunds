@@ -92,6 +92,7 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
     pend_qty: Dict[str, Tuple[float, str]] = {}   # other rules: target quantity, rule name
     eq_rows, ex_rows, no_rows, trades, risk_rows = [], [], [], [], []
     last_close: Dict[str, float] = {}
+    last_bar: Dict[str, pd.Timestamp] = {}       # day of each coin's latest bar (price age)
     prev_equity = capital
     seq = 0
 
@@ -143,7 +144,9 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
         open_val = sum(p["qty"] * float(bars[s]["Open"]) if s in bars else p["qty"] * last_close[s]
                        for s, p in pos.items())
         equity_open = cash + open_val
-        for pair, a, strat, scale in pend_in:
+        unpriced_open = sorted(s for s in pos if s not in bars)
+        blocked_fills = len(pend_in) if unpriced_open else 0      # stale equity: approve nothing
+        for pair, a, strat, scale in (pend_in if not unpriced_open else []):
             if pair in pos or pair not in bars or halted is not None or len(pos) >= limits.max_open_positions:
                 continue
             o = float(bars[pair]["Open"])
@@ -181,6 +184,7 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
                 p["bars"] += 1
         for s, b in bars.items():
             last_close[s] = float(b["Close"])
+            last_bar[s] = d
         val = sum(p["qty"] * last_close[s] for s, p in pos.items())
         equity = cash + val
         peak = max(peak, equity)
@@ -188,6 +192,8 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
         ex_rows.append((d, val / equity if equity > 0 else 0.0))
         no_rows.append((d, len(pos)))
         pv = {s: p["qty"] * last_close[s] for s, p in pos.items()}
+        unpriced = sorted(s for s in pos if s not in bars)          # valued at a stale last close
+        age = {s: (d - last_bar[s]).days for s in pos}
         held = list(pos)
         w = np.array([pv[s] / equity for s in held]) if equity > 0 else np.zeros(len(held))
         eff = effective_exposure(w, _corr(rets, held, d, corr_lookback_report)) if held else 0.0
@@ -200,7 +206,12 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
                           "max_position_pct": max(pv.values()) / equity * 100 if pv else 0.0,
                           "corr_exposure_pct": eff * 100,
                           "gap30_loss_pct": GAP * val / equity * 100,
-                          "n_open": len(pos)})
+                          "n_open": len(pos),
+                          "unpriced_positions": len(unpriced),
+                          "unpriced": ",".join(unpriced),
+                          "max_price_age_days": max(age.values()) if age else 0,
+                          "risk_reliable": not unpriced,
+                          "entries_blocked_unreliable": blocked_fills})
         if halted is None and rm.drawdown_hit(equity, peak):
             halted = d
         if halted is not None and not halt_permanent and equity >= peak * (1 - limits.max_drawdown_pct / 2):
@@ -232,15 +243,20 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
                 pend_qty.pop(pair, None)
         # portfolio-level rules: positions already leaving at the next open are excluded
         off = bool(risk_off.get(d, False)) if risk_off is not None else False
-        stay = [s for s in pos if s in bars and s not in pend_out]
+        # `stay` can be traded at the next open; a held coin with no bar today cannot, but its risk still counts
+        held = [s for s in pos if s not in pend_out]
+        stay = [s for s in held if s in bars]
         if stay and equity > 0:
             qty_now = {s: min(pos[s]["qty"], pend_qty[s][0]) if s in pend_qty else pos[s]["qty"] for s in stay}
             orc = rules.open_risk_cap_off if (off and rules.open_risk_cap_off is not None) else rules.open_risk_cap
             if orc is not None:
                 hi, lo = orc
                 r_i = {s: max(qty_now[s] * (last_close[s] - pos[s]["stop"]), 0.0) for s in stay}
-                excess = sum(r_i.values()) - lo * equity
-                if sum(r_i.values()) > hi * equity:
+                r_unbarred = sum(max(pos[s]["qty"] * (last_close[s] - pos[s]["stop"]), 0.0)
+                                 for s in held if s not in bars)          # marked at the last known close
+                total = sum(r_i.values()) + r_unbarred
+                excess = total - lo * equity
+                if total > hi * equity:
                     for s in sorted(stay, key=lambda x: -r_i[x]):
                         if excess <= 0 or r_i[s] <= 0:
                             break
@@ -251,22 +267,28 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
             if rules.gross_cap is not None:
                 hi, lo = rules.gross_cap
                 g = sum(qty_now[s] * last_close[s] for s in stay) / equity
-                if g > hi:
+                g_unpriced = sum(pos[s]["qty"] * last_close[s] for s in held if s not in bars) / equity
+                if g + g_unpriced > hi:
+                    k = lo / g if not g_unpriced else max(lo - g_unpriced, 0.0) / g
                     for s in stay:
-                        want(s, qty_now[s] * lo / g, "gross")
-                        qty_now[s] *= lo / g
+                        want(s, qty_now[s] * k, "gross")
+                        qty_now[s] *= k
             if rules.corr_cap is not None:
                 hi, lo, lb = rules.corr_cap
-                wv = np.array([qty_now[s] * last_close[s] / equity for s in stay])
-                e = effective_exposure(wv, _corr(rets, stay, d, int(lb)))
+                cpairs = stay + [s for s in held if s not in bars]      # unpriced positions count too
+                wv = np.array([(qty_now[s] if s in qty_now else pos[s]["qty"]) * last_close[s] / equity
+                               for s in cpairs])
+                e = effective_exposure(wv, _corr(rets, cpairs, d, int(lb)))
                 if e > hi:
                     for s in stay:
                         want(s, qty_now[s] * lo / e, "corr")
                         qty_now[s] *= lo / e
             if rules.corr_risk_cap is not None:
                 hi, lo, lb = rules.corr_risk_cap
-                rv = np.array([max(qty_now[s] * (last_close[s] - pos[s]["stop"]), 0.0) / equity for s in stay])
-                e = effective_exposure(rv, _corr(rets, stay, d, int(lb)))
+                rpairs = stay + [s for s in held if s not in bars]      # unpriced positions count too
+                rv = np.array([max((qty_now[s] if s in qty_now else pos[s]["qty"]) *
+                                   (last_close[s] - pos[s]["stop"]), 0.0) / equity for s in rpairs])
+                e = effective_exposure(rv, _corr(rets, rpairs, d, int(lb)))
                 if e > hi:
                     for s in stay:
                         want(s, qty_now[s] * lo / e, "corr_risk")
@@ -281,6 +303,9 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
                 continue
             a = float(atr[pair].get(d, np.nan))
             c = last_close[pair]
+            if unpriced:                                   # risk not reliable: approve no new exposure
+                risk_rows[-1]["entries_blocked_unreliable"] += 1
+                continue
             if halted is not None or day_loss or not (np.isfinite(a) and a > 0):
                 continue
             ok, _ = rm.costs_acceptable(c, c - stop_atr * a, costs.fee, costs.slip, costs.stop_slip)
@@ -293,7 +318,7 @@ def simulate(frames: Dict[str, pd.DataFrame], entries: Dict[str, pd.Series], exi
         for _, _, pair, a, strat in cands[:max(free, 0)]:
             pend_in.append((pair, a, strat, scale))
         rest = cands[max(free, 0):]
-        if replace is not None and rest:
+        if replace is not None and rest and not unpriced:
             min_bars, max_r = replace
             weak = []
             for s_, p in pos.items():

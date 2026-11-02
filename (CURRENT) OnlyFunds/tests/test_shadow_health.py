@@ -8,13 +8,16 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "research"))
 import shadow_health as SH  # noqa: E402
 
+CSV = (b"timestamp,Open,High,Low,Close,Volume\n2026-11-01 00:00:00+00:00,1,1.2,0.9,1.1,5\n"
+       b"2026-11-02 00:00:00+00:00,1.1,1.3,1.0,1.2,6\n")
+
 
 def _state(tmp_path, journal=(), exp_ref=None):
     import forward_shadow as FS
     fz = FS.load_frozen()[0]
     run = tmp_path / "shadow" / "runs" / "20261103T003000Z"
     (run / "data").mkdir(parents=True)
-    csv = b"timestamp,Open\n2026-11-02,1\n"
+    csv = CSV            # a well-formed daily snapshot (the health check now checks OHLC quality)
     (run / "data" / "BTCUSDT_1d.csv").write_bytes(csv)
     (run / "run.json").write_text(json.dumps({"status": "ok", "frozen_fingerprints": fz["fingerprints"],
                                               "data_status": {"BTCUSDT": {"sha256": hashlib.sha256(csv).hexdigest()}}}))
@@ -37,7 +40,7 @@ def test_clean_state_passes_and_snapshots_are_verified(tmp_path):
 
 def test_tampered_snapshot_and_crash_are_reported(tmp_path):
     run = _state(tmp_path, [{"exit_code": 10, "status": "CRASHED: unhandled exception"}], "20991231T000000Z")
-    (run / "data" / "BTCUSDT_1d.csv").write_bytes(b"timestamp,Open\n2026-11-02,2\n")
+    (run / "data" / "BTCUSDT_1d.csv").write_bytes(CSV.replace(b"1.2,6", b"1.25,6"))
     rep = SH.check(str(tmp_path))
     text = " | ".join(rep["findings"])
     assert not rep["ok"]

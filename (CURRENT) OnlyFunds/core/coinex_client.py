@@ -10,9 +10,12 @@ Implemented from the official docs (https://docs.coinex.com/api/v2):
   GET /spot/order-status.
 
 Safety:
-- Order placement and cancellation raise ``TradingLockedError`` unless the client
-  was constructed with ``allow_trading=True``. The OF2 app never does this:
-  live trading is locked (see ``core.trade_execution``).
+- Order placement and cancellation raise ``TradingLockedError`` while the global
+  code constant ``core.trade_execution.LIVE_TRADING_LOCKED`` is True, whatever the
+  client's ``allow_trading`` flag says. Unlocking needs both a code change to that
+  constant and ``allow_trading=True``; the OF2 app does neither.
+- While the global lock is on, every non-GET request is refused before anything is
+  sent, so the order endpoints cannot be reached through ``_request`` either.
 - Order placement is never retried automatically. A network failure while
   placing an order raises ``OrderStateUnknown`` so the caller reconciles
   instead of risking a duplicate order.
@@ -137,6 +140,16 @@ def sign_request(secret: str, method: str, request_path: str, body: str, timesta
     return hmac.new(secret.encode("latin-1"), prepared.encode("latin-1"), hashlib.sha256).hexdigest().lower()
 
 
+def live_trading_locked() -> bool:
+    """The global lock (core.trade_execution.LIVE_TRADING_LOCKED). Imported lazily, because trade_execution imports
+    this module; if it cannot be read for any reason the answer is "locked" (fail closed)."""
+    try:
+        from core import trade_execution
+        return trade_execution.LIVE_TRADING_LOCKED is not False
+    except Exception:
+        return True
+
+
 class CoinExClient:
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None,
                  session: Optional[requests.Session] = None, timeout: float = 10.0,
@@ -212,6 +225,8 @@ class CoinExClient:
 
     def _request(self, method: str, path: str, params: Optional[Dict] = None, body: Optional[Dict] = None,
                  signed: bool = False, retry: bool = True) -> Any:
+        if method.upper() != "GET" and live_trading_locked():
+            raise TradingLockedError(f"{method} {path} refused: live trading is locked; only GET requests are allowed.")
         attempts = self.max_retries if retry else 1
         last_exc: Optional[Exception] = None
         for attempt in range(attempts):
@@ -331,6 +346,9 @@ class CoinExClient:
                              signed=True)
 
     def _require_trading(self) -> None:
+        if live_trading_locked():
+            raise TradingLockedError("Real order placement is locked in OnlyFunds 2 "
+                                     "(core.trade_execution.LIVE_TRADING_LOCKED); allow_trading cannot override it.")
         if not self.allow_trading:
             raise TradingLockedError("Real order placement is locked in OnlyFunds 2.")
 

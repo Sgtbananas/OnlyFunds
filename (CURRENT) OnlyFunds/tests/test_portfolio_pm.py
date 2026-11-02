@@ -104,3 +104,79 @@ def test_pm_code_is_isolated_from_frozen_and_experimental_fingerprints():
         assert not re.search(r"""["']shadow(_experimental)?["']""", src), f
         assert f"research/{f}" not in FS.IMPLEMENTATION and f"research/{f}" not in FE.IMPLEMENTATION
     assert FS.load_frozen()[1] == [] and FE.load_frozen()[1] == []
+
+
+def missing_bar_case():
+    """Two held coins; A jumps +40% at the close of day 40 and then has no bar on day 41. Its risk must still count
+    towards the open-risk cap on day 41 (it cannot be sold then, so B is cut instead)."""
+    from core.risk_manager import RiskLimits
+    idx = pd.date_range("2020-01-01", periods=60, freq="D", tz="UTC")
+    def frame(close):
+        c = pd.Series(close, index=idx, dtype=float)
+        o = c.shift(1).fillna(c.iloc[0])
+        return pd.DataFrame({"Open": o, "High": np.maximum(o, c) * 1.001, "Low": np.minimum(o, c) * 0.999,
+                             "Close": c, "Volume": 1e9})
+    wiggle = 0.05 * np.sin(np.arange(60))                      # avoids zero-variance correlations
+    a = np.r_[np.full(40, 100.0), np.full(20, 140.0)] + wiggle
+    fr = {"AUSDT": frame(a), "BUSDT": frame(100.0 + np.cos(np.arange(60)) * 0.05)}
+    jump, gap = idx[40], idx[41]
+    fr["AUSDT"] = fr["AUSDT"].drop(index=gap)
+    en = {p: pd.Series(f.index == idx[20], index=f.index) for p, f in fr.items()}
+    ex = {p: pd.Series(False, index=f.index) for p, f in fr.items()}
+    at = {p: pd.Series(2.0, index=f.index) for p, f in fr.items()}
+    lim = RiskLimits(risk_per_trade=0.005, max_position_pct=0.10, max_exposure_pct=0.30, max_open_positions=3,
+                     max_daily_loss_pct=1.0, max_drawdown_pct=1.0, min_notional=1.0, max_cost_to_risk=0.25,
+                     kill_switch_file="")
+    return (fr, en, ex, at, str(idx[0].date()), str((idx[-1] + pd.Timedelta(days=1)).date()), lim), jump, gap
+
+
+def test_open_risk_cap_counts_a_held_coin_with_no_bar():
+    (fr, en, ex, at, s, e, lim), jump, gap = missing_bar_case()
+    res, risk = PM.simulate(fr, en, ex, at, s, e, lim, capital=10000.0, rules=PM.Rules(open_risk_cap=(0.03, 0.025)))
+    assert risk.loc[jump, "open_risk_to_stop_pct"] > 3.0 and risk.loc[gap, "open_risk_to_stop_pct"] > 3.0
+    t = res.trades
+    b_cut = t[(t.pair == "BUSDT") & (t.reason == "trim_open_risk")]
+    assert len(b_cut) and (b_cut.exit_day == gap + pd.Timedelta(days=1)).all()     # B cut at the next open
+    a_cut = t[(t.pair == "AUSDT") & (t.reason == "trim_open_risk")]
+    assert len(a_cut) and a_cut.exit_day.min() > gap                                # A only once it trades again
+
+
+def stale_case():
+    """missing_bar_case plus coin C, which signals at the close of day 40 (fill due at the open of day 41, when A is
+    unpriced), at the close of day 41 (A unpriced) and at the close of day 45 (everything priced)."""
+    (fr, en, ex, at, s, e, lim), jump, gap = missing_bar_case()
+    idx = fr["BUSDT"].index
+    fr["CUSDT"] = fr["BUSDT"].copy()
+    en["CUSDT"] = pd.Series(idx.isin([idx[40], idx[41], idx[45]]), index=idx)
+    ex["CUSDT"] = pd.Series(False, index=idx)
+    at["CUSDT"] = pd.Series(2.0, index=idx)
+    return (fr, en, ex, at, s, e, lim), idx
+
+
+@pytest.mark.parametrize("sim", ["pm", "engine"])
+def test_unpriced_position_flags_risk_and_blocks_new_exposure(sim):
+    import portfolio_engine as PE
+    (fr, en, ex, at, s, e, lim), idx = stale_case()
+    mod = PM if sim == "pm" else PE
+    res, risk = mod.simulate(fr, en, ex, at, s, e, lim, capital=10000.0)
+    gap = idx[41]
+    assert not risk.loc[gap, "risk_reliable"] and risk.loc[gap, "unpriced"] == "AUSDT"
+    assert risk.loc[gap, "unpriced_positions"] == 1 and risk.loc[gap, "max_price_age_days"] == 1
+    assert risk.drop(index=gap)["risk_reliable"].all() and risk.drop(index=gap)["max_price_age_days"].max() == 0
+    assert risk.loc[gap, "entries_blocked_unreliable"] == 2       # the fill at the open and the decision at the close
+    c = res.trades[res.trades.pair == "CUSDT"]
+    assert len(c) and c.entry_day.min() == idx[46]                  # C enters only once every price is current
+    assert risk.loc[gap, "open_risk_to_stop_pct"] > 0               # A is still in aggregate risk
+    assert risk.loc[gap, "n_open"] == 2
+
+
+def test_gross_cap_counts_an_unpriced_position():
+    (fr, en, ex, at, s, e, lim), jump, gap = missing_bar_case()
+    res, risk = PM.simulate(fr, en, ex, at, s, e, lim, capital=10000.0, rules=PM.Rules(gross_cap=(0.105, 0.10)))
+    t = res.trades
+    # gap day: A (about 7% of equity) is unpriced and unsellable, B about 4%; together above 10.5%, so B is cut at
+    # the next open. Counting only priced positions (B alone) would not have cut anything.
+    assert risk.loc[gap, "position_value_pct"] > 10.5
+    b = t[(t.pair == "BUSDT") & (t.exit_day == gap + pd.Timedelta(days=1))]
+    assert len(b) and (b.reason == "trim_gross").all()
+    assert not ((t.pair == "AUSDT") & (t.exit_day == gap)).any()

@@ -143,3 +143,13 @@ def test_regime_walk_forward_purges_and_outputs_probabilities(regime, monkeypatc
         assert ((c >= -1e-9) & (c <= 1 + 1e-9)).all()
     first_test = pd.Timestamp("2021-01-01", tz="UTC")
     assert (m.label_end[m.label_end < first_test - pd.Timedelta(days=RE.EMBARGO)].index < first_test).all()
+
+
+def test_engine_open_risk_cap_counts_a_held_coin_with_no_bar():
+    from test_portfolio_pm import missing_bar_case
+    (fr, en, ex, at, s, e, lim), jump, gap = missing_bar_case()
+    a, ra = PM.simulate(fr, en, ex, at, s, e, lim, capital=10000.0, rules=PM.Rules(open_risk_cap=(0.03, 0.025)))
+    b, rb = PE.simulate(fr, en, ex, at, s, e, lim, capital=10000.0, rules=PE.Rules(open_risk_cap=(0.03, 0.025)))
+    pd.testing.assert_frame_equal(a.trades.drop(columns=[c for c in a.trades if c not in b.trades]),
+                                  b.trades[[c for c in a.trades if c in b.trades]])
+    assert ((b.trades.pair == "BUSDT") & (b.trades.reason == "trim_open_risk")).any()
